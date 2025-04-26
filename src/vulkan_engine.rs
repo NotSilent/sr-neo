@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cell::RefCell,
     ffi::{self, c_char},
 };
 
@@ -9,70 +10,22 @@ use ash::{
     khr::{surface, swapchain},
     vk,
 };
+use gpu_allocator::{
+    AllocationSizes, AllocatorDebugSettings, MemoryLocation,
+    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
+};
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-mod vk_util {
-    use ash::{Device, vk};
+use crate::deletion_queue::{DeletionQueue, DeletionType};
+use crate::vk_util;
 
-    pub fn create_fence(device: &Device, flags: vk::FenceCreateFlags) -> vk::Fence {
-        let create_info = vk::FenceCreateInfo::default().flags(flags);
-
-        unsafe {
-            device
-                .create_fence(&create_info, None)
-                .expect("Failed to create Fence")
-        }
-    }
-
-    pub fn create_semaphore(device: &Device) -> vk::Semaphore {
-        let create_info = vk::SemaphoreCreateInfo::default();
-
-        unsafe {
-            device
-                .create_semaphore(&create_info, None)
-                .expect("Failed to create Semaphore")
-        }
-    }
-
-    pub fn transition_image(
-        device: &Device,
-        cmd: vk::CommandBuffer,
-        image: vk::Image,
-        current_layout: vk::ImageLayout,
-        new_layout: vk::ImageLayout,
-    ) {
-        let aspect_mask = if new_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL {
-            vk::ImageAspectFlags::DEPTH
-        } else {
-            vk::ImageAspectFlags::COLOR
-        };
-
-        // TODO: ALL_COMMANDS inefficent, make stage masks more accurate
-        // https://github.com/KhronosGroup/Vulkan-Docs/wiki/Synchronization-Examples
-        let image_barrier = vk::ImageMemoryBarrier2::default()
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
-            .old_layout(current_layout)
-            .new_layout(new_layout)
-            .subresource_range(image_subresource_range(aspect_mask))
-            .image(image);
-
-        let binding = [image_barrier];
-        let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&binding);
-
-        unsafe { device.cmd_pipeline_barrier2(cmd, &dependency_info) };
-    }
-
-    pub fn image_subresource_range(aspect_mask: vk::ImageAspectFlags) -> vk::ImageSubresourceRange {
-        vk::ImageSubresourceRange::default()
-            .aspect_mask(aspect_mask)
-            .base_mip_level(0)
-            .level_count(vk::REMAINING_MIP_LEVELS)
-            .base_array_layer(0)
-            .layer_count(vk::REMAINING_ARRAY_LAYERS)
-    }
+// TODO: split into struct of arrays
+struct AllocatedImage {
+    image: vk::Image,
+    _image_view: vk::ImageView,
+    image_extent: vk::Extent3D,
+    _image_format: vk::Format,
+    _allocation: Allocation,
 }
 
 #[derive(Default)]
@@ -83,6 +36,8 @@ struct FrameData {
     swapchain_semaphore: vk::Semaphore,
     render_semaphore: vk::Semaphore,
     fence: vk::Fence,
+
+    deletion_queue: RefCell<DeletionQueue>, // TODO: can this be done without RefCell?
 }
 
 // TODO: runtime?
@@ -111,9 +66,14 @@ pub struct VulkanEngine {
     _swapchain_image_format: vk::Format,
     swapchain_images: Vec<vk::Image>,
     swapchain_image_views: Vec<vk::ImageView>,
-    _swapchain_extent: vk::Extent2D,
+    swapchain_extent: vk::Extent2D,
 
     frames: [FrameData; FRAME_OVERLAP],
+    deletion_queue: DeletionQueue,
+    allocator: Option<Allocator>,
+
+    draw_image: AllocatedImage,
+    draw_extent: vk::Extent2D,
 }
 
 impl VulkanEngine {
@@ -245,13 +205,64 @@ impl VulkanEngine {
         frames[1].swapchain_semaphore = vk_util::create_semaphore(&device);
         frames[1].render_semaphore = vk_util::create_semaphore(&device);
 
+        let mut allocator =
+            Self::create_allocator(instance.clone(), device.clone(), physical_device);
+
+        let mut deletion_queue = DeletionQueue::default();
+
+        let draw_image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
+
+        let format = vk::Format::R16G16B16A16_SFLOAT;
+
+        let image_usages = vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::STORAGE
+            | vk::ImageUsageFlags::COLOR_ATTACHMENT;
+
+        let image_create_info = vk_util::image_create_info(format, image_usages, draw_image_extent);
+
+        let image = unsafe { device.create_image(&image_create_info, None).unwrap() };
+        let requirements = unsafe { device.get_image_memory_requirements(image) };
+
+        let description = AllocationCreateDesc {
+            name: "image",
+            requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+
+        let allocation = allocator.allocate(&description).unwrap();
+
+        unsafe {
+            device
+                .bind_image_memory(image, allocation.memory(), allocation.offset())
+                .unwrap();
+        };
+
+        let image_view_create_info =
+            vk_util::image_view_create_info(format, image, vk::ImageAspectFlags::COLOR);
+        let image_view = unsafe {
+            device
+                .create_image_view(&image_view_create_info, None)
+                .unwrap()
+        };
+
+        let draw_image = AllocatedImage {
+            image,
+            _image_view: image_view,
+            image_extent: draw_image_extent,
+            _image_format: format,
+            _allocation: allocation,
+        };
+
+        deletion_queue.push(DeletionType::Image(image));
+        deletion_queue.push(DeletionType::ImageView(image_view));
+
         Self {
             frame_number: 0,
             _stop_rendering: false,
-            _window_extent: vk::Extent2D {
-                width: 1920,
-                height: 1080,
-            },
+            _window_extent: vk::Extent2D { width, height },
 
             _entry: entry,
             instance,
@@ -270,8 +281,12 @@ impl VulkanEngine {
             _swapchain_image_format: surface_format.format,
             swapchain_images,
             swapchain_image_views,
-            _swapchain_extent: render_area.extent,
+            swapchain_extent: render_area.extent,
             frames,
+            deletion_queue,
+            allocator: Some(allocator),
+            draw_image,
+            draw_extent: vk::Extent2D::default(),
         }
     }
 
@@ -292,6 +307,10 @@ impl VulkanEngine {
             unsafe { self.device.destroy_image_view(image_view, None) };
         }
 
+        self.allocator.take();
+
+        self.deletion_queue.flush(&self.device);
+
         unsafe {
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
@@ -303,15 +322,42 @@ impl VulkanEngine {
         };
     }
 
+    fn draw_background(&self, cmd: vk::CommandBuffer) {
+        let flash = f32::abs(f32::sin(self.frame_number as f32 / 120.0));
+        let clear_value = vk::ClearColorValue {
+            float32: [0.0, 0.0, flash, 1.0],
+        };
+
+        let clear_range = vk_util::image_subresource_range(vk::ImageAspectFlags::COLOR);
+        unsafe {
+            self.device.cmd_clear_color_image(
+                cmd,
+                self.draw_image.image,
+                vk::ImageLayout::GENERAL,
+                &clear_value,
+                &[clear_range],
+            );
+        };
+    }
+
+    #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self) {
-        let current_frame = self.get_current_frame();
+        let current_frame_fence = self.get_current_frame().fence;
+        let current_frame_command_buffer = self.get_current_frame().command_buffer;
+        let current_frame_swapchain_semaphore = self.get_current_frame().swapchain_semaphore;
+        let current_frame_render_semaphore = self.get_current_frame().render_semaphore;
         unsafe {
             self.device
-                .wait_for_fences(&[current_frame.fence], true, 1_000_000_000)
+                .wait_for_fences(&[current_frame_fence], true, 1_000_000_000)
                 .expect("Failed waiting for fences");
 
+            self.get_current_frame()
+                .deletion_queue
+                .borrow_mut()
+                .flush(&self.device);
+
             self.device
-                .reset_fences(&[current_frame.fence])
+                .reset_fences(&[current_frame_fence])
                 .expect("Failed to reset fences");
 
             let (swapchain_image_index, _) = self
@@ -319,12 +365,12 @@ impl VulkanEngine {
                 .acquire_next_image(
                     self.swapchain,
                     1_000_000_000,
-                    current_frame.swapchain_semaphore,
+                    current_frame_swapchain_semaphore,
                     vk::Fence::null(),
                 )
                 .expect("Failed to acquire next image");
 
-            let cmd = current_frame.command_buffer;
+            let cmd = current_frame_command_buffer;
             self.device
                 .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
                 .expect("Failed to reset command buffer");
@@ -332,11 +378,32 @@ impl VulkanEngine {
             let cmd_begin_info = vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
+            let _ = self.draw_extent.width(self.draw_image.image_extent.width);
+            let _ = self.draw_extent.height(self.draw_image.image_extent.height);
+
             // Begin command buffer
 
             self.device
                 .begin_command_buffer(cmd, &cmd_begin_info)
                 .expect("Failed to begin command buffer");
+
+            vk_util::transition_image(
+                &self.device,
+                cmd,
+                self.draw_image.image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+            );
+
+            self.draw_background(cmd);
+
+            vk_util::transition_image(
+                &self.device,
+                cmd,
+                self.draw_image.image,
+                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            );
 
             let swapchain_image = self.swapchain_images[swapchain_image_index as usize];
 
@@ -345,28 +412,23 @@ impl VulkanEngine {
                 cmd,
                 swapchain_image,
                 vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             );
 
-            let flash = f32::abs(f32::sin(self.frame_number as f32 / 120.0));
-            let clear_value = vk::ClearColorValue {
-                float32: [0.0, 0.0, flash, 1.0],
-            };
-
-            let clear_range = vk_util::image_subresource_range(vk::ImageAspectFlags::COLOR);
-            self.device.cmd_clear_color_image(
+            vk_util::copy_image_to_image(
+                &self.device,
                 cmd,
+                self.draw_image.image,
                 swapchain_image,
-                vk::ImageLayout::GENERAL,
-                &clear_value,
-                &[clear_range],
+                self.draw_extent,
+                self.swapchain_extent,
             );
 
             vk_util::transition_image(
                 &self.device,
                 cmd,
                 swapchain_image,
-                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
             );
 
@@ -381,13 +443,13 @@ impl VulkanEngine {
                 .device_mask(0)];
 
             let wait_infos = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(current_frame.swapchain_semaphore)
+                .semaphore(current_frame_swapchain_semaphore)
                 .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
                 .device_index(0)
                 .value(1)];
 
             let signal_infos = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(current_frame.render_semaphore)
+                .semaphore(current_frame_render_semaphore)
                 .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)
                 .device_index(0)
                 .value(1)];
@@ -398,11 +460,11 @@ impl VulkanEngine {
                 .command_buffer_infos(&cmd_infos);
 
             self.device
-                .queue_submit2(self.graphics_queue, &[submit_info], current_frame.fence)
+                .queue_submit2(self.graphics_queue, &[submit_info], current_frame_fence)
                 .expect("Failed to queue submit");
 
             let swapchains = [self.swapchain];
-            let wait_semaphores = [current_frame.render_semaphore];
+            let wait_semaphores = [current_frame_render_semaphore];
             let image_indices = [swapchain_image_index];
 
             let present_info = vk::PresentInfoKHR::default()
@@ -416,6 +478,22 @@ impl VulkanEngine {
 
             self.frame_number += 1;
         };
+    }
+
+    fn create_allocator(
+        instance: Instance,
+        device: Device,
+        physical_device: vk::PhysicalDevice,
+    ) -> Allocator {
+        Allocator::new(&AllocatorCreateDesc {
+            instance,
+            device,
+            physical_device,
+            debug_settings: AllocatorDebugSettings::default(),
+            buffer_device_address: true,
+            allocation_sizes: AllocationSizes::default(),
+        })
+        .unwrap()
     }
 
     fn create_instance(entry: &Entry, display_handle: RawDisplayHandle) -> Instance {

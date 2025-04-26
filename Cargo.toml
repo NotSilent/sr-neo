@@ -7,8 +7,10 @@ edition = "2024"
 ash = {version = "0.38.0", features = ["linked"]}
 ash-window = "0.13.0"
 winit = "0.30.9"
+gpu-allocator = "0.27.0"
 
 [lints.clippy]
 pedantic = {level = "warn", priority = 0}
 cast_possible_truncation = {level = "allow", priority = 1}
 cast_precision_loss = {level = "allow", priority = 1}
+cast_possible_wrap = {level = "allow", priority = 1}
