@@ -2,6 +2,7 @@
 name = "srneo"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 ash = {version = "0.38.0", features = ["linked"]}
@@ -11,6 +12,7 @@ gpu-allocator = "0.27.0"
 
 [lints.clippy]
 pedantic = {level = "warn", priority = 0}
-cast_possible_truncation = {level = "allow", priority = 1}
 cast_precision_loss = {level = "allow", priority = 1}
+cast_possible_truncation = {level = "allow", priority = 1}
 cast_possible_wrap = {level = "allow", priority = 1}
+cast_sign_loss = {level = "allow", priority = 1}

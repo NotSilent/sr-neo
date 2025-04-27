@@ -14,3 +14,5 @@
 # Built Visual Studio Code Extensions
 *.vsix
 # ~https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
+
+shaders/*.spv

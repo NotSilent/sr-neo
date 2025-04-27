@@ -8,7 +8,7 @@ use ash::{
     Device, Entry, Instance,
     ext::debug_utils,
     khr::{surface, swapchain},
-    vk,
+    vk::{self, DescriptorPool, PipelineShaderStageCreateInfo},
 };
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
@@ -16,13 +16,111 @@ use gpu_allocator::{
 };
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-use crate::deletion_queue::{DeletionQueue, DeletionType};
 use crate::vk_util;
+use crate::{
+    deletion_queue::{DeletionQueue, DeletionType},
+    shader_manager::ShaderManager,
+};
 
-// TODO: split into struct of arrays
+#[derive(Default)]
+struct DestructorLayoutBuilder<'a> {
+    bindings: Vec<vk::DescriptorSetLayoutBinding<'a>>,
+}
+
+impl DestructorLayoutBuilder<'_> {
+    fn add_binding(&mut self, binding: u32, descriptor_type: vk::DescriptorType) {
+        self.bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(binding)
+                .descriptor_count(1)
+                .descriptor_type(descriptor_type),
+        );
+    }
+
+    fn clear(&mut self) {
+        self.bindings.clear();
+    }
+
+    fn build(
+        &mut self,
+        device: &Device,
+        shader_stages: vk::ShaderStageFlags,
+        /* , void* pNext = nullptr */ flags: vk::DescriptorSetLayoutCreateFlags,
+    ) -> vk::DescriptorSetLayout {
+        for binding in &mut self.bindings {
+            binding.stage_flags |= shader_stages;
+        }
+
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&self.bindings)
+            .flags(flags);
+
+        unsafe {
+            device
+                .create_descriptor_set_layout(&create_info, None)
+                .unwrap()
+        }
+    }
+}
+
+struct PoolSizeRatio {
+    descriptor_type: vk::DescriptorType,
+    ratio: f32, //TODO: why tf f32?
+}
+
+#[derive(Default)]
+struct DescriptorAllocator {
+    pool: DescriptorPool,
+}
+
+impl DescriptorAllocator {
+    fn init_pool(&mut self, device: &Device, max_sets: u32, pool_ratios: &[PoolSizeRatio]) {
+        let mut pool_sizes = Vec::new();
+        for ratio in pool_ratios {
+            pool_sizes.push(
+                vk::DescriptorPoolSize::default()
+                    .ty(ratio.descriptor_type)
+                    .descriptor_count((ratio.ratio * max_sets as f32) as u32),
+            );
+        }
+
+        let create_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::empty())
+            .max_sets(max_sets)
+            .pool_sizes(&pool_sizes);
+
+        self.pool = unsafe { device.create_descriptor_pool(&create_info, None).unwrap() };
+    }
+
+    fn clear_descriptors(&self, device: &Device) {
+        unsafe { device.reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty()) };
+    }
+
+    fn destroy_pool(&self, device: &Device) {
+        unsafe { device.destroy_descriptor_pool(self.pool, None) };
+    }
+
+    // TODO: Multiple layouts
+    fn allocate(&self, device: &Device, layout: vk::DescriptorSetLayout) -> vk::DescriptorSet {
+        let binding = [layout];
+        let allocate_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(self.pool)
+            .set_layouts(&binding);
+
+        unsafe {
+            *device
+                .allocate_descriptor_sets(&allocate_info)
+                .unwrap()
+                .first()
+                .unwrap()
+        }
+    }
+}
+
+// TODO: split into struct of arrays?
 struct AllocatedImage {
     image: vk::Image,
-    _image_view: vk::ImageView,
+    image_view: vk::ImageView,
     image_extent: vk::Extent3D,
     _image_format: vk::Format,
     _allocation: Allocation,
@@ -74,6 +172,16 @@ pub struct VulkanEngine {
 
     draw_image: AllocatedImage,
     draw_extent: vk::Extent2D,
+
+    shader_manager: ShaderManager,
+
+    descriptor_allocator: DescriptorAllocator,
+
+    draw_image_descriptor_layout: vk::DescriptorSetLayout,
+    draw_image_descriptors: vk::DescriptorSet,
+
+    gradient_pipeline_layout: vk::PipelineLayout,
+    gradient_pipeline: vk::Pipeline,
 }
 
 impl VulkanEngine {
@@ -250,14 +358,89 @@ impl VulkanEngine {
 
         let draw_image = AllocatedImage {
             image,
-            _image_view: image_view,
+            image_view,
             image_extent: draw_image_extent,
             _image_format: format,
             _allocation: allocation,
         };
 
+        let mut shader_manager = ShaderManager::new();
+
+        // init descriptors
+        let sizes = vec![PoolSizeRatio {
+            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+            ratio: 1.0,
+        }];
+
+        let mut descriptor_allocator = DescriptorAllocator::default();
+        descriptor_allocator.init_pool(&device, 10, &sizes);
+
+        let mut builder = DestructorLayoutBuilder::default();
+        builder.add_binding(0, vk::DescriptorType::STORAGE_IMAGE);
+
+        let draw_image_descriptor_layout = builder.build(
+            &device,
+            vk::ShaderStageFlags::COMPUTE,
+            vk::DescriptorSetLayoutCreateFlags::empty(),
+        );
+
+        let draw_image_descriptors =
+            descriptor_allocator.allocate(&device, draw_image_descriptor_layout);
+
+        let img_infos = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(draw_image.image_view)];
+
+        let draw_image_write = vk::WriteDescriptorSet::default()
+            .dst_binding(0)
+            .dst_set(draw_image_descriptors)
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .image_info(&img_infos);
+
+        unsafe { device.update_descriptor_sets(&[draw_image_write], &[]) };
+        // ~init descriptors
+
+        // init pipelines
+        let draw_image_descriptor_layouts = [draw_image_descriptor_layout];
+        let compute_layout_create_info =
+            vk::PipelineLayoutCreateInfo::default().set_layouts(&draw_image_descriptor_layouts);
+        let compute_layout = unsafe {
+            device
+                .create_pipeline_layout(&compute_layout_create_info, None)
+                .unwrap()
+        };
+
+        let compute_shader = shader_manager.get_compute_shader(&device, "gradient");
+
+        let stage_info = PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(compute_shader)
+            .name(c"main");
+
+        let compute_pipeline_create_info = vk::ComputePipelineCreateInfo::default()
+            .layout(compute_layout)
+            .stage(stage_info);
+
+        let compute_pipeline = *unsafe {
+            device.create_compute_pipelines(
+                vk::PipelineCache::null(),
+                &[compute_pipeline_create_info],
+                None,
+            )
+        }
+        .unwrap()
+        .first()
+        .unwrap();
+        // ~init pipelines
+
         deletion_queue.push(DeletionType::Image(image));
         deletion_queue.push(DeletionType::ImageView(image_view));
+        deletion_queue.push(DeletionType::DescriptorSetLayout(
+            draw_image_descriptor_layout,
+        ));
+        deletion_queue.push(DeletionType::PipelineLayout(compute_layout));
+        deletion_queue.push(DeletionType::Pipeline(compute_pipeline));
 
         Self {
             frame_number: 0,
@@ -287,6 +470,15 @@ impl VulkanEngine {
             allocator: Some(allocator),
             draw_image,
             draw_extent: vk::Extent2D::default(),
+
+            shader_manager,
+
+            descriptor_allocator,
+            draw_image_descriptors,
+            draw_image_descriptor_layout,
+
+            gradient_pipeline_layout: compute_layout,
+            gradient_pipeline: compute_pipeline,
         }
     }
 
@@ -307,9 +499,13 @@ impl VulkanEngine {
             unsafe { self.device.destroy_image_view(image_view, None) };
         }
 
-        self.allocator.take();
+        self.shader_manager.destroy(&self.device);
+
+        self.descriptor_allocator.destroy_pool(&self.device);
 
         self.deletion_queue.flush(&self.device);
+
+        self.allocator.take();
 
         unsafe {
             self.swapchain_loader
@@ -323,21 +519,43 @@ impl VulkanEngine {
     }
 
     fn draw_background(&self, cmd: vk::CommandBuffer) {
-        let flash = f32::abs(f32::sin(self.frame_number as f32 / 120.0));
-        let clear_value = vk::ClearColorValue {
-            float32: [0.0, 0.0, flash, 1.0],
-        };
+        // let flash = f32::abs(f32::sin(self.frame_number as f32 / 120.0));
+        // let clear_value = vk::ClearColorValue {
+        //     float32: [0.0, 0.0, flash, 1.0],
+        // };
 
-        let clear_range = vk_util::image_subresource_range(vk::ImageAspectFlags::COLOR);
+        // let clear_range = vk_util::image_subresource_range(vk::ImageAspectFlags::COLOR);
+        // unsafe {
+        //     self.device.cmd_clear_color_image(
+        //         cmd,
+        //         self.draw_image.image,
+        //         vk::ImageLayout::GENERAL,
+        //         &clear_value,
+        //         &[clear_range],
+        //     );
+        // };
+
         unsafe {
-            self.device.cmd_clear_color_image(
+            self.device.cmd_bind_pipeline(
                 cmd,
-                self.draw_image.image,
-                vk::ImageLayout::GENERAL,
-                &clear_value,
-                &[clear_range],
+                vk::PipelineBindPoint::COMPUTE,
+                self.gradient_pipeline,
             );
-        };
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.gradient_pipeline_layout,
+                0,
+                &[self.draw_image_descriptors],
+                &[],
+            );
+            self.device.cmd_dispatch(
+                cmd,
+                f32::ceil(self.draw_extent.width as f32 / 16.0) as u32,
+                f32::ceil(self.draw_extent.height as f32 / 16.0) as u32,
+                1,
+            );
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -378,8 +596,10 @@ impl VulkanEngine {
             let cmd_begin_info = vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-            let _ = self.draw_extent.width(self.draw_image.image_extent.width);
-            let _ = self.draw_extent.height(self.draw_image.image_extent.height);
+            self.draw_extent = self
+                .draw_extent
+                .width(self.draw_image.image_extent.width)
+                .height(self.draw_image.image_extent.height);
 
             // Begin command buffer
 

@@ -9,6 +9,7 @@ use winit::{
 };
 
 mod deletion_queue;
+mod shader_manager;
 mod vk_util;
 mod vulkan_engine;
 
