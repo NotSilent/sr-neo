@@ -4,6 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() -> io::Result<()> {
+    println!("cargo:rerun-if-changed=shaders");
+
     let shader_src = Path::new("shaders");
 
     for entry in fs::read_dir(shader_src)? {

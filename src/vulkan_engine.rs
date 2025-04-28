@@ -93,7 +93,11 @@ impl DescriptorAllocator {
     }
 
     fn clear_descriptors(&self, device: &Device) {
-        unsafe { device.reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty()) };
+        unsafe {
+            device
+                .reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty())
+                .unwrap();
+        };
     }
 
     fn destroy_pool(&self, device: &Device) {
