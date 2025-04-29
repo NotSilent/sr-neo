@@ -14,6 +14,8 @@ use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
 };
+use nalgebra::Vector4;
+use nalgebra::vector;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::vk_util;
@@ -21,6 +23,26 @@ use crate::{
     deletion_queue::{DeletionQueue, DeletionType},
     shader_manager::ShaderManager,
 };
+
+// TODO: std430
+#[repr(C)]
+struct ComputePushConstants {
+    data1: Vector4<f32>,
+    data2: Vector4<f32>,
+    data3: Vector4<f32>,
+    data4: Vector4<f32>,
+}
+
+impl ComputePushConstants {
+    fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref::<Self>(self).cast::<u8>(),
+                std::mem::size_of::<Self>(),
+            )
+        }
+    }
+}
 
 #[derive(Default)]
 struct DestructorLayoutBuilder<'a> {
@@ -181,11 +203,15 @@ pub struct VulkanEngine {
 
     descriptor_allocator: DescriptorAllocator,
 
-    draw_image_descriptor_layout: vk::DescriptorSetLayout,
+    _draw_image_descriptor_layout: vk::DescriptorSetLayout,
     draw_image_descriptors: vk::DescriptorSet,
 
     gradient_pipeline_layout: vk::PipelineLayout,
     gradient_pipeline: vk::Pipeline,
+
+    immediate_fence: vk::Fence,
+    immediate_pool: vk::CommandPool,
+    immediate_cmd: vk::CommandBuffer,
 }
 
 impl VulkanEngine {
@@ -407,15 +433,23 @@ impl VulkanEngine {
 
         // init pipelines
         let draw_image_descriptor_layouts = [draw_image_descriptor_layout];
-        let compute_layout_create_info =
-            vk::PipelineLayoutCreateInfo::default().set_layouts(&draw_image_descriptor_layouts);
+
+        let push_constant_ranges = [vk::PushConstantRange::default()
+            .offset(0)
+            .size(std::mem::size_of::<ComputePushConstants>() as u32)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)];
+
+        let compute_layout_create_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&draw_image_descriptor_layouts)
+            .push_constant_ranges(&push_constant_ranges);
+
         let compute_layout = unsafe {
             device
                 .create_pipeline_layout(&compute_layout_create_info, None)
                 .unwrap()
         };
 
-        let compute_shader = shader_manager.get_compute_shader(&device, "gradient");
+        let compute_shader = shader_manager.get_compute_shader(&device, "gradient_color");
 
         let stage_info = PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
@@ -438,6 +472,10 @@ impl VulkanEngine {
         .unwrap();
         // ~init pipelines
 
+        let immediate_fence = vk_util::create_fence(&device, vk::FenceCreateFlags::SIGNALED);
+        let immediate_pool = Self::create_command_pool(&device, graphics_queue_family_index);
+        let immediate_cmd = Self::allocate_command_buffer(&device, immediate_pool);
+
         deletion_queue.push(DeletionType::Image(image));
         deletion_queue.push(DeletionType::ImageView(image_view));
         deletion_queue.push(DeletionType::DescriptorSetLayout(
@@ -445,6 +483,8 @@ impl VulkanEngine {
         ));
         deletion_queue.push(DeletionType::PipelineLayout(compute_layout));
         deletion_queue.push(DeletionType::Pipeline(compute_pipeline));
+        deletion_queue.push(DeletionType::Fence(immediate_fence));
+        deletion_queue.push(DeletionType::CommandPool(immediate_pool));
 
         Self {
             frame_number: 0,
@@ -479,10 +519,14 @@ impl VulkanEngine {
 
             descriptor_allocator,
             draw_image_descriptors,
-            draw_image_descriptor_layout,
+            _draw_image_descriptor_layout: draw_image_descriptor_layout,
 
             gradient_pipeline_layout: compute_layout,
             gradient_pipeline: compute_pipeline,
+
+            immediate_fence,
+            immediate_pool,
+            immediate_cmd,
         }
     }
 
@@ -523,22 +567,6 @@ impl VulkanEngine {
     }
 
     fn draw_background(&self, cmd: vk::CommandBuffer) {
-        // let flash = f32::abs(f32::sin(self.frame_number as f32 / 120.0));
-        // let clear_value = vk::ClearColorValue {
-        //     float32: [0.0, 0.0, flash, 1.0],
-        // };
-
-        // let clear_range = vk_util::image_subresource_range(vk::ImageAspectFlags::COLOR);
-        // unsafe {
-        //     self.device.cmd_clear_color_image(
-        //         cmd,
-        //         self.draw_image.image,
-        //         vk::ImageLayout::GENERAL,
-        //         &clear_value,
-        //         &[clear_range],
-        //     );
-        // };
-
         unsafe {
             self.device.cmd_bind_pipeline(
                 cmd,
@@ -553,6 +581,22 @@ impl VulkanEngine {
                 &[self.draw_image_descriptors],
                 &[],
             );
+
+            let push_constants = ComputePushConstants {
+                data1: vector![1.0, 0.0, 0.0, 1.0],
+                data2: vector![0.0, 0.0, 1.0, 1.0],
+                data3: vector![0.0, 0.0, 0.0, 1.0],
+                data4: vector![0.0, 0.0, 0.0, 1.0],
+            };
+
+            self.device.cmd_push_constants(
+                cmd,
+                self.gradient_pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                push_constants.as_bytes(),
+            );
+
             self.device.cmd_dispatch(
                 cmd,
                 f32::ceil(self.draw_extent.width as f32 / 16.0) as u32,
@@ -901,6 +945,40 @@ impl VulkanEngine {
             device
                 .allocate_command_buffers(&allocate_info)
                 .expect("Failed to allocate command buffer")[0] // TODO: Safe
+        }
+    }
+
+    fn immediate_submit<F: Fn(vk::CommandBuffer)>(&self, record: F) {
+        unsafe {
+            self.device.reset_fences(&[self.immediate_fence]).unwrap();
+            self.device
+                .reset_command_buffer(self.immediate_cmd, vk::CommandBufferResetFlags::empty())
+                .unwrap();
+
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+            self.device
+                .begin_command_buffer(self.immediate_cmd, &begin_info)
+                .unwrap();
+
+            record(self.immediate_cmd);
+
+            self.device.end_command_buffer(self.immediate_cmd).unwrap();
+
+            let cmd_infos = [vk::CommandBufferSubmitInfo::default()
+                .command_buffer(self.immediate_cmd)
+                .device_mask(0)];
+
+            let submit_infos = [vk::SubmitInfo2::default().command_buffer_infos(&cmd_infos)];
+
+            self.device
+                .queue_submit2(self.graphics_queue, &submit_infos, self.immediate_fence)
+                .unwrap();
+
+            self.device
+                .wait_for_fences(&[self.immediate_fence], true, 1_000_000_000)
+                .unwrap();
         }
     }
 }

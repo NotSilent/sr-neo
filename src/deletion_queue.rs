@@ -2,7 +2,9 @@ use ash::Device;
 use ash::vk;
 
 pub enum DeletionType {
+    CommandPool(vk::CommandPool),
     DescriptorSetLayout(vk::DescriptorSetLayout),
+    Fence(vk::Fence),
     Image(vk::Image),
     ImageView(vk::ImageView),
     Pipeline(vk::Pipeline),
@@ -22,12 +24,16 @@ impl DeletionQueue {
     pub fn flush(&mut self, device: &Device) {
         for item in self.queue.iter().rev() {
             match item {
+                DeletionType::CommandPool(command_pool) => unsafe {
+                    device.destroy_command_pool(*command_pool, None);
+                },
                 DeletionType::DescriptorSetLayout(descriptor_set_layout) => unsafe {
                     device.destroy_descriptor_set_layout(*descriptor_set_layout, None);
                 },
+                DeletionType::Fence(fence) => unsafe { device.destroy_fence(*fence, None) },
                 DeletionType::Image(image) => unsafe { device.destroy_image(*image, None) },
                 DeletionType::ImageView(image_view) => unsafe {
-                    device.destroy_image_view(*image_view, None)
+                    device.destroy_image_view(*image_view, None);
                 },
                 DeletionType::Pipeline(pipeline) => unsafe {
                     device.destroy_pipeline(*pipeline, None);

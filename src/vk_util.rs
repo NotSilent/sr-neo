@@ -143,3 +143,20 @@ pub fn copy_image_to_image(
 
     unsafe { device.cmd_blit_image2(cmd, &blit_info) }
 }
+
+fn attachment_info(
+    image_view: vk::ImageView,
+    clear_value: Option<vk::ClearValue>,
+    image_layout: vk::ImageLayout,
+) -> vk::RenderingAttachmentInfo<'static> {
+    vk::RenderingAttachmentInfo::default()
+        .image_view(image_view)
+        .image_layout(image_layout)
+        .load_op(if clear_value.is_some() {
+            vk::AttachmentLoadOp::CLEAR
+        } else {
+            vk::AttachmentLoadOp::LOAD
+        })
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .clear_value(clear_value.unwrap_or_default())
+}

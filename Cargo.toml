@@ -7,9 +7,10 @@ build = "build.rs"
 [dependencies]
 ash = {version = "0.38.0", features = ["linked"]}
 ash-window = "0.13.0"
-winit = "0.30.9"
 egui-winit = "0.31.1"
 gpu-allocator = "0.27.0"
+nalgebra = "0.33.2"
+winit = "0.30.9"
 
 [lints.clippy]
 pedantic = {level = "warn", priority = 0}
