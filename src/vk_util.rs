@@ -144,7 +144,7 @@ pub fn copy_image_to_image(
     unsafe { device.cmd_blit_image2(cmd, &blit_info) }
 }
 
-fn attachment_info(
+pub fn attachment_info(
     image_view: vk::ImageView,
     clear_value: Option<vk::ClearValue>,
     image_layout: vk::ImageLayout,
@@ -159,4 +159,17 @@ fn attachment_info(
         })
         .store_op(vk::AttachmentStoreOp::STORE)
         .clear_value(clear_value.unwrap_or_default())
+}
+
+pub fn rendering_info<'a>(
+    render_extent: vk::Extent2D,
+    color_attachments: &'a [vk::RenderingAttachmentInfo],
+    depth_attachment: &'a vk::RenderingAttachmentInfo,
+) -> vk::RenderingInfo<'a> {
+    vk::RenderingInfo::default()
+        .render_area(vk::Rect2D::default().extent(render_extent))
+        .layer_count(1)
+        .color_attachments(color_attachments)
+        .depth_attachment(depth_attachment)
+    // .stencil_attachment()
 }

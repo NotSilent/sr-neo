@@ -18,11 +18,11 @@ use nalgebra::Vector4;
 use nalgebra::vector;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-use crate::vk_util;
 use crate::{
     deletion_queue::{DeletionQueue, DeletionType},
     shader_manager::ShaderManager,
 };
+use crate::{pipeline_builder::PipelineBuilder, vk_util};
 
 // TODO: std430
 #[repr(C)]
@@ -148,7 +148,7 @@ struct AllocatedImage {
     image: vk::Image,
     image_view: vk::ImageView,
     image_extent: vk::Extent3D,
-    _image_format: vk::Format,
+    image_format: vk::Format,
     _allocation: Allocation,
 }
 
@@ -212,6 +212,9 @@ pub struct VulkanEngine {
     immediate_fence: vk::Fence,
     immediate_pool: vk::CommandPool,
     immediate_cmd: vk::CommandBuffer,
+
+    triangle_pipeline_layout: vk::PipelineLayout,
+    triangle_pipeline: vk::Pipeline,
 }
 
 impl VulkanEngine {
@@ -390,7 +393,7 @@ impl VulkanEngine {
             image,
             image_view,
             image_extent: draw_image_extent,
-            _image_format: format,
+            image_format: format,
             _allocation: allocation,
         };
 
@@ -476,6 +479,32 @@ impl VulkanEngine {
         let immediate_pool = Self::create_command_pool(&device, graphics_queue_family_index);
         let immediate_cmd = Self::allocate_command_buffer(&device, immediate_pool);
 
+        let triangle_shader = shader_manager.get_graphics_shader(&device, "colored_triangle");
+
+        let triangle_pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default();
+        let triangle_pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&triangle_pipeline_layout_create_info, None)
+                .unwrap()
+        };
+
+        let mut pipeline_builder = PipelineBuilder::default();
+        #[allow(clippy::field_reassign_with_default)]
+        {
+            pipeline_builder.pipeline_layout = triangle_pipeline_layout;
+        }
+        pipeline_builder.set_shaders(triangle_shader.vert, triangle_shader.frag);
+        pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        pipeline_builder.set_polygon_mode(vk::PolygonMode::FILL);
+        pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE); // TODO: COUNTER_CLOCKWISE
+        pipeline_builder.set_multisampling_none();
+        pipeline_builder.disable_blending();
+        pipeline_builder.disable_depth_test();
+        pipeline_builder.set_color_attachment_format(draw_image.image_format);
+        pipeline_builder.set_depth_format(vk::Format::UNDEFINED);
+
+        let triangle_pipeline = pipeline_builder.build_pipeline(&device);
+
         deletion_queue.push(DeletionType::Image(image));
         deletion_queue.push(DeletionType::ImageView(image_view));
         deletion_queue.push(DeletionType::DescriptorSetLayout(
@@ -485,6 +514,8 @@ impl VulkanEngine {
         deletion_queue.push(DeletionType::Pipeline(compute_pipeline));
         deletion_queue.push(DeletionType::Fence(immediate_fence));
         deletion_queue.push(DeletionType::CommandPool(immediate_pool));
+        deletion_queue.push(DeletionType::Pipeline(triangle_pipeline));
+        deletion_queue.push(DeletionType::PipelineLayout(triangle_pipeline_layout));
 
         Self {
             frame_number: 0,
@@ -527,6 +558,9 @@ impl VulkanEngine {
             immediate_fence,
             immediate_pool,
             immediate_cmd,
+
+            triangle_pipeline_layout,
+            triangle_pipeline,
         }
     }
 
@@ -606,6 +640,49 @@ impl VulkanEngine {
         }
     }
 
+    fn draw_geometry(&self, cmd: vk::CommandBuffer) {
+        let Self {
+            device,
+            triangle_pipeline,
+            draw_extent,
+            ..
+        } = self;
+
+        let color_attachment = [vk_util::attachment_info(
+            self.draw_image.image_view,
+            None,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        )];
+
+        let depth_attachment = vk::RenderingAttachmentInfo::default(); // TODO: unneccesary creation of empty struct
+
+        let rendering_info =
+            vk_util::rendering_info(self.draw_extent, &color_attachment, &depth_attachment);
+
+        unsafe {
+            device.cmd_begin_rendering(cmd, &rendering_info);
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *triangle_pipeline);
+        }
+
+        let viewports = [vk::Viewport::default()
+            .width(draw_extent.width as f32)
+            .height(draw_extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0)];
+
+        unsafe {
+            device.cmd_set_viewport(cmd, 0, &viewports);
+        }
+
+        let scissors = [vk::Rect2D::default().extent(*draw_extent)];
+
+        unsafe {
+            device.cmd_set_scissor(cmd, 0, &scissors);
+            device.cmd_draw(cmd, 3, 1, 0, 0);
+            device.cmd_end_rendering(cmd);
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self) {
         let current_frame_fence = self.get_current_frame().fence;
@@ -670,6 +747,16 @@ impl VulkanEngine {
                 cmd,
                 self.draw_image.image,
                 vk::ImageLayout::GENERAL,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            );
+
+            self.draw_geometry(cmd);
+
+            vk_util::transition_image(
+                &self.device,
+                cmd,
+                self.draw_image.image,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             );
 
