@@ -2,6 +2,7 @@ use ash::Device;
 use ash::vk;
 
 pub enum DeletionType {
+    Buffer(vk::Buffer),
     CommandPool(vk::CommandPool),
     DescriptorSetLayout(vk::DescriptorSetLayout),
     Fence(vk::Fence),
@@ -24,6 +25,7 @@ impl DeletionQueue {
     pub fn flush(&mut self, device: &Device) {
         for item in self.queue.iter().rev() {
             match item {
+                DeletionType::Buffer(buffer) => unsafe { device.destroy_buffer(*buffer, None) },
                 DeletionType::CommandPool(command_pool) => unsafe {
                     device.destroy_command_pool(*command_pool, None);
                 },

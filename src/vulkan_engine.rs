@@ -10,12 +10,13 @@ use ash::{
     khr::{surface, swapchain},
     vk::{self, DescriptorPool, PipelineShaderStageCreateInfo},
 };
+
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
 };
-use nalgebra::Vector4;
-use nalgebra::vector;
+
+use nalgebra::{Matrix4, Vector3, Vector4, vector};
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
@@ -23,6 +24,113 @@ use crate::{
     shader_manager::ShaderManager,
 };
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
+
+struct ImmediateSubmit {
+    graphics_queue: vk::Queue,
+    fence: vk::Fence,
+    pool: vk::CommandPool,
+    cmd: vk::CommandBuffer,
+}
+
+impl ImmediateSubmit {
+    pub fn new(
+        device: &Device,
+        graphics_queue: vk::Queue,
+        graphics_queue_family_index: u32,
+    ) -> Self {
+        let pool = vk_util::create_command_pool(device, graphics_queue_family_index);
+        Self {
+            graphics_queue,
+            fence: vk_util::create_fence(device, vk::FenceCreateFlags::SIGNALED),
+            pool,
+            cmd: vk_util::allocate_command_buffer(device, pool),
+        }
+    }
+
+    pub fn destroy(&self, device: &Device) {
+        unsafe {
+            device.destroy_fence(self.fence, None);
+            device.destroy_command_pool(self.pool, None);
+        }
+    }
+
+    pub fn submit<F: Fn(vk::CommandBuffer)>(&self, device: &Device, record: F) {
+        unsafe {
+            device.reset_fences(&[self.fence]).unwrap();
+            device
+                .reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty())
+                .unwrap();
+
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+            device.begin_command_buffer(self.cmd, &begin_info).unwrap();
+
+            record(self.cmd);
+
+            device.end_command_buffer(self.cmd).unwrap();
+
+            let cmd_infos = [vk::CommandBufferSubmitInfo::default()
+                .command_buffer(self.cmd)
+                .device_mask(0)];
+
+            let submit_infos = [vk::SubmitInfo2::default().command_buffer_infos(&cmd_infos)];
+
+            device
+                .queue_submit2(self.graphics_queue, &submit_infos, self.fence)
+                .unwrap();
+
+            device
+                .wait_for_fences(&[self.fence], true, 1_000_000_000)
+                .unwrap();
+        }
+    }
+}
+
+struct AllocatedBuffer {
+    buffer: vk::Buffer,
+    allocation: Option<Allocation>, // TODO: Drop Option<> somehow (maybe put in sparse vec and index for deletion?)
+}
+
+impl AllocatedBuffer {
+    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+        let _ = allocator.free(self.allocation.take().unwrap());
+        unsafe { device.destroy_buffer(self.buffer, None) };
+    }
+}
+
+#[derive(Default, Clone)]
+#[repr(C)]
+struct Vertex {
+    position: Vector3<f32>,
+    uv_x: f32,
+    normal: Vector3<f32>,
+    uv_y: f32,
+    color: Vector4<f32>,
+}
+
+struct GPUMeshBuffers {
+    index_buffer: AllocatedBuffer,
+    vertex_buffer: AllocatedBuffer,
+    vertex_buffer_address: vk::DeviceAddress,
+}
+
+#[repr(C)]
+struct GPUPushDrawConstant {
+    world_matrix: Matrix4<f32>,
+    vertex_buffer: vk::DeviceAddress,
+}
+
+impl GPUPushDrawConstant {
+    fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref::<Self>(self).cast::<u8>(),
+                std::mem::size_of::<Self>(),
+            )
+        }
+    }
+}
 
 // TODO: std430
 #[repr(C)]
@@ -209,12 +317,15 @@ pub struct VulkanEngine {
     gradient_pipeline_layout: vk::PipelineLayout,
     gradient_pipeline: vk::Pipeline,
 
-    immediate_fence: vk::Fence,
-    immediate_pool: vk::CommandPool,
-    immediate_cmd: vk::CommandBuffer,
-
     triangle_pipeline_layout: vk::PipelineLayout,
     triangle_pipeline: vk::Pipeline,
+
+    immediate_submit: ImmediateSubmit,
+
+    triangle_mesh_pipeline_layout: vk::PipelineLayout,
+    triangle_mesh_pipeline: vk::Pipeline,
+
+    rectangle: GPUMeshBuffers,
 }
 
 impl VulkanEngine {
@@ -335,13 +446,15 @@ impl VulkanEngine {
 
         // TODO: Abstract
         let mut frames: [FrameData; FRAME_OVERLAP] = [FrameData::default(), FrameData::default()];
-        frames[0].command_pool = Self::create_command_pool(&device, graphics_queue_family_index);
-        frames[0].command_buffer = Self::allocate_command_buffer(&device, frames[0].command_pool);
+        frames[0].command_pool = vk_util::create_command_pool(&device, graphics_queue_family_index);
+        frames[0].command_buffer =
+            vk_util::allocate_command_buffer(&device, frames[0].command_pool);
         frames[0].fence = vk_util::create_fence(&device, vk::FenceCreateFlags::SIGNALED);
         frames[0].swapchain_semaphore = vk_util::create_semaphore(&device);
         frames[0].render_semaphore = vk_util::create_semaphore(&device);
-        frames[1].command_pool = Self::create_command_pool(&device, graphics_queue_family_index);
-        frames[1].command_buffer = Self::allocate_command_buffer(&device, frames[1].command_pool);
+        frames[1].command_pool = vk_util::create_command_pool(&device, graphics_queue_family_index);
+        frames[1].command_buffer =
+            vk_util::allocate_command_buffer(&device, frames[1].command_pool);
         frames[1].fence = vk_util::create_fence(&device, vk::FenceCreateFlags::SIGNALED);
         frames[1].swapchain_semaphore = vk_util::create_semaphore(&device);
         frames[1].render_semaphore = vk_util::create_semaphore(&device);
@@ -475,9 +588,7 @@ impl VulkanEngine {
         .unwrap();
         // ~init pipelines
 
-        let immediate_fence = vk_util::create_fence(&device, vk::FenceCreateFlags::SIGNALED);
-        let immediate_pool = Self::create_command_pool(&device, graphics_queue_family_index);
-        let immediate_cmd = Self::allocate_command_buffer(&device, immediate_pool);
+        // triangle
 
         let triangle_shader = shader_manager.get_graphics_shader(&device, "colored_triangle");
 
@@ -505,6 +616,48 @@ impl VulkanEngine {
 
         let triangle_pipeline = pipeline_builder.build_pipeline(&device);
 
+        // ~triangle
+
+        let immediate_submit =
+            ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
+
+        // ~mesh
+
+        let triangle_mesh_shader =
+            shader_manager.get_graphics_shader(&device, "colored_triangle_mesh");
+
+        let buffer_ranges = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .size(std::mem::size_of::<GPUPushDrawConstant>() as u32)];
+
+        let triangle_mesh_pipeline_layout_create_info =
+            vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&buffer_ranges);
+
+        let triangle_mesh_pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&triangle_mesh_pipeline_layout_create_info, None)
+                .unwrap()
+        };
+
+        let mut mesh_pipeline_builder = PipelineBuilder::default();
+        #[allow(clippy::field_reassign_with_default)]
+        {
+            mesh_pipeline_builder.pipeline_layout = triangle_mesh_pipeline_layout;
+        }
+        mesh_pipeline_builder.set_shaders(triangle_mesh_shader.vert, triangle_mesh_shader.frag);
+        mesh_pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        mesh_pipeline_builder.set_polygon_mode(vk::PolygonMode::FILL);
+        mesh_pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE); // TODO: COUNTER_CLOCKWISE
+        mesh_pipeline_builder.set_multisampling_none();
+        mesh_pipeline_builder.disable_blending();
+        mesh_pipeline_builder.disable_depth_test();
+        mesh_pipeline_builder.set_color_attachment_format(draw_image.image_format);
+        mesh_pipeline_builder.set_depth_format(vk::Format::UNDEFINED);
+
+        let triangle_mesh_pipeline = mesh_pipeline_builder.build_pipeline(&device);
+
+        // ~mesh
+
         deletion_queue.push(DeletionType::Image(image));
         deletion_queue.push(DeletionType::ImageView(image_view));
         deletion_queue.push(DeletionType::DescriptorSetLayout(
@@ -512,10 +665,46 @@ impl VulkanEngine {
         ));
         deletion_queue.push(DeletionType::PipelineLayout(compute_layout));
         deletion_queue.push(DeletionType::Pipeline(compute_pipeline));
-        deletion_queue.push(DeletionType::Fence(immediate_fence));
-        deletion_queue.push(DeletionType::CommandPool(immediate_pool));
         deletion_queue.push(DeletionType::Pipeline(triangle_pipeline));
         deletion_queue.push(DeletionType::PipelineLayout(triangle_pipeline_layout));
+        deletion_queue.push(DeletionType::Pipeline(triangle_mesh_pipeline));
+        deletion_queue.push(DeletionType::PipelineLayout(triangle_mesh_pipeline_layout));
+
+        let rect_indices = [0, 1, 2, 2, 1, 3];
+
+        let mut vertex = Vertex::default();
+        let mut rect_vertices = vec![];
+
+        vertex.position = vector![0.5, -0.5, 0.0];
+        vertex.color = vector![0.0, 0.0, 0.0, 1.0];
+
+        rect_vertices.push(vertex.clone());
+
+        vertex.position = vector![0.5, 0.5, 0.0];
+        vertex.color = vector![0.5, 0.5, 0.5, 1.0];
+
+        rect_vertices.push(vertex.clone());
+
+        vertex.position = vector![-0.5, -0.5, 0.0];
+        vertex.color = vector![1.0, 0.0, 0.0, 1.0];
+
+        rect_vertices.push(vertex.clone());
+
+        vertex.position = vector![-0.5, 0.5, 0.0];
+        vertex.color = vector![0.0, 1.0, 0.0, 1.0];
+
+        rect_vertices.push(vertex);
+
+        let rectangle = Self::upload_mesh(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            &rect_indices,
+            &rect_vertices,
+        );
+
+        deletion_queue.push(DeletionType::Buffer(rectangle.index_buffer.buffer));
+        deletion_queue.push(DeletionType::Buffer(rectangle.vertex_buffer.buffer));
 
         Self {
             frame_number: 0,
@@ -555,12 +744,15 @@ impl VulkanEngine {
             gradient_pipeline_layout: compute_layout,
             gradient_pipeline: compute_pipeline,
 
-            immediate_fence,
-            immediate_pool,
-            immediate_cmd,
-
             triangle_pipeline_layout,
             triangle_pipeline,
+
+            immediate_submit,
+
+            triangle_mesh_pipeline_layout,
+            triangle_mesh_pipeline,
+
+            rectangle,
         }
     }
 
@@ -584,6 +776,8 @@ impl VulkanEngine {
         self.shader_manager.destroy(&self.device);
 
         self.descriptor_allocator.destroy_pool(&self.device);
+
+        self.immediate_submit.destroy(&self.device);
 
         self.deletion_queue.flush(&self.device);
 
@@ -645,6 +839,9 @@ impl VulkanEngine {
             device,
             triangle_pipeline,
             draw_extent,
+            triangle_mesh_pipeline_layout,
+            triangle_mesh_pipeline,
+            rectangle,
             ..
         } = self;
 
@@ -670,15 +867,45 @@ impl VulkanEngine {
             .min_depth(0.0)
             .max_depth(1.0)];
 
-        unsafe {
-            device.cmd_set_viewport(cmd, 0, &viewports);
-        }
-
         let scissors = [vk::Rect2D::default().extent(*draw_extent)];
 
         unsafe {
+            device.cmd_set_viewport(cmd, 0, &viewports);
             device.cmd_set_scissor(cmd, 0, &scissors);
             device.cmd_draw(cmd, 3, 1, 0, 0);
+        }
+
+        let push_constants = GPUPushDrawConstant {
+            world_matrix: Matrix4::identity(),
+            vertex_buffer: rectangle.vertex_buffer_address,
+        };
+
+        unsafe {
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                *triangle_mesh_pipeline,
+            );
+
+            device.cmd_push_constants(
+                cmd,
+                *triangle_mesh_pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                push_constants.as_bytes(),
+            );
+
+            device.cmd_bind_index_buffer(
+                cmd,
+                rectangle.index_buffer.buffer,
+                0,
+                vk::IndexType::UINT32,
+            );
+
+            device.cmd_draw_indexed(cmd, 6, 1, 0, 0, 0);
+        };
+
+        unsafe {
             device.cmd_end_rendering(cmd);
         }
     }
@@ -1008,64 +1235,136 @@ impl VulkanEngine {
             .unwrap()
     }
 
-    fn create_command_pool(device: &Device, graphics_queue_family_index: u32) -> vk::CommandPool {
-        let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(graphics_queue_family_index)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        unsafe {
-            device
-                .create_command_pool(&command_pool_create_info, None)
-                .unwrap()
-        }
-    }
-
-    fn allocate_command_buffer(
+    fn create_buffer(
         device: &Device,
-        command_pool: vk::CommandPool,
-    ) -> vk::CommandBuffer {
-        let allocate_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
-            .command_buffer_count(1)
-            .level(vk::CommandBufferLevel::PRIMARY);
+        allocator: &mut Allocator,
+        alloc_size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        memory_location: MemoryLocation,
+    ) -> AllocatedBuffer {
+        let create_info = vk::BufferCreateInfo::default()
+            .size(alloc_size)
+            .usage(usage);
+
+        let buffer = unsafe { device.create_buffer(&create_info, None).unwrap() };
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+        let allocation_info = AllocationCreateDesc {
+            name: "buffer", // TODO: Proper name
+            requirements,
+            location: memory_location,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+
+        let allocation = allocator.allocate(&allocation_info).unwrap();
 
         unsafe {
             device
-                .allocate_command_buffers(&allocate_info)
-                .expect("Failed to allocate command buffer")[0] // TODO: Safe
+                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+                .unwrap();
+        };
+
+        AllocatedBuffer {
+            buffer,
+            allocation: Some(allocation),
         }
     }
 
-    fn immediate_submit<F: Fn(vk::CommandBuffer)>(&self, record: F) {
+    // TODO: Background thread, reuse staging
+    fn upload_mesh(
+        device: &Device,
+        allocator: &mut Allocator,
+        immediate_submit: &ImmediateSubmit,
+        indices: &[u32],
+        vertices: &[Vertex],
+    ) -> GPUMeshBuffers {
+        let index_buffer_size = std::mem::size_of_val(indices) as vk::DeviceSize;
+        let vertex_buffer_size = std::mem::size_of_val(vertices) as vk::DeviceSize;
+
+        let index_buffer = Self::create_buffer(
+            device,
+            allocator,
+            index_buffer_size,
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+        );
+
+        let vertex_buffer = Self::create_buffer(
+            device,
+            allocator,
+            vertex_buffer_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::GpuOnly,
+        );
+
+        let info = vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer.buffer);
+        let vertex_buffer_address = unsafe { device.get_buffer_device_address(&info) };
+
+        // TODO: Allocation separate?
+
+        let mut staging = Self::create_buffer(
+            device,
+            allocator,
+            index_buffer_size + vertex_buffer_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            MemoryLocation::CpuToGpu,
+        );
+
         unsafe {
-            self.device.reset_fences(&[self.immediate_fence]).unwrap();
-            self.device
-                .reset_command_buffer(self.immediate_cmd, vk::CommandBufferResetFlags::empty())
-                .unwrap();
+            std::ptr::copy(
+                indices.as_ptr(),
+                staging
+                    .allocation
+                    .as_ref()
+                    .unwrap()
+                    .mapped_ptr()
+                    .unwrap()
+                    .cast()
+                    .as_ptr(),
+                indices.len(),
+            );
 
-            let begin_info = vk::CommandBufferBeginInfo::default()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            std::ptr::copy(
+                vertices.as_ptr(),
+                staging
+                    .allocation
+                    .as_ref()
+                    .unwrap()
+                    .mapped_ptr()
+                    .unwrap()
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(index_buffer_size as usize)
+                    .cast(),
+                vertices.len(),
+            );
+        };
 
-            self.device
-                .begin_command_buffer(self.immediate_cmd, &begin_info)
-                .unwrap();
+        immediate_submit.submit(device, |cmd| {
+            let index_regions = [vk::BufferCopy::default().size(index_buffer_size)];
 
-            record(self.immediate_cmd);
+            unsafe {
+                device.cmd_copy_buffer(cmd, staging.buffer, index_buffer.buffer, &index_regions);
+            };
 
-            self.device.end_command_buffer(self.immediate_cmd).unwrap();
+            let vertex_regions = [vk::BufferCopy::default()
+                .src_offset(index_buffer_size)
+                .size(vertex_buffer_size)];
 
-            let cmd_infos = [vk::CommandBufferSubmitInfo::default()
-                .command_buffer(self.immediate_cmd)
-                .device_mask(0)];
+            unsafe {
+                device.cmd_copy_buffer(cmd, staging.buffer, vertex_buffer.buffer, &vertex_regions);
+            }
+        });
 
-            let submit_infos = [vk::SubmitInfo2::default().command_buffer_infos(&cmd_infos)];
+        staging.destroy(device, allocator);
 
-            self.device
-                .queue_submit2(self.graphics_queue, &submit_infos, self.immediate_fence)
-                .unwrap();
-
-            self.device
-                .wait_for_fences(&[self.immediate_fence], true, 1_000_000_000)
-                .unwrap();
+        self::GPUMeshBuffers {
+            index_buffer,
+            vertex_buffer,
+            vertex_buffer_address,
         }
     }
 }

@@ -20,6 +20,33 @@ pub fn create_semaphore(device: &Device) -> vk::Semaphore {
     }
 }
 
+pub fn create_command_pool(device: &Device, graphics_queue_family_index: u32) -> vk::CommandPool {
+    let command_pool_create_info = vk::CommandPoolCreateInfo::default()
+        .queue_family_index(graphics_queue_family_index)
+        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+    unsafe {
+        device
+            .create_command_pool(&command_pool_create_info, None)
+            .unwrap()
+    }
+}
+
+pub fn allocate_command_buffer(
+    device: &Device,
+    command_pool: vk::CommandPool,
+) -> vk::CommandBuffer {
+    let allocate_info = vk::CommandBufferAllocateInfo::default()
+        .command_pool(command_pool)
+        .command_buffer_count(1)
+        .level(vk::CommandBufferLevel::PRIMARY);
+
+    unsafe {
+        device
+            .allocate_command_buffers(&allocate_info)
+            .expect("Failed to allocate command buffer")[0] // TODO: Safe
+    }
+}
+
 pub fn transition_image(
     device: &Device,
     cmd: vk::CommandBuffer,
