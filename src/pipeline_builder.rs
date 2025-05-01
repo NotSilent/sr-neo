@@ -7,7 +7,7 @@ pub struct PipelineBuilder<'a> {
     rasterizer: vk::PipelineRasterizationStateCreateInfo<'a>,
     color_blend_attachment: vk::PipelineColorBlendAttachmentState, // TODO: multiple
     multisampling: vk::PipelineMultisampleStateCreateInfo<'a>,
-    pub pipeline_layout: vk::PipelineLayout,
+    pipeline_layout: vk::PipelineLayout,
     depth_stencil: vk::PipelineDepthStencilStateCreateInfo<'a>,
     render_info: vk::PipelineRenderingCreateInfo<'a>,
     color_attachment_format: vk::Format,
@@ -54,7 +54,7 @@ impl PipelineBuilder<'_> {
         }
     }
 
-    pub fn set_shaders(&mut self, vertex: vk::ShaderModule, fragment: vk::ShaderModule) {
+    pub fn set_shaders(mut self, vertex: vk::ShaderModule, fragment: vk::ShaderModule) -> Self {
         self.shader_stages.clear();
 
         self.shader_stages.push(
@@ -69,49 +69,115 @@ impl PipelineBuilder<'_> {
                 .module(fragment)
                 .name(c"main"),
         );
+
+        self
     }
 
-    pub fn set_input_topology(&mut self, topology: vk::PrimitiveTopology) {
+    pub fn set_input_topology(mut self, topology: vk::PrimitiveTopology) -> Self {
         // TODO: set directly
         self.input_assembly.topology = topology;
         self.input_assembly.primitive_restart_enable = vk::FALSE;
+
+        self
     }
 
-    pub fn set_polygon_mode(&mut self, polygon_mode: vk::PolygonMode) {
+    pub fn set_polygon_mode(mut self, polygon_mode: vk::PolygonMode) -> Self {
         self.rasterizer.polygon_mode = polygon_mode;
         self.rasterizer.line_width = 1.0;
+
+        self
     }
 
-    pub fn set_cull_mode(&mut self, cull_mode: vk::CullModeFlags, front_face: vk::FrontFace) {
+    pub fn set_cull_mode(
+        mut self,
+        cull_mode: vk::CullModeFlags,
+        front_face: vk::FrontFace,
+    ) -> Self {
         self.rasterizer.cull_mode = cull_mode;
         self.rasterizer.front_face = front_face;
+
+        self
     }
 
-    pub fn set_multisampling_none(&mut self) {
-        let Self { multisampling, .. } = self;
+    pub fn set_multisampling_none(mut self) -> Self {
+        let Self { multisampling, .. } = &mut self;
+
         multisampling.sample_shading_enable = vk::FALSE;
         multisampling.rasterization_samples = vk::SampleCountFlags::TYPE_1;
         multisampling.min_sample_shading = 1.0;
         multisampling.alpha_to_coverage_enable = vk::FALSE;
         multisampling.alpha_to_one_enable = vk::FALSE;
+
+        self
     }
 
-    pub fn disable_blending(&mut self) {
+    pub fn set_pipeline_layout(mut self, pipeline_layout: vk::PipelineLayout) -> Self {
+        self.pipeline_layout = pipeline_layout;
+
+        self
+    }
+
+    pub fn disable_blending(mut self) -> Self {
         self.color_blend_attachment.color_write_mask = vk::ColorComponentFlags::RGBA;
         self.color_blend_attachment.blend_enable = vk::FALSE;
+
+        self
     }
 
-    pub fn set_color_attachment_format(&mut self, format: vk::Format) {
+    pub fn enable_blending_additive(mut self) -> Self {
+        let Self {
+            color_blend_attachment,
+            ..
+        } = &mut self;
+
+        color_blend_attachment.color_write_mask = vk::ColorComponentFlags::R
+            | vk::ColorComponentFlags::G
+            | vk::ColorComponentFlags::B
+            | vk::ColorComponentFlags::A;
+        color_blend_attachment.blend_enable = vk::TRUE;
+        color_blend_attachment.src_color_blend_factor = vk::BlendFactor::SRC_ALPHA;
+        color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::ONE;
+        color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
+        color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
+        color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
+        color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
+
+        self
+    }
+
+    pub fn enable_blending_alphablend(mut self) -> Self {
+        let Self {
+            color_blend_attachment,
+            ..
+        } = &mut self;
+
+        color_blend_attachment.color_write_mask = vk::ColorComponentFlags::RGBA;
+        color_blend_attachment.blend_enable = vk::TRUE;
+        color_blend_attachment.src_color_blend_factor = vk::BlendFactor::SRC_ALPHA;
+        color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::ONE_MINUS_SRC_ALPHA;
+        color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
+        color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
+        color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
+        color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
+
+        self
+    }
+
+    pub fn set_color_attachment_format(mut self, format: vk::Format) -> Self {
         self.color_attachment_format = format;
         let _ = self.render_info.color_attachment_formats(&[format]);
+
+        self
     }
 
-    pub fn set_depth_format(&mut self, format: vk::Format) {
+    pub fn set_depth_format(mut self, format: vk::Format) -> Self {
         self.render_info.depth_attachment_format = format;
+
+        self
     }
 
-    pub fn disable_depth_test(&mut self) {
-        let Self { depth_stencil, .. } = self;
+    pub fn disable_depth_test(mut self) -> Self {
+        let Self { depth_stencil, .. } = &mut self;
 
         depth_stencil.depth_test_enable = vk::FALSE;
         depth_stencil.depth_write_enable = vk::FALSE;
@@ -121,10 +187,16 @@ impl PipelineBuilder<'_> {
         depth_stencil.back = vk::StencilOpState::default();
         depth_stencil.min_depth_bounds = 0.0;
         depth_stencil.max_depth_bounds = 1.0;
+
+        self
     }
 
-    pub fn enable_depth_test(&mut self, depth_write_enable: vk::Bool32, compare_op: vk::CompareOp) {
-        let Self { depth_stencil, .. } = self;
+    pub fn enable_depth_test(
+        mut self,
+        depth_write_enable: vk::Bool32,
+        compare_op: vk::CompareOp,
+    ) -> Self {
+        let Self { depth_stencil, .. } = &mut self;
 
         depth_stencil.depth_test_enable = vk::TRUE;
         depth_stencil.depth_write_enable = depth_write_enable;
@@ -134,5 +206,7 @@ impl PipelineBuilder<'_> {
         depth_stencil.back = vk::StencilOpState::default();
         depth_stencil.min_depth_bounds = 0.0;
         depth_stencil.max_depth_bounds = 1.0;
+
+        self
     }
 }

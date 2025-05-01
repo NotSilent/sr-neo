@@ -40,18 +40,6 @@ impl ApplicationHandler for App<'_> {
         let width = 1920;
         let height = 1080;
 
-        // if let Ok(window) = event_loop.create_window(
-        //     Window::default_attributes().with_inner_size(PhysicalSize::new(width, height)),
-        // ) {
-        //     self.vulkan_engine = Some(VulkanEngine::new(
-        //         window.display_handle().unwrap().as_raw(),
-        //         window.window_handle().unwrap().as_raw(),
-        //         width,
-        //         height,
-        //     ));
-        //     self.window = Some(window);
-        // }
-
         let egui_ctx = egui::Context::default();
 
         let window = egui_winit::create_window(

@@ -8,7 +8,7 @@ use ash::{
     Device, Entry, Instance,
     ext::debug_utils,
     khr::{surface, swapchain},
-    vk::{self, DescriptorPool, PipelineShaderStageCreateInfo},
+    vk,
 };
 
 use gpu_allocator::{
@@ -218,7 +218,7 @@ struct PoolSizeRatio {
 
 #[derive(Default)]
 struct DescriptorAllocator {
-    pool: DescriptorPool,
+    pool: vk::DescriptorPool,
 }
 
 impl DescriptorAllocator {
@@ -632,7 +632,7 @@ impl VulkanEngine {
 
         let compute_shader = shader_manager.get_compute_shader(&device, "gradient_color");
 
-        let stage_info = PipelineShaderStageCreateInfo::default()
+        let stage_info = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(compute_shader)
             .name(c"main");
@@ -685,17 +685,18 @@ impl VulkanEngine {
                 .unwrap()
         };
 
-        let mut mesh_pipeline_builder = PipelineBuilder::default();
-        mesh_pipeline_builder.pipeline_layout = triangle_mesh_pipeline_layout;
-        mesh_pipeline_builder.set_shaders(triangle_mesh_shader.vert, triangle_mesh_shader.frag);
-        mesh_pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        mesh_pipeline_builder.set_polygon_mode(vk::PolygonMode::FILL);
-        mesh_pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE); // TODO: COUNTER_CLOCKWISE
-        mesh_pipeline_builder.set_multisampling_none();
-        mesh_pipeline_builder.disable_blending();
-        mesh_pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL);
-        mesh_pipeline_builder.set_color_attachment_format(draw_image.image_format);
-        mesh_pipeline_builder.set_depth_format(depth_image.image_format);
+        let mut mesh_pipeline_builder = PipelineBuilder::default()
+            .set_shaders(triangle_mesh_shader.vert, triangle_mesh_shader.frag)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE) // TODO COUNTER_CLOCKWISE
+            .set_multisampling_none()
+            .set_pipeline_layout(triangle_mesh_pipeline_layout)
+            //.disable_blending()
+            .enable_blending_additive()
+            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
+            .set_color_attachment_format(draw_image.image_format)
+            .set_depth_format(depth_image.image_format);
 
         let triangle_mesh_pipeline = mesh_pipeline_builder.build_pipeline(&device);
 
@@ -946,9 +947,13 @@ impl VulkanEngine {
 
         let projection = Self::get_projection(aspect_ratio, fov, near, far);
 
-        let view = Translation3::new(0.0, 0.0, 5.0).inverse().to_homogeneous();
+        // let view = Translation3::new(0.0, 0.0, 5.0).inverse().to_homogeneous();
 
-        let world = Translation3::new(2.0, 1.0, 2.5).to_homogeneous();
+        // let world = Translation3::new(2.0, 1.0, 2.5).to_homogeneous();
+
+        let view = Translation3::new(0.0, 0.0, 0.0).inverse().to_homogeneous();
+
+        let world = Translation3::new(0.0, 0.0, -5.0).to_homogeneous();
         // let world =
         //     Rotation3::from_axis_angle(&Vector3::y_axis(), 180_f32.to_radians()).to_homogeneous();
 
@@ -990,6 +995,32 @@ impl VulkanEngine {
                 mesh_assets[2].mesh_buffers.index_buffer.buffer,
                 0,
                 vk::IndexType::UINT32,
+            );
+
+            device.cmd_draw_indexed(
+                cmd,
+                mesh_assets[2].surfaces[0].count,
+                1,
+                mesh_assets[2].surfaces[0].start_index,
+                0,
+                0,
+            );
+
+            let world = Translation3::new(3.0, 0.0, -5.0).to_homogeneous();
+            // let world =
+            //     Rotation3::from_axis_angle(&Vector3::y_axis(), 180_f32.to_radians()).to_homogeneous();
+
+            let push_constants = GPUPushDrawConstant {
+                world_matrix: projection * view * world,
+                vertex_buffer: mesh_assets[2].mesh_buffers.vertex_buffer_address,
+            };
+
+            device.cmd_push_constants(
+                cmd,
+                *triangle_mesh_pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                push_constants.as_bytes(),
             );
 
             device.cmd_draw_indexed(
@@ -1317,7 +1348,7 @@ impl VulkanEngine {
         // TODO: based on capabilities
         let create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
-            .min_image_count(2)
+            .min_image_count(3)
             .image_format(surface_format.format)
             .image_color_space(surface_format.color_space)
             .image_extent(render_area.extent)
