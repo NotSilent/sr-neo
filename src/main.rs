@@ -1,3 +1,5 @@
+use std::env;
+
 use egui_winit::egui::{ViewportBuilder, ViewportInfo};
 use egui_winit::{State, egui};
 use vulkan_engine::VulkanEngine;
@@ -16,15 +18,23 @@ mod vk_util;
 mod vulkan_engine;
 
 #[derive(Default)]
-struct App {
+struct App<'a> {
     state: Option<State>,
     window: Option<Window>,
     viewport_info: Option<ViewportInfo>,
     vulkan_engine: Option<VulkanEngine>,
     is_closing: bool,
+
+    gltf_name: Option<&'a str>,
 }
 
-impl ApplicationHandler for App {
+impl<'a> App<'a> {
+    fn set_gltf_to_load(&mut self, gltf_name: &'a str) {
+        self.gltf_name = Some(gltf_name);
+    }
+}
+
+impl ApplicationHandler for App<'_> {
     // This is a common indicator that you can create a window.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let width = 1920;
@@ -70,6 +80,7 @@ impl ApplicationHandler for App {
             window.window_handle().unwrap().as_raw(),
             width,
             height,
+            self.gltf_name.unwrap(),
         );
 
         self.state = Some(state);
@@ -141,8 +152,15 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    let mut app = App::default();
-    let _ = event_loop.run_app(&mut app);
+    let env_args: Vec<String> = env::args().collect();
+
+    if let Some(gltf_name) = env_args.iter().find_map(|arg| arg.split('=').nth(1)) {
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+
+        let mut app = App::default();
+        app.set_gltf_to_load(gltf_name);
+
+        let _ = event_loop.run_app(&mut app);
+    }
 }

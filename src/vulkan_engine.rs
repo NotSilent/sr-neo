@@ -16,7 +16,7 @@ use gpu_allocator::{
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
 };
 
-use nalgebra::{Matrix4, Vector3, Vector4, vector};
+use nalgebra::{Matrix4, Rotation3, Translation3, Vector3, Vector4, vector};
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
@@ -24,6 +24,24 @@ use crate::{
     shader_manager::ShaderManager,
 };
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
+
+struct GeoSurface {
+    start_index: u32,
+    count: u32,
+}
+
+struct MeshAsset {
+    name: String,
+    surfaces: Vec<GeoSurface>,
+    mesh_buffers: GPUMeshBuffers,
+}
+
+impl MeshAsset {
+    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+        self.mesh_buffers.index_buffer.destroy(device, allocator);
+        self.mesh_buffers.vertex_buffer.destroy(device, allocator);
+    }
+}
 
 struct ImmediateSubmit {
     graphics_queue: vk::Queue,
@@ -326,6 +344,8 @@ pub struct VulkanEngine {
     triangle_mesh_pipeline: vk::Pipeline,
 
     rectangle: GPUMeshBuffers,
+
+    mesh_assets: Vec<MeshAsset>,
 }
 
 impl VulkanEngine {
@@ -365,6 +385,7 @@ impl VulkanEngine {
         window_handle: RawWindowHandle,
         width: u32,
         height: u32,
+        gltf_name: &str,
     ) -> Self {
         let entry = Entry::linked();
         let instance = Self::create_instance(&entry, display_handle);
@@ -706,6 +727,13 @@ impl VulkanEngine {
         deletion_queue.push(DeletionType::Buffer(rectangle.index_buffer.buffer));
         deletion_queue.push(DeletionType::Buffer(rectangle.vertex_buffer.buffer));
 
+        let mesh_assets = Self::load_gltf_meshes(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            std::path::PathBuf::from(gltf_name).as_path(),
+        );
+
         Self {
             frame_number: 0,
             _stop_rendering: false,
@@ -753,6 +781,8 @@ impl VulkanEngine {
             triangle_mesh_pipeline,
 
             rectangle,
+
+            mesh_assets: mesh_assets.unwrap(),
         }
     }
 
@@ -771,6 +801,10 @@ impl VulkanEngine {
 
         for &image_view in &self.swapchain_image_views {
             unsafe { self.device.destroy_image_view(image_view, None) };
+        }
+
+        for mesh_asset in &mut self.mesh_assets {
+            mesh_asset.destroy(&self.device, self.allocator.as_mut().unwrap());
         }
 
         self.shader_manager.destroy(&self.device);
@@ -834,6 +868,34 @@ impl VulkanEngine {
         }
     }
 
+    fn get_projection(aspect_ratio: f32, fov: f32, near: f32, far: f32) -> Matrix4<f32> {
+        let projection = Matrix4::new(
+            aspect_ratio / (fov / 2.0).tan(),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0 / (fov / 2.0).tan(),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            far / (far - near),
+            1.0,
+            0.0,
+            0.0,
+            -(near * far) / (far - near),
+            0.0,
+        )
+        .transpose();
+
+        let view_to_clip =
+            Rotation3::from_axis_angle(&Vector3::x_axis(), 180.0_f32.to_radians()).to_homogeneous();
+
+        projection * view_to_clip
+    }
+
+    //#[allow(clippy::too_many_lines)]
     fn draw_geometry(&self, cmd: vk::CommandBuffer) {
         let Self {
             device,
@@ -842,6 +904,7 @@ impl VulkanEngine {
             triangle_mesh_pipeline_layout,
             triangle_mesh_pipeline,
             rectangle,
+            mesh_assets,
             ..
         } = self;
 
@@ -872,11 +935,22 @@ impl VulkanEngine {
         unsafe {
             device.cmd_set_viewport(cmd, 0, &viewports);
             device.cmd_set_scissor(cmd, 0, &scissors);
-            device.cmd_draw(cmd, 3, 1, 0, 0);
+            //device.cmd_draw(cmd, 3, 1, 0, 0);
         }
 
-        let push_constants = GPUPushDrawConstant {
-            world_matrix: Matrix4::identity(),
+        let aspect_ratio = draw_extent.height as f32 / draw_extent.width as f32;
+        let fov = 90_f32.to_radians();
+        let near = 100.0;
+        let far = 0.0;
+
+        let projection = Self::get_projection(aspect_ratio, fov, near, far);
+
+        let view = Translation3::new(0.0, 0.0, 0.0).inverse().to_homogeneous();
+
+        let world = Translation3::new(1.0, 2.0, -5.0).to_homogeneous();
+
+        let mut push_constants = GPUPushDrawConstant {
+            world_matrix: projection * view * world,
             vertex_buffer: rectangle.vertex_buffer_address,
         };
 
@@ -902,7 +976,33 @@ impl VulkanEngine {
                 vk::IndexType::UINT32,
             );
 
-            device.cmd_draw_indexed(cmd, 6, 1, 0, 0, 0);
+            //device.cmd_draw_indexed(cmd, 6, 1, 0, 0, 0);
+
+            push_constants.vertex_buffer = mesh_assets[2].mesh_buffers.vertex_buffer_address;
+
+            device.cmd_push_constants(
+                cmd,
+                *triangle_mesh_pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                push_constants.as_bytes(),
+            );
+
+            device.cmd_bind_index_buffer(
+                cmd,
+                mesh_assets[2].mesh_buffers.index_buffer.buffer,
+                0,
+                vk::IndexType::UINT32,
+            );
+
+            device.cmd_draw_indexed(
+                cmd,
+                mesh_assets[2].surfaces[0].count,
+                1,
+                mesh_assets[2].surfaces[0].start_index,
+                0,
+                0,
+            );
         };
 
         unsafe {
@@ -1366,5 +1466,118 @@ impl VulkanEngine {
             vertex_buffer,
             vertex_buffer_address,
         }
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn load_gltf_meshes(
+        device: &Device,
+        allocator: &mut Allocator,
+        immediate_submit: &ImmediateSubmit,
+        file_path: &std::path::Path,
+    ) -> Option<Vec<MeshAsset>> {
+        println!("Loading GLTF: {}", file_path.display());
+
+        let (gltf, buffers, _images) = gltf::import(file_path).unwrap();
+
+        let mut mesh_assets = vec![];
+        let mut indices: Vec<u32> = vec![];
+        let mut vertices: Vec<Vertex> = vec![];
+
+        for mesh in gltf.meshes() {
+            indices.clear();
+            vertices.clear();
+            let mut surfaces: Vec<GeoSurface> = vec![];
+
+            // TODO: Pack same vertexes
+            for primitive in mesh.primitives() {
+                let start_index = indices.len();
+                let count = primitive.indices().unwrap().count(); // ?
+
+                surfaces.push(GeoSurface {
+                    start_index: start_index as u32,
+                    count: count as u32,
+                });
+
+                let initial_vtx = vertices.len();
+
+                // Load indexes
+
+                // TODO: Can this be cleaner?
+                let reader = primitive
+                    .reader(|buffer| buffers.get(buffer.index()).map(std::ops::Deref::deref));
+
+                indices.reserve(count);
+
+                reader.read_indices().unwrap().into_u32().for_each(|value| {
+                    indices.push(value + initial_vtx as u32);
+                });
+
+                // Load POSITION
+                vertices.reserve(count);
+
+                for position in reader.read_positions().unwrap() {
+                    let vertex = Vertex {
+                        position: position.into(),
+                        uv_x: 0.0,
+                        normal: vector![1.0, 0.0, 0.0],
+                        uv_y: 0.0,
+                        color: Vector4::from_element(1.0),
+                    };
+
+                    vertices.push(vertex);
+                }
+
+                // Load NORMAL
+                if let Some(normals) = reader.read_normals() {
+                    let vertices = &mut vertices[initial_vtx..];
+
+                    for (vertex, normal) in vertices.iter_mut().zip(normals.into_iter()) {
+                        vertex.normal = normal.into();
+                    }
+                }
+
+                // Load TEXCOORD_0
+                if let Some(tex_coords) = reader.read_tex_coords(0) {
+                    let vertices = &mut vertices[initial_vtx..];
+
+                    for (vertex, [x, y]) in vertices.iter_mut().zip(tex_coords.into_f32()) {
+                        vertex.uv_x = x;
+                        vertex.uv_y = y;
+                    }
+                }
+
+                // Load COLOR_0
+                if let Some(colors) = reader.read_colors(0) {
+                    let vertices = &mut vertices[initial_vtx..];
+
+                    for (vertex, color) in vertices.iter_mut().zip(colors.into_rgba_f32()) {
+                        vertex.color = color.into();
+                    }
+                }
+
+                {
+                    const OVERRIDE_COLORS: bool = true;
+                    if OVERRIDE_COLORS {
+                        for vertex in &mut vertices {
+                            vertex.color = vertex.normal.push(1.0);
+                        }
+                    }
+                }
+            }
+
+            mesh_assets.push(MeshAsset {
+                name: mesh.name().unwrap().into(),
+                surfaces,
+                mesh_buffers: Self::upload_mesh(
+                    device,
+                    allocator,
+                    immediate_submit,
+                    &indices,
+                    &vertices,
+                ),
+            });
+        }
+
+        Some(mesh_assets)
     }
 }
