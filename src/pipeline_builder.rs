@@ -122,4 +122,17 @@ impl PipelineBuilder<'_> {
         depth_stencil.min_depth_bounds = 0.0;
         depth_stencil.max_depth_bounds = 1.0;
     }
+
+    pub fn enable_depth_test(&mut self, depth_write_enable: vk::Bool32, compare_op: vk::CompareOp) {
+        let Self { depth_stencil, .. } = self;
+
+        depth_stencil.depth_test_enable = vk::TRUE;
+        depth_stencil.depth_write_enable = depth_write_enable;
+        depth_stencil.depth_compare_op = compare_op;
+        depth_stencil.stencil_test_enable = vk::FALSE;
+        depth_stencil.front = vk::StencilOpState::default();
+        depth_stencil.back = vk::StencilOpState::default();
+        depth_stencil.min_depth_bounds = 0.0;
+        depth_stencil.max_depth_bounds = 1.0;
+    }
 }

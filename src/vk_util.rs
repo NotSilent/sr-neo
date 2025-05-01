@@ -188,6 +188,18 @@ pub fn attachment_info(
         .clear_value(clear_value.unwrap_or_default())
 }
 
+pub fn depth_attachment_info(
+    image_view: vk::ImageView,
+    image_layout: vk::ImageLayout,
+) -> vk::RenderingAttachmentInfo<'static> {
+    vk::RenderingAttachmentInfo::default()
+        .image_view(image_view)
+        .image_layout(image_layout)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .clear_value(vk::ClearValue::default())
+}
+
 pub fn rendering_info<'a>(
     render_extent: vk::Extent2D,
     color_attachments: &'a [vk::RenderingAttachmentInfo],

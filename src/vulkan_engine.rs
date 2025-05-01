@@ -323,6 +323,7 @@ pub struct VulkanEngine {
     allocator: Option<Allocator>,
 
     draw_image: AllocatedImage,
+    depth_image: AllocatedImage,
     draw_extent: vk::Extent2D,
 
     shader_manager: ShaderManager,
@@ -335,15 +336,10 @@ pub struct VulkanEngine {
     gradient_pipeline_layout: vk::PipelineLayout,
     gradient_pipeline: vk::Pipeline,
 
-    triangle_pipeline_layout: vk::PipelineLayout,
-    triangle_pipeline: vk::Pipeline,
-
     immediate_submit: ImmediateSubmit,
 
     triangle_mesh_pipeline_layout: vk::PipelineLayout,
     triangle_mesh_pipeline: vk::Pipeline,
-
-    rectangle: GPUMeshBuffers,
 
     mesh_assets: Vec<MeshAsset>,
 }
@@ -357,6 +353,10 @@ impl VulkanEngine {
         p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
         _user_data: *mut std::os::raw::c_void,
     ) -> vk::Bool32 {
+        if message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
+            return vk::FALSE;
+        }
+
         let callback_data = unsafe { *p_callback_data };
         let message_id_number = callback_data.message_id_number;
 
@@ -500,7 +500,7 @@ impl VulkanEngine {
         let requirements = unsafe { device.get_image_memory_requirements(image) };
 
         let description = AllocationCreateDesc {
-            name: "image",
+            name: "draw_image",
             requirements,
             location: MemoryLocation::GpuOnly,
             linear: false,
@@ -528,6 +528,50 @@ impl VulkanEngine {
             image_view,
             image_extent: draw_image_extent,
             image_format: format,
+            _allocation: allocation,
+        };
+
+        let depth_create_info = vk_util::image_create_info(
+            vk::Format::D32_SFLOAT,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            draw_image_extent,
+        );
+
+        let depth_image = unsafe { device.create_image(&depth_create_info, None).unwrap() };
+        let requirements = unsafe { device.get_image_memory_requirements(depth_image) };
+
+        let description = AllocationCreateDesc {
+            name: "depth_image",
+            requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+
+        let allocation = allocator.allocate(&description).unwrap();
+
+        unsafe {
+            device
+                .bind_image_memory(depth_image, allocation.memory(), allocation.offset())
+                .unwrap();
+        };
+
+        let depth_image_view_create_info = vk_util::image_view_create_info(
+            vk::Format::D32_SFLOAT,
+            depth_image,
+            vk::ImageAspectFlags::DEPTH,
+        );
+        let depth_image_view = unsafe {
+            device
+                .create_image_view(&depth_image_view_create_info, None)
+                .unwrap()
+        };
+
+        let depth_image = AllocatedImage {
+            image: depth_image,
+            image_view: depth_image_view,
+            image_extent: draw_image_extent,
+            image_format: vk::Format::D32_SFLOAT,
             _allocation: allocation,
         };
 
@@ -611,31 +655,12 @@ impl VulkanEngine {
 
         // triangle
 
-        let triangle_shader = shader_manager.get_graphics_shader(&device, "colored_triangle");
-
         let triangle_pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default();
         let triangle_pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(&triangle_pipeline_layout_create_info, None)
                 .unwrap()
         };
-
-        let mut pipeline_builder = PipelineBuilder::default();
-        #[allow(clippy::field_reassign_with_default)]
-        {
-            pipeline_builder.pipeline_layout = triangle_pipeline_layout;
-        }
-        pipeline_builder.set_shaders(triangle_shader.vert, triangle_shader.frag);
-        pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        pipeline_builder.set_polygon_mode(vk::PolygonMode::FILL);
-        pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE); // TODO: COUNTER_CLOCKWISE
-        pipeline_builder.set_multisampling_none();
-        pipeline_builder.disable_blending();
-        pipeline_builder.disable_depth_test();
-        pipeline_builder.set_color_attachment_format(draw_image.image_format);
-        pipeline_builder.set_depth_format(vk::Format::UNDEFINED);
-
-        let triangle_pipeline = pipeline_builder.build_pipeline(&device);
 
         // ~triangle
 
@@ -661,32 +686,30 @@ impl VulkanEngine {
         };
 
         let mut mesh_pipeline_builder = PipelineBuilder::default();
-        #[allow(clippy::field_reassign_with_default)]
-        {
-            mesh_pipeline_builder.pipeline_layout = triangle_mesh_pipeline_layout;
-        }
+        mesh_pipeline_builder.pipeline_layout = triangle_mesh_pipeline_layout;
         mesh_pipeline_builder.set_shaders(triangle_mesh_shader.vert, triangle_mesh_shader.frag);
         mesh_pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         mesh_pipeline_builder.set_polygon_mode(vk::PolygonMode::FILL);
         mesh_pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE); // TODO: COUNTER_CLOCKWISE
         mesh_pipeline_builder.set_multisampling_none();
         mesh_pipeline_builder.disable_blending();
-        mesh_pipeline_builder.disable_depth_test();
+        mesh_pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL);
         mesh_pipeline_builder.set_color_attachment_format(draw_image.image_format);
-        mesh_pipeline_builder.set_depth_format(vk::Format::UNDEFINED);
+        mesh_pipeline_builder.set_depth_format(depth_image.image_format);
 
         let triangle_mesh_pipeline = mesh_pipeline_builder.build_pipeline(&device);
 
         // ~mesh
 
-        deletion_queue.push(DeletionType::Image(image));
-        deletion_queue.push(DeletionType::ImageView(image_view));
+        deletion_queue.push(DeletionType::Image(draw_image.image));
+        deletion_queue.push(DeletionType::ImageView(draw_image.image_view));
+        deletion_queue.push(DeletionType::Image(depth_image.image));
+        deletion_queue.push(DeletionType::ImageView(depth_image.image_view));
         deletion_queue.push(DeletionType::DescriptorSetLayout(
             draw_image_descriptor_layout,
         ));
         deletion_queue.push(DeletionType::PipelineLayout(compute_layout));
         deletion_queue.push(DeletionType::Pipeline(compute_pipeline));
-        deletion_queue.push(DeletionType::Pipeline(triangle_pipeline));
         deletion_queue.push(DeletionType::PipelineLayout(triangle_pipeline_layout));
         deletion_queue.push(DeletionType::Pipeline(triangle_mesh_pipeline));
         deletion_queue.push(DeletionType::PipelineLayout(triangle_mesh_pipeline_layout));
@@ -761,6 +784,7 @@ impl VulkanEngine {
             deletion_queue,
             allocator: Some(allocator),
             draw_image,
+            depth_image,
             draw_extent: vk::Extent2D::default(),
 
             shader_manager,
@@ -772,15 +796,10 @@ impl VulkanEngine {
             gradient_pipeline_layout: compute_layout,
             gradient_pipeline: compute_pipeline,
 
-            triangle_pipeline_layout,
-            triangle_pipeline,
-
             immediate_submit,
 
             triangle_mesh_pipeline_layout,
             triangle_mesh_pipeline,
-
-            rectangle,
 
             mesh_assets: mesh_assets.unwrap(),
         }
@@ -899,11 +918,9 @@ impl VulkanEngine {
     fn draw_geometry(&self, cmd: vk::CommandBuffer) {
         let Self {
             device,
-            triangle_pipeline,
             draw_extent,
             triangle_mesh_pipeline_layout,
             triangle_mesh_pipeline,
-            rectangle,
             mesh_assets,
             ..
         } = self;
@@ -914,15 +931,31 @@ impl VulkanEngine {
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         )];
 
-        let depth_attachment = vk::RenderingAttachmentInfo::default(); // TODO: unneccesary creation of empty struct
+        let depth_attachment = vk_util::depth_attachment_info(
+            self.depth_image.image_view,
+            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+        );
 
         let rendering_info =
             vk_util::rendering_info(self.draw_extent, &color_attachment, &depth_attachment);
 
-        unsafe {
-            device.cmd_begin_rendering(cmd, &rendering_info);
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *triangle_pipeline);
-        }
+        let aspect_ratio = draw_extent.height as f32 / draw_extent.width as f32;
+        let fov = 90_f32.to_radians();
+        let near = 100.0;
+        let far = 0.1;
+
+        let projection = Self::get_projection(aspect_ratio, fov, near, far);
+
+        let view = Translation3::new(0.0, 0.0, 5.0).inverse().to_homogeneous();
+
+        let world = Translation3::new(2.0, 1.0, 2.5).to_homogeneous();
+        // let world =
+        //     Rotation3::from_axis_angle(&Vector3::y_axis(), 180_f32.to_radians()).to_homogeneous();
+
+        let push_constants = GPUPushDrawConstant {
+            world_matrix: projection * view * world,
+            vertex_buffer: mesh_assets[2].mesh_buffers.vertex_buffer_address,
+        };
 
         let viewports = [vk::Viewport::default()
             .width(draw_extent.width as f32)
@@ -933,52 +966,16 @@ impl VulkanEngine {
         let scissors = [vk::Rect2D::default().extent(*draw_extent)];
 
         unsafe {
-            device.cmd_set_viewport(cmd, 0, &viewports);
-            device.cmd_set_scissor(cmd, 0, &scissors);
-            //device.cmd_draw(cmd, 3, 1, 0, 0);
-        }
+            device.cmd_begin_rendering(cmd, &rendering_info);
 
-        let aspect_ratio = draw_extent.height as f32 / draw_extent.width as f32;
-        let fov = 90_f32.to_radians();
-        let near = 100.0;
-        let far = 0.0;
-
-        let projection = Self::get_projection(aspect_ratio, fov, near, far);
-
-        let view = Translation3::new(0.0, 0.0, 0.0).inverse().to_homogeneous();
-
-        let world = Translation3::new(1.0, 2.0, -5.0).to_homogeneous();
-
-        let mut push_constants = GPUPushDrawConstant {
-            world_matrix: projection * view * world,
-            vertex_buffer: rectangle.vertex_buffer_address,
-        };
-
-        unsafe {
             device.cmd_bind_pipeline(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
                 *triangle_mesh_pipeline,
             );
 
-            device.cmd_push_constants(
-                cmd,
-                *triangle_mesh_pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                push_constants.as_bytes(),
-            );
-
-            device.cmd_bind_index_buffer(
-                cmd,
-                rectangle.index_buffer.buffer,
-                0,
-                vk::IndexType::UINT32,
-            );
-
-            //device.cmd_draw_indexed(cmd, 6, 1, 0, 0, 0);
-
-            push_constants.vertex_buffer = mesh_assets[2].mesh_buffers.vertex_buffer_address;
+            device.cmd_set_viewport(cmd, 0, &viewports);
+            device.cmd_set_scissor(cmd, 0, &scissors);
 
             device.cmd_push_constants(
                 cmd,
@@ -1075,6 +1072,14 @@ impl VulkanEngine {
                 self.draw_image.image,
                 vk::ImageLayout::GENERAL,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            );
+
+            vk_util::transition_image(
+                &self.device,
+                cmd,
+                self.depth_image.image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             );
 
             self.draw_geometry(cmd);
