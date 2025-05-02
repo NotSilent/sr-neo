@@ -23,137 +23,9 @@ use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use crate::{
     deletion_queue::{DeletionQueue, DeletionType},
     shader_manager::ShaderManager,
+    swapchain::{Swapchain, SwapchainError},
 };
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
-
-struct Swapchain {
-    format: vk::Format,
-    extent: vk::Extent2D,
-    handle: vk::SwapchainKHR,
-    images: Vec<vk::Image>,
-    image_views: Vec<vk::ImageView>,
-}
-
-impl Swapchain {
-    fn new(
-        surface_instance: &surface::Instance,
-        swapchain_device: &swapchain::Device,
-        device: &Device,
-        physical_device: vk::PhysicalDevice,
-        surface: vk::SurfaceKHR,
-        extent: vk::Extent2D,
-        queue_family_indices: &[u32],
-    ) -> Self {
-        let format = vk::Format::B8G8R8A8_UNORM;
-
-        let surface_format = unsafe {
-            surface_instance
-                .get_physical_device_surface_formats(physical_device, surface)
-                .unwrap()[0]
-        };
-
-        let surface_capabilities = unsafe {
-            surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
-        }
-        .unwrap();
-
-        let create_info = Self::swapchain_create_info(
-            surface,
-            &surface_format,
-            &surface_capabilities,
-            extent,
-            queue_family_indices,
-        );
-
-        let swapchain = unsafe {
-            swapchain_device
-                .create_swapchain(&create_info, None)
-                .unwrap()
-        };
-
-        let images = unsafe { swapchain_device.get_swapchain_images(swapchain).unwrap() };
-        let image_views: Vec<vk::ImageView> = images
-            .iter()
-            .map(|&image| {
-                let image_view_create_info = vk::ImageViewCreateInfo::default()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(surface_format.format)
-                    .components(
-                        vk::ComponentMapping::default()
-                            .r(vk::ComponentSwizzle::R)
-                            .g(vk::ComponentSwizzle::G)
-                            .b(vk::ComponentSwizzle::B)
-                            .a(vk::ComponentSwizzle::A),
-                    )
-                    .subresource_range(
-                        vk::ImageSubresourceRange::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .base_mip_level(0)
-                            .level_count(1)
-                            .base_array_layer(0)
-                            .layer_count(1),
-                    );
-
-                unsafe {
-                    device
-                        .create_image_view(&image_view_create_info, None)
-                        .unwrap()
-                }
-            })
-            .collect();
-
-        Self {
-            format,
-            extent,
-            handle: swapchain,
-            images,
-            image_views,
-        }
-    }
-
-    fn swapchain_create_info<'a>(
-        surface: vk::SurfaceKHR,
-        surface_format: &'a vk::SurfaceFormatKHR,
-        surface_capabilities: &'a vk::SurfaceCapabilitiesKHR,
-        extent: vk::Extent2D,
-        queue_family_indices: &'a [u32],
-    ) -> vk::SwapchainCreateInfoKHR<'a> {
-        vk::SwapchainCreateInfoKHR::default()
-            .surface(surface)
-            .min_image_count(3)
-            .image_format(surface_format.format)
-            .image_color_space(surface_format.color_space)
-            .image_extent(extent)
-            .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
-            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .queue_family_indices(queue_family_indices)
-            .pre_transform(surface_capabilities.current_transform)
-            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::FIFO)
-            .clipped(true)
-            .old_swapchain(vk::SwapchainKHR::null())
-    }
-
-    fn destroy(&mut self, swapchain_device: &swapchain::Device, device: &Device) {
-        for &image_view in &self.image_views {
-            unsafe { device.destroy_image_view(image_view, None) };
-        }
-
-        self.image_views.clear();
-
-        unsafe { swapchain_device.destroy_swapchain(self.handle, None) };
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum SwapchainError {
-    #[error("Swapchain suboptimal")]
-    Suboptimal,
-    #[error("Swapchain out of date")]
-    OutOfDate,
-}
 
 #[derive(Error, Debug)]
 pub enum DrawError {
@@ -167,7 +39,7 @@ struct GeoSurface {
 }
 
 struct MeshAsset {
-    name: String,
+    _name: String,
     surfaces: Vec<GeoSurface>,
     mesh_buffers: GPUMeshBuffers,
 }
@@ -286,7 +158,6 @@ impl GPUPushDrawConstant {
     }
 }
 
-// TODO: std430
 #[repr(C)]
 struct ComputePushConstants {
     data1: Vector4<f32>,
@@ -922,7 +793,7 @@ impl VulkanEngine {
         };
     }
 
-    fn draw_background(&self, cmd: vk::CommandBuffer, draw_extent: &vk::Extent2D) {
+    fn draw_background(&self, cmd: vk::CommandBuffer, draw_extent: vk::Extent2D) {
         unsafe {
             self.device.cmd_bind_pipeline(
                 cmd,
@@ -989,8 +860,7 @@ impl VulkanEngine {
         projection * view_to_clip
     }
 
-    //#[allow(clippy::too_many_lines)]
-    fn draw_geometry(&self, cmd: vk::CommandBuffer, draw_extent: &vk::Extent2D) {
+    fn draw_geometry(&self, cmd: vk::CommandBuffer, draw_extent: vk::Extent2D) {
         let Self {
             device,
             triangle_mesh_pipeline_layout,
@@ -1011,7 +881,7 @@ impl VulkanEngine {
         );
 
         let rendering_info =
-            vk_util::rendering_info(draw_extent.clone(), &color_attachment, &depth_attachment);
+            vk_util::rendering_info(draw_extent, &color_attachment, &depth_attachment);
 
         let aspect_ratio = draw_extent.height as f32 / draw_extent.width as f32;
         let fov = 90_f32.to_radians();
@@ -1041,7 +911,7 @@ impl VulkanEngine {
             .min_depth(0.0)
             .max_depth(1.0)];
 
-        let scissors = [vk::Rect2D::default().extent(draw_extent.clone())];
+        let scissors = [vk::Rect2D::default().extent(draw_extent)];
 
         unsafe {
             device.cmd_begin_rendering(cmd, &rendering_info);
@@ -1196,7 +1066,7 @@ impl VulkanEngine {
                 vk::ImageLayout::GENERAL,
             );
 
-            self.draw_background(cmd, &draw_extent);
+            self.draw_background(cmd, draw_extent);
 
             vk_util::transition_image(
                 &self.device,
@@ -1214,7 +1084,7 @@ impl VulkanEngine {
                 vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             );
 
-            self.draw_geometry(cmd, &draw_extent);
+            self.draw_geometry(cmd, draw_extent);
 
             vk_util::transition_image(
                 &self.device,
@@ -1691,7 +1561,7 @@ impl VulkanEngine {
             }
 
             mesh_assets.push(MeshAsset {
-                name: mesh.name().unwrap().into(),
+                _name: mesh.name().unwrap().into(),
                 surfaces,
                 mesh_buffers: Self::upload_mesh(
                     device,

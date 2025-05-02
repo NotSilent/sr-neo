@@ -14,6 +14,7 @@ use winit::{
 mod deletion_queue;
 mod pipeline_builder;
 mod shader_manager;
+mod swapchain;
 mod vk_util;
 mod vulkan_engine;
 
