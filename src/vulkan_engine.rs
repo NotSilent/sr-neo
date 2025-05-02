@@ -695,7 +695,7 @@ impl VulkanEngine {
             //.disable_blending()
             .enable_blending_additive()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
-            .set_color_attachment_format(draw_image.image_format)
+            .set_color_attachment_formats(&[draw_image.image_format])
             .set_depth_format(depth_image.image_format);
 
         let triangle_mesh_pipeline = mesh_pipeline_builder.build_pipeline(&device);

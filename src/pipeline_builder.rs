@@ -10,7 +10,6 @@ pub struct PipelineBuilder<'a> {
     pipeline_layout: vk::PipelineLayout,
     depth_stencil: vk::PipelineDepthStencilStateCreateInfo<'a>,
     render_info: vk::PipelineRenderingCreateInfo<'a>,
-    color_attachment_format: vk::Format,
 }
 
 impl PipelineBuilder<'_> {
@@ -130,10 +129,7 @@ impl PipelineBuilder<'_> {
             ..
         } = &mut self;
 
-        color_blend_attachment.color_write_mask = vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A;
+        color_blend_attachment.color_write_mask = vk::ColorComponentFlags::RGBA;
         color_blend_attachment.blend_enable = vk::TRUE;
         color_blend_attachment.src_color_blend_factor = vk::BlendFactor::SRC_ALPHA;
         color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::ONE;
@@ -163,9 +159,9 @@ impl PipelineBuilder<'_> {
         self
     }
 
-    pub fn set_color_attachment_format(mut self, format: vk::Format) -> Self {
-        self.color_attachment_format = format;
-        let _ = self.render_info.color_attachment_formats(&[format]);
+    pub fn set_color_attachment_formats(mut self, formats: &[vk::Format]) -> Self {
+        self.render_info.color_attachment_count = formats.len() as u32;
+        self.render_info.p_color_attachment_formats = formats.as_ptr();
 
         self
     }
