@@ -405,7 +405,7 @@ impl DescriptorAllocator {
     }
 }
 
-// TODO: split into struct of arrays?
+// TODO: split into struct of arrays? split into AllocatedImage2D and AllocatedImage3D?
 struct AllocatedImage {
     image: vk::Image,
     image_view: vk::ImageView,
@@ -922,7 +922,7 @@ impl VulkanEngine {
         };
     }
 
-    fn draw_background(&self, cmd: vk::CommandBuffer) {
+    fn draw_background(&self, cmd: vk::CommandBuffer, draw_extent: &vk::Extent2D) {
         unsafe {
             self.device.cmd_bind_pipeline(
                 cmd,
@@ -955,8 +955,8 @@ impl VulkanEngine {
 
             self.device.cmd_dispatch(
                 cmd,
-                f32::ceil(self.swapchain.extent.width as f32 / 16.0) as u32,
-                f32::ceil(self.swapchain.extent.height as f32 / 16.0) as u32,
+                f32::ceil(draw_extent.width as f32 / 16.0) as u32,
+                f32::ceil(draw_extent.height as f32 / 16.0) as u32,
                 1,
             );
         }
@@ -990,10 +990,9 @@ impl VulkanEngine {
     }
 
     //#[allow(clippy::too_many_lines)]
-    fn draw_geometry(&self, cmd: vk::CommandBuffer) {
+    fn draw_geometry(&self, cmd: vk::CommandBuffer, draw_extent: &vk::Extent2D) {
         let Self {
             device,
-            swapchain,
             triangle_mesh_pipeline_layout,
             triangle_mesh_pipeline,
             mesh_assets,
@@ -1012,9 +1011,9 @@ impl VulkanEngine {
         );
 
         let rendering_info =
-            vk_util::rendering_info(self.swapchain.extent, &color_attachment, &depth_attachment);
+            vk_util::rendering_info(draw_extent.clone(), &color_attachment, &depth_attachment);
 
-        let aspect_ratio = swapchain.extent.height as f32 / swapchain.extent.width as f32;
+        let aspect_ratio = draw_extent.height as f32 / draw_extent.width as f32;
         let fov = 90_f32.to_radians();
         let near = 100.0;
         let far = 0.1;
@@ -1037,12 +1036,12 @@ impl VulkanEngine {
         };
 
         let viewports = [vk::Viewport::default()
-            .width(swapchain.extent.width as f32)
-            .height(swapchain.extent.height as f32)
+            .width(draw_extent.width as f32)
+            .height(draw_extent.height as f32)
             .min_depth(0.0)
             .max_depth(1.0)];
 
-        let scissors = [vk::Rect2D::default().extent(swapchain.extent)];
+        let scissors = [vk::Rect2D::default().extent(draw_extent.clone())];
 
         unsafe {
             device.cmd_begin_rendering(cmd, &rendering_info);
@@ -1113,11 +1112,14 @@ impl VulkanEngine {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn draw(&mut self) -> Result<(), DrawError> {
+    pub fn draw(&mut self, render_scale: f32) -> Result<(), DrawError> {
+        let render_scale = render_scale.clamp(0.25, 1.0);
+
         let current_frame_fence = self.get_current_frame().fence;
         let current_frame_command_buffer = self.get_current_frame().command_buffer;
         let current_frame_swapchain_semaphore = self.get_current_frame().swapchain_semaphore;
         let current_frame_render_semaphore = self.get_current_frame().render_semaphore;
+
         unsafe {
             self.device
                 .wait_for_fences(&[current_frame_fence], true, 1_000_000_000)
@@ -1154,6 +1156,24 @@ impl VulkanEngine {
                 }
             };
 
+            let draw_width = self
+                .swapchain
+                .extent
+                .width
+                .min(self.draw_image.image_extent.width) as f32
+                * render_scale;
+
+            let draw_height = self
+                .swapchain
+                .extent
+                .height
+                .min(self.draw_image.image_extent.height) as f32
+                * render_scale;
+
+            let draw_extent = vk::Extent2D::default()
+                .width(draw_width as u32)
+                .height(draw_height as u32);
+
             let cmd = current_frame_command_buffer;
             self.device
                 .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
@@ -1176,7 +1196,7 @@ impl VulkanEngine {
                 vk::ImageLayout::GENERAL,
             );
 
-            self.draw_background(cmd);
+            self.draw_background(cmd, &draw_extent);
 
             vk_util::transition_image(
                 &self.device,
@@ -1194,7 +1214,7 @@ impl VulkanEngine {
                 vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             );
 
-            self.draw_geometry(cmd);
+            self.draw_geometry(cmd, &draw_extent);
 
             vk_util::transition_image(
                 &self.device,
@@ -1220,8 +1240,8 @@ impl VulkanEngine {
                 cmd,
                 self.draw_image.image,
                 swapchain_image,
-                self.swapchain.extent,
-                self.swapchain.extent,
+                &draw_extent,
+                &self.swapchain.extent,
             );
 
             vk_util::transition_image(

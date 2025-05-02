@@ -134,7 +134,7 @@ impl ApplicationHandler for App<'_> {
                             .egui_ctx()
                             .tessellate(full_output.shapes, full_output.pixels_per_point);
 
-                        if let Err(error) = self.vulkan_engine.as_mut().unwrap().draw() {
+                        if let Err(error) = self.vulkan_engine.as_mut().unwrap().draw(1.0) {
                             println!("{error}");
                         }
                     }

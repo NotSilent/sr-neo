@@ -1,5 +1,11 @@
 use ash::{Device, vk};
 
+pub fn extent_2d_from_3d(extent: &vk::Extent3D) -> vk::Extent2D {
+    vk::Extent2D::default()
+        .width(extent.width)
+        .height(extent.height)
+}
+
 pub fn create_fence(device: &Device, flags: vk::FenceCreateFlags) -> vk::Fence {
     let create_info = vk::FenceCreateInfo::default().flags(flags);
 
@@ -127,8 +133,8 @@ pub fn copy_image_to_image(
     cmd: vk::CommandBuffer,
     source: vk::Image,
     destination: vk::Image,
-    src_size: vk::Extent2D,
-    dst_size: vk::Extent2D,
+    src_size: &vk::Extent2D,
+    dst_size: &vk::Extent2D,
 ) {
     let blit_regions = [vk::ImageBlit2::default()
         .src_offsets([
