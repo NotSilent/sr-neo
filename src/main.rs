@@ -23,6 +23,7 @@ struct App<'a> {
     window: Option<Window>,
     viewport_info: Option<ViewportInfo>,
     vulkan_engine: Option<VulkanEngine>,
+    is_minimized: bool,
     is_closing: bool,
 
     gltf_name: Option<&'a str>,
@@ -46,7 +47,8 @@ impl ApplicationHandler for App<'_> {
             &egui_ctx,
             event_loop,
             &ViewportBuilder::default()
-                .with_inner_size(egui::Vec2::new(width as f32, height as f32)),
+                .with_inner_size(egui::Vec2::new(width as f32, height as f32))
+                .with_resizable(true),
         )
         .unwrap();
 
@@ -85,11 +87,12 @@ impl ApplicationHandler for App<'_> {
     ) {
         match event {
             WindowEvent::Resized(new_size) => {
-                if new_size.width == 0 || new_size.height == 0 {
-                    // TODO: Stop rendering
-                } else {
-                    // TODO: Restart rendering
-                }
+                self.is_minimized = new_size.width == 0 || new_size.height == 0;
+
+                self.vulkan_engine
+                    .as_mut()
+                    .unwrap()
+                    .recreate_swapchain(new_size.width, new_size.height);
             }
             WindowEvent::CloseRequested => {
                 self.is_closing = true;
@@ -102,35 +105,40 @@ impl ApplicationHandler for App<'_> {
             }
             WindowEvent::RedrawRequested => {
                 if !self.is_closing {
-                    let viewport_info = self.viewport_info.as_mut().unwrap();
-                    let state = self.state.as_mut().unwrap();
-                    let window = self.window.as_ref().unwrap();
+                    if !self.is_minimized {
+                        let viewport_info = self.viewport_info.as_mut().unwrap();
+                        let state = self.state.as_mut().unwrap();
+                        let window = self.window.as_ref().unwrap();
 
-                    egui_winit::update_viewport_info(
-                        viewport_info,
-                        state.egui_ctx(),
-                        window,
-                        false,
-                    );
+                        egui_winit::update_viewport_info(
+                            viewport_info,
+                            state.egui_ctx(),
+                            window,
+                            false,
+                        );
 
-                    let raw_input = state.take_egui_input(window);
+                        let raw_input = state.take_egui_input(window);
 
-                    let full_output = state.egui_ctx().run(raw_input, |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            ui.label("Hello world!");
-                            if ui.button("Click me").clicked() {
-                                // take some action here
-                            }
+                        let full_output = state.egui_ctx().run(raw_input, |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                ui.label("Hello world!");
+                                if ui.button("Click me").clicked() {
+                                    // take some action here
+                                }
+                            });
                         });
-                    });
 
-                    state.handle_platform_output(window, full_output.platform_output);
+                        state.handle_platform_output(window, full_output.platform_output);
 
-                    let _clipped_primitives = state
-                        .egui_ctx()
-                        .tessellate(full_output.shapes, full_output.pixels_per_point);
+                        let _clipped_primitives = state
+                            .egui_ctx()
+                            .tessellate(full_output.shapes, full_output.pixels_per_point);
 
-                    self.vulkan_engine.as_mut().unwrap().draw();
+                        if let Err(error) = self.vulkan_engine.as_mut().unwrap().draw() {
+                            println!("{error}");
+                        }
+                    }
+
                     self.window.as_ref().unwrap().request_redraw();
                 }
             }

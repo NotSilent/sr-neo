@@ -17,6 +17,7 @@ use gpu_allocator::{
 };
 
 use nalgebra::{Matrix4, Rotation3, Translation3, Vector3, Vector4, vector};
+use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
@@ -24,6 +25,141 @@ use crate::{
     shader_manager::ShaderManager,
 };
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
+
+struct Swapchain {
+    format: vk::Format,
+    extent: vk::Extent2D,
+    handle: vk::SwapchainKHR,
+    images: Vec<vk::Image>,
+    image_views: Vec<vk::ImageView>,
+}
+
+impl Swapchain {
+    fn new(
+        surface_instance: &surface::Instance,
+        swapchain_device: &swapchain::Device,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+        surface: vk::SurfaceKHR,
+        extent: vk::Extent2D,
+        queue_family_indices: &[u32],
+    ) -> Self {
+        let format = vk::Format::B8G8R8A8_UNORM;
+
+        let surface_format = unsafe {
+            surface_instance
+                .get_physical_device_surface_formats(physical_device, surface)
+                .unwrap()[0]
+        };
+
+        let surface_capabilities = unsafe {
+            surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
+        }
+        .unwrap();
+
+        let create_info = Self::swapchain_create_info(
+            surface,
+            &surface_format,
+            &surface_capabilities,
+            extent,
+            queue_family_indices,
+        );
+
+        let swapchain = unsafe {
+            swapchain_device
+                .create_swapchain(&create_info, None)
+                .unwrap()
+        };
+
+        let images = unsafe { swapchain_device.get_swapchain_images(swapchain).unwrap() };
+        let image_views: Vec<vk::ImageView> = images
+            .iter()
+            .map(|&image| {
+                let image_view_create_info = vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(surface_format.format)
+                    .components(
+                        vk::ComponentMapping::default()
+                            .r(vk::ComponentSwizzle::R)
+                            .g(vk::ComponentSwizzle::G)
+                            .b(vk::ComponentSwizzle::B)
+                            .a(vk::ComponentSwizzle::A),
+                    )
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .base_mip_level(0)
+                            .level_count(1)
+                            .base_array_layer(0)
+                            .layer_count(1),
+                    );
+
+                unsafe {
+                    device
+                        .create_image_view(&image_view_create_info, None)
+                        .unwrap()
+                }
+            })
+            .collect();
+
+        Self {
+            format,
+            extent,
+            handle: swapchain,
+            images,
+            image_views,
+        }
+    }
+
+    fn swapchain_create_info<'a>(
+        surface: vk::SurfaceKHR,
+        surface_format: &'a vk::SurfaceFormatKHR,
+        surface_capabilities: &'a vk::SurfaceCapabilitiesKHR,
+        extent: vk::Extent2D,
+        queue_family_indices: &'a [u32],
+    ) -> vk::SwapchainCreateInfoKHR<'a> {
+        vk::SwapchainCreateInfoKHR::default()
+            .surface(surface)
+            .min_image_count(3)
+            .image_format(surface_format.format)
+            .image_color_space(surface_format.color_space)
+            .image_extent(extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .queue_family_indices(queue_family_indices)
+            .pre_transform(surface_capabilities.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(vk::PresentModeKHR::FIFO)
+            .clipped(true)
+            .old_swapchain(vk::SwapchainKHR::null())
+    }
+
+    fn destroy(&mut self, swapchain_device: &swapchain::Device, device: &Device) {
+        for &image_view in &self.image_views {
+            unsafe { device.destroy_image_view(image_view, None) };
+        }
+
+        self.image_views.clear();
+
+        unsafe { swapchain_device.destroy_swapchain(self.handle, None) };
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum SwapchainError {
+    #[error("Swapchain suboptimal")]
+    Suboptimal,
+    #[error("Swapchain out of date")]
+    OutOfDate,
+}
+
+#[derive(Error, Debug)]
+pub enum DrawError {
+    #[error("{}", .0)]
+    Swapchain(SwapchainError),
+}
 
 struct GeoSurface {
     start_index: u32,
@@ -302,21 +438,17 @@ pub struct VulkanEngine {
     instance: Instance,
     debug_utils: debug_utils::Instance,
     debug_utils_messenger: vk::DebugUtilsMessengerEXT,
-    _physical_device: vk::PhysicalDevice,
+    physical_device: vk::PhysicalDevice,
     device: Device,
-    _graphics_queue_family_index: u32,
+    graphics_queue_family_index: u32,
     graphics_queue: vk::Queue,
 
-    surface_loader: surface::Instance,
-    swapchain_loader: swapchain::Device,
+    surface_instance: surface::Instance,
+    swapchain_device: swapchain::Device,
 
     surface: vk::SurfaceKHR,
 
-    swapchain: vk::SwapchainKHR,
-    _swapchain_image_format: vk::Format,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_image_views: Vec<vk::ImageView>,
-    swapchain_extent: vk::Extent2D,
+    swapchain: Swapchain,
 
     frames: [FrameData; FRAME_OVERLAP],
     deletion_queue: DeletionQueue,
@@ -324,7 +456,6 @@ pub struct VulkanEngine {
 
     draw_image: AllocatedImage,
     depth_image: AllocatedImage,
-    draw_extent: vk::Extent2D,
 
     shader_manager: ShaderManager,
 
@@ -353,10 +484,6 @@ impl VulkanEngine {
         p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
         _user_data: *mut std::os::raw::c_void,
     ) -> vk::Bool32 {
-        if message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
-            return vk::FALSE;
-        }
-
         let callback_data = unsafe { *p_callback_data };
         let message_id_number = callback_data.message_id_number;
 
@@ -406,64 +533,20 @@ impl VulkanEngine {
             )
         };
 
-        let surface_loader = surface::Instance::new(&entry, &instance);
-        let swapchain_loader = swapchain::Device::new(&instance, &device);
+        let surface_instance = surface::Instance::new(&entry, &instance);
+        let swapchain_device = swapchain::Device::new(&instance, &device);
 
         let surface = Self::create_surface(&entry, &instance, display_handle, window_handle);
-        let surface_format = unsafe {
-            surface_loader
-                .get_physical_device_surface_formats(physical_device, surface)
-                .unwrap()[0]
-        };
 
-        let surface_capabilities = unsafe {
-            surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
-        }
-        .unwrap();
-
-        let render_area =
-            vk::Rect2D::default().extent(vk::Extent2D::default().width(width).height(height));
-
-        let swapchain = Self::create_swapchain(
-            &swapchain_loader,
+        let swapchain = Swapchain::new(
+            &surface_instance,
+            &swapchain_device,
+            &device,
+            physical_device,
             surface,
-            surface_format,
-            surface_capabilities.current_transform,
-            render_area,
+            vk::Extent2D::default().width(width).height(height),
             &[graphics_queue_family_index],
         );
-
-        let swapchain_images = unsafe { swapchain_loader.get_swapchain_images(swapchain).unwrap() };
-        let swapchain_image_views: Vec<vk::ImageView> = swapchain_images
-            .iter()
-            .map(|&image| {
-                let image_view_create_info = vk::ImageViewCreateInfo::default()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(surface_format.format)
-                    .components(
-                        vk::ComponentMapping::default()
-                            .r(vk::ComponentSwizzle::R)
-                            .g(vk::ComponentSwizzle::G)
-                            .b(vk::ComponentSwizzle::B)
-                            .a(vk::ComponentSwizzle::A),
-                    )
-                    .subresource_range(
-                        vk::ImageSubresourceRange::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .base_mip_level(0)
-                            .level_count(1)
-                            .base_array_layer(0)
-                            .layer_count(1),
-                    );
-
-                unsafe {
-                    device
-                        .create_image_view(&image_view_create_info, None)
-                        .unwrap()
-                }
-            })
-            .collect();
 
         // TODO: Abstract
         let mut frames: [FrameData; FRAME_OVERLAP] = [FrameData::default(), FrameData::default()];
@@ -494,7 +577,8 @@ impl VulkanEngine {
             | vk::ImageUsageFlags::STORAGE
             | vk::ImageUsageFlags::COLOR_ATTACHMENT;
 
-        let image_create_info = vk_util::image_create_info(format, image_usages, draw_image_extent);
+        let image_create_info =
+            vk_util::image_create_info(format, image_usages, swapchain.extent.into());
 
         let image = unsafe { device.create_image(&image_create_info, None).unwrap() };
         let requirements = unsafe { device.get_image_memory_requirements(image) };
@@ -767,26 +851,21 @@ impl VulkanEngine {
             instance,
             debug_utils,
             debug_utils_messenger,
-            _physical_device: physical_device,
+            physical_device,
             device,
-            _graphics_queue_family_index: graphics_queue_family_index,
+            graphics_queue_family_index,
             graphics_queue,
 
-            surface_loader,
-            swapchain_loader,
+            surface_instance,
+            swapchain_device,
 
             surface,
             swapchain,
-            _swapchain_image_format: surface_format.format,
-            swapchain_images,
-            swapchain_image_views,
-            swapchain_extent: render_area.extent,
             frames,
             deletion_queue,
             allocator: Some(allocator),
             draw_image,
             depth_image,
-            draw_extent: vk::Extent2D::default(),
 
             shader_manager,
 
@@ -819,10 +898,6 @@ impl VulkanEngine {
             }
         }
 
-        for &image_view in &self.swapchain_image_views {
-            unsafe { self.device.destroy_image_view(image_view, None) };
-        }
-
         for mesh_asset in &mut self.mesh_assets {
             mesh_asset.destroy(&self.device, self.allocator.as_mut().unwrap());
         }
@@ -838,9 +913,8 @@ impl VulkanEngine {
         self.allocator.take();
 
         unsafe {
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
-            self.surface_loader.destroy_surface(self.surface, None);
+            self.swapchain.destroy(&self.swapchain_device, &self.device);
+            self.surface_instance.destroy_surface(self.surface, None);
             self.device.destroy_device(None);
             self.debug_utils
                 .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
@@ -881,8 +955,8 @@ impl VulkanEngine {
 
             self.device.cmd_dispatch(
                 cmd,
-                f32::ceil(self.draw_extent.width as f32 / 16.0) as u32,
-                f32::ceil(self.draw_extent.height as f32 / 16.0) as u32,
+                f32::ceil(self.swapchain.extent.width as f32 / 16.0) as u32,
+                f32::ceil(self.swapchain.extent.height as f32 / 16.0) as u32,
                 1,
             );
         }
@@ -919,7 +993,7 @@ impl VulkanEngine {
     fn draw_geometry(&self, cmd: vk::CommandBuffer) {
         let Self {
             device,
-            draw_extent,
+            swapchain,
             triangle_mesh_pipeline_layout,
             triangle_mesh_pipeline,
             mesh_assets,
@@ -938,9 +1012,9 @@ impl VulkanEngine {
         );
 
         let rendering_info =
-            vk_util::rendering_info(self.draw_extent, &color_attachment, &depth_attachment);
+            vk_util::rendering_info(self.swapchain.extent, &color_attachment, &depth_attachment);
 
-        let aspect_ratio = draw_extent.height as f32 / draw_extent.width as f32;
+        let aspect_ratio = swapchain.extent.height as f32 / swapchain.extent.width as f32;
         let fov = 90_f32.to_radians();
         let near = 100.0;
         let far = 0.1;
@@ -963,12 +1037,12 @@ impl VulkanEngine {
         };
 
         let viewports = [vk::Viewport::default()
-            .width(draw_extent.width as f32)
-            .height(draw_extent.height as f32)
+            .width(swapchain.extent.width as f32)
+            .height(swapchain.extent.height as f32)
             .min_depth(0.0)
             .max_depth(1.0)];
 
-        let scissors = [vk::Rect2D::default().extent(*draw_extent)];
+        let scissors = [vk::Rect2D::default().extent(swapchain.extent)];
 
         unsafe {
             device.cmd_begin_rendering(cmd, &rendering_info);
@@ -1039,7 +1113,7 @@ impl VulkanEngine {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn draw(&mut self) {
+    pub fn draw(&mut self) -> Result<(), DrawError> {
         let current_frame_fence = self.get_current_frame().fence;
         let current_frame_command_buffer = self.get_current_frame().command_buffer;
         let current_frame_swapchain_semaphore = self.get_current_frame().swapchain_semaphore;
@@ -1058,15 +1132,27 @@ impl VulkanEngine {
                 .reset_fences(&[current_frame_fence])
                 .expect("Failed to reset fences");
 
-            let (swapchain_image_index, _) = self
-                .swapchain_loader
-                .acquire_next_image(
-                    self.swapchain,
-                    1_000_000_000,
-                    current_frame_swapchain_semaphore,
-                    vk::Fence::null(),
-                )
-                .expect("Failed to acquire next image");
+            // TODO: encapsulate, into swapchain?
+            let swapchain_image_index = match self.swapchain_device.acquire_next_image(
+                self.swapchain.handle,
+                1_000_000_000,
+                current_frame_swapchain_semaphore,
+                vk::Fence::null(),
+            ) {
+                Ok((swapchain_image_index, is_suboptimal)) => {
+                    if is_suboptimal {
+                        return Err(DrawError::Swapchain(SwapchainError::Suboptimal));
+                    }
+                    swapchain_image_index
+                }
+                Err(error) => {
+                    if error == vk::Result::ERROR_OUT_OF_DATE_KHR {
+                        return Err(DrawError::Swapchain(SwapchainError::OutOfDate));
+                    }
+
+                    panic!();
+                }
+            };
 
             let cmd = current_frame_command_buffer;
             self.device
@@ -1075,11 +1161,6 @@ impl VulkanEngine {
 
             let cmd_begin_info = vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-            self.draw_extent = self
-                .draw_extent
-                .width(self.draw_image.image_extent.width)
-                .height(self.draw_image.image_extent.height);
 
             // Begin command buffer
 
@@ -1123,7 +1204,8 @@ impl VulkanEngine {
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             );
 
-            let swapchain_image = self.swapchain_images[swapchain_image_index as usize];
+            // TODO: Encapsulate, into swapchain?
+            let swapchain_image = self.swapchain.images[swapchain_image_index as usize];
 
             vk_util::transition_image(
                 &self.device,
@@ -1138,8 +1220,8 @@ impl VulkanEngine {
                 cmd,
                 self.draw_image.image,
                 swapchain_image,
-                self.draw_extent,
-                self.swapchain_extent,
+                self.swapchain.extent,
+                self.swapchain.extent,
             );
 
             vk_util::transition_image(
@@ -1181,7 +1263,7 @@ impl VulkanEngine {
                 .queue_submit2(self.graphics_queue, &[submit_info], current_frame_fence)
                 .expect("Failed to queue submit");
 
-            let swapchains = [self.swapchain];
+            let swapchains = [self.swapchain.handle];
             let wait_semaphores = [current_frame_render_semaphore];
             let image_indices = [swapchain_image_index];
 
@@ -1190,12 +1272,27 @@ impl VulkanEngine {
                 .wait_semaphores(&wait_semaphores)
                 .image_indices(&image_indices);
 
-            self.swapchain_loader
-                .queue_present(self.graphics_queue, &present_info)
-                .expect("Failed to present queue");
-
             self.frame_number += 1;
+
+            match self
+                .swapchain_device
+                .queue_present(self.graphics_queue, &present_info)
+            {
+                Ok(is_suboptimal) => {
+                    if is_suboptimal {
+                        return Err(DrawError::Swapchain(SwapchainError::Suboptimal));
+                    }
+                }
+                Err(error) => {
+                    if error == vk::Result::ERROR_OUT_OF_DATE_KHR {
+                        return Err(DrawError::Swapchain(SwapchainError::OutOfDate));
+                    }
+                    panic!();
+                }
+            }
         };
+
+        Ok(())
     }
 
     fn create_allocator(
@@ -1335,34 +1432,6 @@ impl VulkanEngine {
             ash_window::create_surface(entry, instance, display_handle, window_handle, None)
                 .unwrap()
         }
-    }
-
-    fn create_swapchain(
-        swapchain: &swapchain::Device,
-        surface: vk::SurfaceKHR,
-        surface_format: vk::SurfaceFormatKHR,
-        surface_transform: vk::SurfaceTransformFlagsKHR,
-        render_area: vk::Rect2D,
-        queue_family_indices: &[u32],
-    ) -> vk::SwapchainKHR {
-        // TODO: based on capabilities
-        let create_info = vk::SwapchainCreateInfoKHR::default()
-            .surface(surface)
-            .min_image_count(3)
-            .image_format(surface_format.format)
-            .image_color_space(surface_format.color_space)
-            .image_extent(render_area.extent)
-            .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
-            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .queue_family_indices(queue_family_indices)
-            .pre_transform(surface_transform)
-            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::FIFO)
-            .clipped(true)
-            .old_swapchain(vk::SwapchainKHR::null());
-
-        unsafe { swapchain.create_swapchain(&create_info, None).unwrap() }
     }
 
     fn get_current_frame(&self) -> &FrameData {
@@ -1615,5 +1684,22 @@ impl VulkanEngine {
         }
 
         Some(mesh_assets)
+    }
+
+    pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+        }
+
+        self.swapchain.destroy(&self.swapchain_device, &self.device);
+        self.swapchain = Swapchain::new(
+            &self.surface_instance,
+            &self.swapchain_device,
+            &self.device,
+            self.physical_device,
+            self.surface,
+            vk::Extent2D::default().width(width).height(height),
+            &[self.graphics_queue_family_index],
+        );
     }
 }
