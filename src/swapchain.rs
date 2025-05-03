@@ -16,11 +16,11 @@ pub enum SwapchainError {
 use crate::vk_util;
 
 pub struct Swapchain {
-    format: vk::Format,
-    extent: vk::Extent2D,
-    handle: vk::SwapchainKHR,
-    images: Vec<vk::Image>,
-    image_views: Vec<vk::ImageView>,
+    pub format: vk::Format,
+    pub extent: vk::Extent2D,
+    pub handle: vk::SwapchainKHR,
+    pub images: Vec<vk::Image>,
+    pub image_views: Vec<vk::ImageView>,
 }
 
 impl Swapchain {
@@ -126,28 +126,5 @@ impl Swapchain {
             })
             .collect();
         image_views
-    }
-}
-
-// Getters
-impl Swapchain {
-    pub fn format(&self) -> vk::Format {
-        self.format
-    }
-
-    pub fn extent(&self) -> vk::Extent2D {
-        self.extent
-    }
-
-    pub fn handle(&self) -> vk::SwapchainKHR {
-        self.handle
-    }
-
-    pub fn images(&self) -> &[vk::Image] {
-        &self.images
-    }
-
-    pub fn _image_views(&self) -> &[vk::ImageView] {
-        &self.image_views
     }
 }

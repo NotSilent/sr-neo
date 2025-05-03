@@ -5,8 +5,8 @@ use gpu_allocator::{
 };
 
 pub struct AllocatedBuffer {
-    buffer: vk::Buffer,
-    allocation: Option<Allocation>, // TODO: Drop Option<> somehow (maybe put in sparse vec and index for deletion?)
+    pub buffer: vk::Buffer,
+    pub allocation: Option<Allocation>, // TODO: Drop Option<> somehow (maybe put in sparse vec and index for deletion?)
 }
 
 impl AllocatedBuffer {
@@ -49,16 +49,5 @@ impl AllocatedBuffer {
     pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
         let _ = allocator.free(self.allocation.take().unwrap());
         unsafe { device.destroy_buffer(self.buffer, None) };
-    }
-}
-
-// Getters
-impl AllocatedBuffer {
-    pub fn buffer(&self) -> vk::Buffer {
-        self.buffer
-    }
-
-    pub fn allocation(&self) -> Option<&Allocation> {
-        self.allocation.as_ref()
     }
 }
