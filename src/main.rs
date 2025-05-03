@@ -11,6 +11,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
+mod allocations;
 mod deletion_queue;
 mod pipeline_builder;
 mod shader_manager;

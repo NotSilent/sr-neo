@@ -1,7 +1,11 @@
 use ash::Device;
 use ash::vk;
+use gpu_allocator::vulkan::Allocator;
+
+use crate::allocations::AllocatedBuffer;
 
 pub enum DeletionType {
+    AllocatedBuffer(AllocatedBuffer),
     Buffer(vk::Buffer),
     CommandPool(vk::CommandPool),
     DescriptorSetLayout(vk::DescriptorSetLayout),
@@ -22,9 +26,12 @@ impl DeletionQueue {
         self.queue.push(item);
     }
 
-    pub fn flush(&mut self, device: &Device) {
-        for item in self.queue.iter().rev() {
+    pub fn flush(&mut self, device: &Device, allocator: &mut Allocator) {
+        for item in self.queue.iter_mut().rev() {
             match item {
+                DeletionType::AllocatedBuffer(allocated_buffer) => {
+                    allocated_buffer.destroy(device, allocator)
+                }
                 DeletionType::Buffer(buffer) => unsafe { device.destroy_buffer(*buffer, None) },
                 DeletionType::CommandPool(command_pool) => unsafe {
                     device.destroy_command_pool(*command_pool, None);

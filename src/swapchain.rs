@@ -16,11 +16,11 @@ pub enum SwapchainError {
 use crate::vk_util;
 
 pub struct Swapchain {
-    pub _format: vk::Format,
-    pub extent: vk::Extent2D,
-    pub handle: vk::SwapchainKHR,
-    pub images: Vec<vk::Image>,
-    pub image_views: Vec<vk::ImageView>,
+    format: vk::Format,
+    extent: vk::Extent2D,
+    handle: vk::SwapchainKHR,
+    images: Vec<vk::Image>,
+    image_views: Vec<vk::ImageView>,
 }
 
 impl Swapchain {
@@ -65,12 +65,22 @@ impl Swapchain {
             Self::create_swapchain_image_views(device, surface_format.format, &images);
 
         Self {
-            _format: format,
+            format,
             extent,
             handle: swapchain,
             images,
             image_views,
         }
+    }
+
+    pub fn destroy(&mut self, swapchain_device: &swapchain::Device, device: &Device) {
+        for &image_view in &self.image_views {
+            unsafe { device.destroy_image_view(image_view, None) };
+        }
+
+        self.image_views.clear();
+
+        unsafe { swapchain_device.destroy_swapchain(self.handle, None) };
     }
 
     fn swapchain_create_info<'a>(
@@ -117,14 +127,27 @@ impl Swapchain {
             .collect();
         image_views
     }
+}
 
-    pub fn destroy(&mut self, swapchain_device: &swapchain::Device, device: &Device) {
-        for &image_view in &self.image_views {
-            unsafe { device.destroy_image_view(image_view, None) };
-        }
+// Getters
+impl Swapchain {
+    pub fn format(&self) -> vk::Format {
+        self.format
+    }
 
-        self.image_views.clear();
+    pub fn extent(&self) -> vk::Extent2D {
+        self.extent
+    }
 
-        unsafe { swapchain_device.destroy_swapchain(self.handle, None) };
+    pub fn handle(&self) -> vk::SwapchainKHR {
+        self.handle
+    }
+
+    pub fn images(&self) -> &[vk::Image] {
+        &self.images
+    }
+
+    pub fn _image_views(&self) -> &[vk::ImageView] {
+        &self.image_views
     }
 }
