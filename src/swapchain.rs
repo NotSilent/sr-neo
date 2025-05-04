@@ -16,7 +16,7 @@ pub enum SwapchainError {
 use crate::vk_util;
 
 pub struct Swapchain {
-    pub format: vk::Format,
+    pub _format: vk::Format,
     pub extent: vk::Extent2D,
     pub handle: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
@@ -33,8 +33,6 @@ impl Swapchain {
         extent: vk::Extent2D,
         queue_family_indices: &[u32],
     ) -> Self {
-        let format = vk::Format::B8G8R8A8_UNORM;
-
         let surface_format = unsafe {
             surface_instance
                 .get_physical_device_surface_formats(physical_device, surface)
@@ -65,7 +63,7 @@ impl Swapchain {
             Self::create_swapchain_image_views(device, surface_format.format, &images);
 
         Self {
-            format,
+            _format: surface_format.format,
             extent,
             handle: swapchain,
             images,

@@ -5,39 +5,26 @@ use ash::{Device, util, vk};
 // TODO: Compile to SPIR-V during runtime
 
 #[derive(Clone)]
-pub struct Shader {
+pub struct GraphicsShader {
     pub vert: vk::ShaderModule,
     pub frag: vk::ShaderModule,
 }
 
 pub struct ShaderManager {
-    //compiler: shaderc::Compiler,
-    compute_shaders: HashMap<String, vk::ShaderModule>,
-    graphics_shaders: HashMap<String, Shader>,
+    shaders: HashMap<String, vk::ShaderModule>,
 }
 
 impl ShaderManager {
     pub fn new() -> Self {
-        //let compiler = shaderc::Compiler::new().unwrap();
-
         Self {
-            //compiler,
-            compute_shaders: HashMap::default(),
-            graphics_shaders: HashMap::default(),
+            shaders: HashMap::default(),
         }
     }
 
     pub fn destroy(&mut self, device: &Device) {
-        for shader in self.compute_shaders.values() {
+        for shader in self.shaders.values() {
             unsafe {
                 device.destroy_shader_module(*shader, None);
-            }
-        }
-
-        for shader in self.graphics_shaders.values() {
-            unsafe {
-                device.destroy_shader_module(shader.vert, None);
-                device.destroy_shader_module(shader.frag, None);
             }
         }
     }
@@ -68,25 +55,37 @@ impl ShaderManager {
     }
 
     pub fn get_compute_shader(&mut self, device: &Device, name: &str) -> vk::ShaderModule {
-        let value = self
-            .compute_shaders
-            .entry(name.to_string())
-            .or_insert_with(|| {
-                Self::create_shader_module(device, name, vk::ShaderStageFlags::COMPUTE)
-            });
+        let value = self.shaders.entry(name.to_string()).or_insert_with(|| {
+            Self::create_shader_module(device, name, vk::ShaderStageFlags::COMPUTE)
+        });
 
         *value
     }
 
-    pub fn get_graphics_shader(&mut self, device: &Device, name: &str) -> &Shader {
-        let value = self
-            .graphics_shaders
-            .entry(name.to_string())
-            .or_insert_with(|| Shader {
-                vert: Self::create_shader_module(device, name, vk::ShaderStageFlags::VERTEX),
-                frag: Self::create_shader_module(device, name, vk::ShaderStageFlags::FRAGMENT),
+    pub fn get_graphics_shader(
+        &mut self,
+        device: &Device,
+        vert_name: &str,
+        frag_name: &str,
+    ) -> GraphicsShader {
+        let vert = *self
+            .shaders
+            .entry(vert_name.to_string())
+            .or_insert_with(|| {
+                Self::create_shader_module(device, vert_name, vk::ShaderStageFlags::VERTEX)
             });
 
-        value
+        let frag = *self
+            .shaders
+            .entry(frag_name.to_string())
+            .or_insert_with(|| {
+                Self::create_shader_module(device, frag_name, vk::ShaderStageFlags::FRAGMENT)
+            });
+
+        GraphicsShader { vert, frag }
+    }
+
+    pub fn get_graphics_shader_combined(&mut self, device: &Device, name: &str) -> GraphicsShader {
+        self.get_graphics_shader(device, name, name)
     }
 }

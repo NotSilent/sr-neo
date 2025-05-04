@@ -13,7 +13,7 @@ use ash::{
 
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
-    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
+    vulkan::{Allocator, AllocatorCreateDesc},
 };
 
 use nalgebra::{Matrix4, Rotation3, Translation3, Vector3, Vector4, vector};
@@ -21,7 +21,7 @@ use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
-    allocations::AllocatedBuffer,
+    allocations::{AllocatedBuffer, AllocatedImage},
     deletion_queue::{DeletionQueue, DeletionType},
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
@@ -279,12 +279,11 @@ struct MeshAsset {
 
 impl MeshAsset {
     pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        self.mesh_buffers.index_buffer.destroy(device, allocator);
-        self.mesh_buffers.vertex_buffer.destroy(device, allocator);
+        self.mesh_buffers.destroy(device, allocator);
     }
 }
 
-struct ImmediateSubmit {
+pub struct ImmediateSubmit {
     graphics_queue: vk::Queue,
     fence: vk::Fence,
     pool: vk::CommandPool,
@@ -362,6 +361,13 @@ struct GPUMeshBuffers {
     vertex_buffer_address: vk::DeviceAddress,
 }
 
+impl GPUMeshBuffers {
+    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+        self.index_buffer.destroy(device, allocator);
+        self.vertex_buffer.destroy(device, allocator);
+    }
+}
+
 #[repr(C)]
 struct GPUPushDrawConstant {
     world_matrix: Matrix4<f32>,
@@ -413,12 +419,8 @@ impl DescriptorLayoutBuilder<'_> {
         );
     }
 
-    fn clear(&mut self) {
-        self.bindings.clear();
-    }
-
     fn build(
-        &mut self,
+        mut self,
         device: &Device,
         shader_stages: vk::ShaderStageFlags,
         /* , void* pNext = nullptr */ flags: vk::DescriptorSetLayoutCreateFlags,
@@ -493,15 +495,6 @@ impl DescriptorAllocator {
                 .unwrap()
         }
     }
-}
-
-// TODO: split into struct of arrays? split into AllocatedImage2D and AllocatedImage3D?
-struct AllocatedImage {
-    image: vk::Image,
-    image_view: vk::ImageView,
-    image_extent: vk::Extent3D,
-    image_format: vk::Format,
-    _allocation: Allocation,
 }
 
 struct FrameData {
@@ -615,6 +608,16 @@ pub struct VulkanEngine {
 
     scene_data: GPUSceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
+
+    white_image: AllocatedImage,
+    black_image: AllocatedImage,
+    grey_image: AllocatedImage,
+    error_checkerboard_image: AllocatedImage,
+
+    default_sampler_nearest: vk::Sampler,
+    default_sampler_linear: vk::Sampler,
+
+    single_image_descriptor_layout: vk::DescriptorSetLayout,
 }
 
 impl VulkanEngine {
@@ -703,94 +706,28 @@ impl VulkanEngine {
 
         let draw_image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
-        let format = vk::Format::R16G16B16A16_SFLOAT;
+        let draw_image = AllocatedImage::new(
+            &device,
+            &mut allocator,
+            draw_image_extent,
+            vk::Format::R16G16B16A16_SFLOAT,
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::STORAGE
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            false,
+            "draw_image",
+        );
 
-        let image_usages = vk::ImageUsageFlags::TRANSFER_SRC
-            | vk::ImageUsageFlags::TRANSFER_DST
-            | vk::ImageUsageFlags::STORAGE
-            | vk::ImageUsageFlags::COLOR_ATTACHMENT;
-
-        let image_create_info =
-            vk_util::image_create_info(format, image_usages, swapchain.extent.into());
-
-        let image = unsafe { device.create_image(&image_create_info, None).unwrap() };
-        let requirements = unsafe { device.get_image_memory_requirements(image) };
-
-        let description = AllocationCreateDesc {
-            name: "draw_image",
-            requirements,
-            location: MemoryLocation::GpuOnly,
-            linear: false,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        };
-
-        let allocation = allocator.allocate(&description).unwrap();
-
-        unsafe {
-            device
-                .bind_image_memory(image, allocation.memory(), allocation.offset())
-                .unwrap();
-        };
-
-        let image_view_create_info =
-            vk_util::image_view_create_info(format, image, vk::ImageAspectFlags::COLOR);
-        let image_view = unsafe {
-            device
-                .create_image_view(&image_view_create_info, None)
-                .unwrap()
-        };
-
-        let draw_image = AllocatedImage {
-            image,
-            image_view,
-            image_extent: draw_image_extent,
-            image_format: format,
-            _allocation: allocation,
-        };
-
-        let depth_create_info = vk_util::image_create_info(
+        let depth_image = AllocatedImage::new(
+            &device,
+            &mut allocator,
+            draw_image_extent,
             vk::Format::D32_SFLOAT,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-            draw_image_extent,
+            false,
+            "depth_image",
         );
-
-        let depth_image = unsafe { device.create_image(&depth_create_info, None).unwrap() };
-        let requirements = unsafe { device.get_image_memory_requirements(depth_image) };
-
-        let description = AllocationCreateDesc {
-            name: "depth_image",
-            requirements,
-            location: MemoryLocation::GpuOnly,
-            linear: false,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        };
-
-        let allocation = allocator.allocate(&description).unwrap();
-
-        unsafe {
-            device
-                .bind_image_memory(depth_image, allocation.memory(), allocation.offset())
-                .unwrap();
-        };
-
-        let depth_image_view_create_info = vk_util::image_view_create_info(
-            vk::Format::D32_SFLOAT,
-            depth_image,
-            vk::ImageAspectFlags::DEPTH,
-        );
-        let depth_image_view = unsafe {
-            device
-                .create_image_view(&depth_image_view_create_info, None)
-                .unwrap()
-        };
-
-        let depth_image = AllocatedImage {
-            image: depth_image,
-            image_view: depth_image_view,
-            image_extent: draw_image_extent,
-            image_format: vk::Format::D32_SFLOAT,
-            _allocation: allocation,
-        };
 
         let mut shader_manager = ShaderManager::new();
 
@@ -838,6 +775,19 @@ impl VulkanEngine {
             gpu_scene_data_descriptor_layout,
         ));
 
+        let mut builder = DescriptorLayoutBuilder::default();
+        builder.add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
+
+        let single_image_descriptor_layout = builder.build(
+            &device,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            vk::DescriptorSetLayoutCreateFlags::empty(),
+        );
+
+        deletion_queue.push(DeletionType::DescriptorSetLayout(
+            single_image_descriptor_layout,
+        ));
+
         // ~init descriptors
 
         // init pipelines
@@ -881,31 +831,22 @@ impl VulkanEngine {
         .unwrap();
         // ~init pipelines
 
-        // triangle
-
-        let triangle_pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default();
-        let triangle_pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&triangle_pipeline_layout_create_info, None)
-                .unwrap()
-        };
-
-        // ~triangle
-
         let immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
 
         // ~mesh
 
         let triangle_mesh_shader =
-            shader_manager.get_graphics_shader(&device, "colored_triangle_mesh");
+            shader_manager.get_graphics_shader(&device, "colored_triangle_mesh", "tex_image");
 
         let buffer_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .size(std::mem::size_of::<GPUPushDrawConstant>() as u32)];
 
-        let triangle_mesh_pipeline_layout_create_info =
-            vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&buffer_ranges);
+        let single_image_descriptor_layouts = [single_image_descriptor_layout];
+        let triangle_mesh_pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
+            .push_constant_ranges(&buffer_ranges)
+            .set_layouts(&single_image_descriptor_layouts);
 
         let triangle_mesh_pipeline_layout = unsafe {
             device
@@ -920,64 +861,22 @@ impl VulkanEngine {
             .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE) // TODO COUNTER_CLOCKWISE
             .set_multisampling_none()
             .set_pipeline_layout(triangle_mesh_pipeline_layout)
-            //.disable_blending()
-            .enable_blending_additive()
+            .disable_blending()
+            //.enable_blending_additive()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
-            .set_color_attachment_formats(&[draw_image.image_format])
-            .set_depth_format(depth_image.image_format);
+            .set_color_attachment_formats(&[draw_image.format])
+            .set_depth_format(depth_image.format);
 
         let triangle_mesh_pipeline = mesh_pipeline_builder.build_pipeline(&device);
 
         // ~mesh
-
-        deletion_queue.push(DeletionType::Image(draw_image.image));
-        deletion_queue.push(DeletionType::ImageView(draw_image.image_view));
-        deletion_queue.push(DeletionType::Image(depth_image.image));
-        deletion_queue.push(DeletionType::ImageView(depth_image.image_view));
         deletion_queue.push(DeletionType::DescriptorSetLayout(
             draw_image_descriptor_layout,
         ));
         deletion_queue.push(DeletionType::PipelineLayout(compute_layout));
         deletion_queue.push(DeletionType::Pipeline(compute_pipeline));
-        deletion_queue.push(DeletionType::PipelineLayout(triangle_pipeline_layout));
         deletion_queue.push(DeletionType::Pipeline(triangle_mesh_pipeline));
         deletion_queue.push(DeletionType::PipelineLayout(triangle_mesh_pipeline_layout));
-
-        let rect_indices = [0, 1, 2, 2, 1, 3];
-
-        let mut vertex = Vertex::default();
-        let mut rect_vertices = vec![];
-
-        vertex.position = vector![0.5, -0.5, 0.0];
-        vertex.color = vector![0.0, 0.0, 0.0, 1.0];
-
-        rect_vertices.push(vertex.clone());
-
-        vertex.position = vector![0.5, 0.5, 0.0];
-        vertex.color = vector![0.5, 0.5, 0.5, 1.0];
-
-        rect_vertices.push(vertex.clone());
-
-        vertex.position = vector![-0.5, -0.5, 0.0];
-        vertex.color = vector![1.0, 0.0, 0.0, 1.0];
-
-        rect_vertices.push(vertex.clone());
-
-        vertex.position = vector![-0.5, 0.5, 0.0];
-        vertex.color = vector![0.0, 1.0, 0.0, 1.0];
-
-        rect_vertices.push(vertex);
-
-        let rectangle = Self::upload_mesh(
-            &device,
-            &mut allocator,
-            &immediate_submit,
-            &rect_indices,
-            &rect_vertices,
-        );
-
-        deletion_queue.push(DeletionType::Buffer(rectangle.index_buffer.buffer));
-        deletion_queue.push(DeletionType::Buffer(rectangle.vertex_buffer.buffer));
 
         let mesh_assets = Self::load_gltf_meshes(
             &device,
@@ -985,6 +884,90 @@ impl VulkanEngine {
             &immediate_submit,
             std::path::PathBuf::from(gltf_name).as_path(),
         );
+
+        let white = vk_util::pack_u32(&[1.0, 1.0, 1.0, 1.0]);
+        let white_image = AllocatedImage::new_with_data(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            vk::Extent3D::default().width(1).height(1).depth(1),
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED,
+            false,
+            &[white],
+            "white_image",
+        );
+
+        let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
+        let black_image = AllocatedImage::new_with_data(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            vk::Extent3D::default().width(1).height(1).depth(1),
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED,
+            false,
+            &[black],
+            "black_image",
+        );
+
+        let grey = vk_util::pack_u32(&[0.66, 0.66, 0.66, 1.0]);
+        let grey_image = AllocatedImage::new_with_data(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            vk::Extent3D::default().width(1).height(1).depth(1),
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED,
+            false,
+            &[grey],
+            "grey_image",
+        );
+
+        let magenta = vk_util::pack_u32(&[1.0, 0.0, 1.0, 1.0]);
+        let pixels = (0..16 * 16)
+            .map(|i| {
+                let x = i % 16;
+                let y = i / 16;
+                if (x % 2) ^ (y % 2) > 0 {
+                    magenta
+                } else {
+                    black
+                }
+            })
+            .collect::<Vec<u32>>();
+
+        let error_checkerboard_image = AllocatedImage::new_with_data(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            vk::Extent3D::default().width(16).height(16).depth(1),
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED,
+            false,
+            &pixels,
+            "error_checkerboard_image",
+        );
+
+        let sampler_nearest_create_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::NEAREST)
+            .min_filter(vk::Filter::NEAREST);
+
+        let sampler_linear_create_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR);
+
+        let default_sampler_nearest = unsafe {
+            device
+                .create_sampler(&sampler_nearest_create_info, None)
+                .unwrap()
+        };
+
+        let default_sampler_linear = unsafe {
+            device
+                .create_sampler(&sampler_linear_create_info, None)
+                .unwrap()
+        };
 
         Self {
             frame_number: 0,
@@ -1029,35 +1012,62 @@ impl VulkanEngine {
 
             scene_data: GPUSceneData::default(),
             gpu_scene_data_descriptor_layout,
+
+            white_image,
+            black_image,
+            grey_image,
+            error_checkerboard_image,
+
+            default_sampler_nearest,
+            default_sampler_linear,
+
+            single_image_descriptor_layout,
         }
     }
 
     pub fn cleanup(&mut self) {
         unsafe { self.device.queue_wait_idle(self.graphics_queue).unwrap() };
 
+        let device = &self.device;
+        let allocator = self.allocator.as_mut().unwrap();
+
         for frame_data in self.frame_datas.as_mut() {
-            frame_data.destroy(&self.device, self.allocator.as_mut().unwrap());
+            frame_data.destroy(device, allocator);
         }
 
         for mesh_asset in &mut self.mesh_assets {
-            mesh_asset.destroy(&self.device, self.allocator.as_mut().unwrap());
+            mesh_asset.destroy(device, allocator);
         }
 
-        self.shader_manager.destroy(&self.device);
+        self.shader_manager.destroy(device);
 
-        self.descriptor_allocator.destroy_pool(&self.device);
+        self.descriptor_allocator.destroy_pool(device);
 
-        self.immediate_submit.destroy(&self.device);
+        self.immediate_submit.destroy(device);
 
-        self.deletion_queue
-            .flush(&self.device, self.allocator.as_mut().unwrap());
+        self.deletion_queue.flush(device, allocator);
+
+        unsafe {
+            device.destroy_sampler(self.default_sampler_nearest, None);
+            device.destroy_sampler(self.default_sampler_linear, None);
+        }
+
+        self.draw_image.destroy(device, allocator);
+        self.depth_image.destroy(device, allocator);
+
+        self.white_image.destroy(device, allocator);
+        self.black_image.destroy(device, allocator);
+        self.grey_image.destroy(device, allocator);
+        self.error_checkerboard_image.destroy(device, allocator);
+
+        dbg!(self.allocator.as_ref().unwrap().generate_report());
 
         self.allocator.take();
 
         unsafe {
-            self.swapchain.destroy(&self.swapchain_device, &self.device);
+            self.swapchain.destroy(&self.swapchain_device, device);
             self.surface_instance.destroy_surface(self.surface, None);
-            self.device.destroy_device(None);
+            device.destroy_device(None);
             self.debug_utils
                 .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
             self.instance.destroy_instance(None);
@@ -1133,20 +1143,13 @@ impl VulkanEngine {
 
     #[allow(clippy::too_many_lines)]
     fn draw_geometry(&mut self, cmd: vk::CommandBuffer, draw_extent: vk::Extent2D) {
-        let device = &self.device;
-        let allocator = &mut self.allocator;
-        let triangle_mesh_pipeline_layout = &self.triangle_mesh_pipeline_layout;
-        let triangle_mesh_pipeline = &self.triangle_mesh_pipeline;
-        let mesh_assets = &self.mesh_assets;
-        let draw_image = &self.draw_image;
-        let depth_image = &self.depth_image;
-
         let gpu_scene_data_buffer = AllocatedBuffer::new(
-            device,
-            allocator.as_mut().unwrap(),
+            &self.device,
+            self.allocator.as_mut().unwrap(),
             std::mem::size_of::<GPUSceneData>() as u64,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             MemoryLocation::CpuToGpu,
+            "draw_geometry",
         );
 
         // TODO: part of allocated buffer?
@@ -1169,7 +1172,7 @@ impl VulkanEngine {
             .get_current_frame()
             .descriptors
             .borrow_mut()
-            .allocate(device, self.gpu_scene_data_descriptor_layout);
+            .allocate(&self.device, self.gpu_scene_data_descriptor_layout);
 
         let mut writer = DescriptorWriter::default();
         writer.write_buffer(
@@ -1180,7 +1183,7 @@ impl VulkanEngine {
             vk::DescriptorType::UNIFORM_BUFFER,
         );
 
-        writer.update_set(device, global_descriptor);
+        writer.update_set(&self.device, global_descriptor);
 
         self.get_current_frame()
             .deletion_queue
@@ -1188,13 +1191,13 @@ impl VulkanEngine {
             .push(DeletionType::AllocatedBuffer(gpu_scene_data_buffer));
 
         let color_attachment = [vk_util::attachment_info(
-            draw_image.image_view,
+            self.draw_image.image_view,
             None,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         )];
 
         let depth_attachment = vk_util::depth_attachment_info(
-            depth_image.image_view,
+            self.depth_image.image_view,
             vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
         );
 
@@ -1214,7 +1217,7 @@ impl VulkanEngine {
 
         let push_constants = GPUPushDrawConstant {
             world_matrix: projection * view * world,
-            vertex_buffer: mesh_assets[2].mesh_buffers.vertex_buffer_address,
+            vertex_buffer: self.mesh_assets[2].mesh_buffers.vertex_buffer_address,
         };
 
         let viewports = [vk::Viewport::default()
@@ -1225,38 +1228,65 @@ impl VulkanEngine {
 
         let scissors = [vk::Rect2D::default().extent(draw_extent)];
 
-        unsafe {
-            device.cmd_begin_rendering(cmd, &rendering_info);
-
-            device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                *triangle_mesh_pipeline,
+        let image_set = self
+            .get_current_frame()
+            .descriptors
+            .borrow_mut()
+            .allocate(&self.device, self.single_image_descriptor_layout);
+        {
+            let mut writer = DescriptorWriter::default();
+            writer.write_image(
+                0,
+                self.default_sampler_nearest,
+                self.error_checkerboard_image.image_view,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             );
 
-            device.cmd_set_viewport(cmd, 0, &viewports);
-            device.cmd_set_scissor(cmd, 0, &scissors);
+            writer.update_set(&self.device, image_set);
+        }
 
-            device.cmd_push_constants(
+        unsafe {
+            self.device.cmd_begin_rendering(cmd, &rendering_info);
+
+            self.device.cmd_bind_pipeline(
                 cmd,
-                *triangle_mesh_pipeline_layout,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.triangle_mesh_pipeline,
+            );
+
+            self.device.cmd_set_viewport(cmd, 0, &viewports);
+            self.device.cmd_set_scissor(cmd, 0, &scissors);
+
+            self.device.cmd_push_constants(
+                cmd,
+                self.triangle_mesh_pipeline_layout,
                 vk::ShaderStageFlags::VERTEX,
                 0,
                 push_constants.as_bytes(),
             );
 
-            device.cmd_bind_index_buffer(
+            self.device.cmd_bind_descriptor_sets(
                 cmd,
-                mesh_assets[2].mesh_buffers.index_buffer.buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.triangle_mesh_pipeline_layout,
+                0,
+                &[image_set],
+                &[],
+            );
+
+            self.device.cmd_bind_index_buffer(
+                cmd,
+                self.mesh_assets[2].mesh_buffers.index_buffer.buffer,
                 0,
                 vk::IndexType::UINT32,
             );
 
-            device.cmd_draw_indexed(
+            self.device.cmd_draw_indexed(
                 cmd,
-                mesh_assets[2].surfaces[0].count,
+                self.mesh_assets[2].surfaces[0].count,
                 1,
-                mesh_assets[2].surfaces[0].start_index,
+                self.mesh_assets[2].surfaces[0].start_index,
                 0,
                 0,
             );
@@ -1267,29 +1297,29 @@ impl VulkanEngine {
 
             let push_constants = GPUPushDrawConstant {
                 world_matrix: projection * view * world,
-                vertex_buffer: mesh_assets[2].mesh_buffers.vertex_buffer_address,
+                vertex_buffer: self.mesh_assets[2].mesh_buffers.vertex_buffer_address,
             };
 
-            device.cmd_push_constants(
+            self.device.cmd_push_constants(
                 cmd,
-                *triangle_mesh_pipeline_layout,
+                self.triangle_mesh_pipeline_layout,
                 vk::ShaderStageFlags::VERTEX,
                 0,
                 push_constants.as_bytes(),
             );
 
-            device.cmd_draw_indexed(
+            self.device.cmd_draw_indexed(
                 cmd,
-                mesh_assets[2].surfaces[0].count,
+                self.mesh_assets[2].surfaces[0].count,
                 1,
-                mesh_assets[2].surfaces[0].start_index,
+                self.mesh_assets[2].surfaces[0].start_index,
                 0,
                 0,
             );
         };
 
         unsafe {
-            device.cmd_end_rendering(cmd);
+            self.device.cmd_end_rendering(cmd);
         }
     }
 
@@ -1308,7 +1338,7 @@ impl VulkanEngine {
                 .expect("Failed waiting for fences");
 
             // Clear frame resources
-            // TODO: to FrameData?
+            // TODO: to FrameData with above
             {
                 self.device
                     .reset_fences(&[current_frame_fence])
@@ -1354,14 +1384,14 @@ impl VulkanEngine {
                 .swapchain
                 .extent
                 .width
-                .min(self.draw_image.image_extent.width) as f32
+                .min(self.draw_image.extent.width) as f32
                 * render_scale;
 
             let draw_height = self
                 .swapchain
                 .extent
                 .height
-                .min(self.draw_image.image_extent.height) as f32
+                .min(self.draw_image.extent.height) as f32
                 * render_scale;
 
             let draw_extent = vk::Extent2D::default()
@@ -1434,8 +1464,8 @@ impl VulkanEngine {
                 cmd,
                 self.draw_image.image,
                 swapchain_image,
-                &draw_extent,
-                &self.swapchain.extent,
+                draw_extent,
+                self.swapchain.extent,
             );
 
             vk_util::transition_image(
@@ -1671,6 +1701,7 @@ impl VulkanEngine {
             index_buffer_size,
             vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
+            "index_buffer",
         );
 
         let vertex_buffer = AllocatedBuffer::new(
@@ -1681,6 +1712,7 @@ impl VulkanEngine {
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             MemoryLocation::GpuOnly,
+            "vertex_buffer",
         );
 
         let info = vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer.buffer);
@@ -1694,6 +1726,7 @@ impl VulkanEngine {
             index_buffer_size + vertex_buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
+            "staging",
         );
 
         unsafe {
@@ -1744,7 +1777,7 @@ impl VulkanEngine {
 
         staging.destroy(device, allocator);
 
-        self::GPUMeshBuffers {
+        GPUMeshBuffers {
             index_buffer,
             vertex_buffer,
             vertex_buffer_address,

@@ -30,7 +30,7 @@ impl DeletionQueue {
         for item in self.queue.iter_mut().rev() {
             match item {
                 DeletionType::AllocatedBuffer(allocated_buffer) => {
-                    allocated_buffer.destroy(device, allocator)
+                    allocated_buffer.destroy(device, allocator);
                 }
                 DeletionType::Buffer(buffer) => unsafe { device.destroy_buffer(*buffer, None) },
                 DeletionType::CommandPool(command_pool) => unsafe {

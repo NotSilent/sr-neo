@@ -97,12 +97,13 @@ pub fn image_create_info(
     format: vk::Format,
     usage_flags: vk::ImageUsageFlags,
     extent: vk::Extent3D,
+    mip_levels: u32,
 ) -> vk::ImageCreateInfo<'static> {
     vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(format)
         .extent(extent)
-        .mip_levels(1)
+        .mip_levels(mip_levels.min(1))
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
         .tiling(vk::ImageTiling::OPTIMAL)
@@ -133,8 +134,8 @@ pub fn copy_image_to_image(
     cmd: vk::CommandBuffer,
     source: vk::Image,
     destination: vk::Image,
-    src_size: &vk::Extent2D,
-    dst_size: &vk::Extent2D,
+    src_size: vk::Extent2D,
+    dst_size: vk::Extent2D,
 ) {
     let blit_regions = [vk::ImageBlit2::default()
         .src_offsets([
@@ -217,4 +218,14 @@ pub fn rendering_info<'a>(
         .color_attachments(color_attachments)
         .depth_attachment(depth_attachment)
     // .stencil_attachment()
+}
+
+pub fn pack_u32(values: &[f32; 4]) -> u32 {
+    let mut packed: u32 = 0;
+    for (index, &component) in values.iter().enumerate() {
+        let clamped = component.clamp(0.0, 1.0);
+        let int_val = (clamped * 255.0 + 0.5) as u32;
+        packed |= int_val << (index * 8);
+    }
+    packed
 }
