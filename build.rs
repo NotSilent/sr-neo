@@ -23,6 +23,7 @@ fn main() -> io::Result<()> {
                         path.to_str().unwrap(),
                         "-o",
                         output_spv.to_str().unwrap(),
+                        r"-I/home/silent/Desktop/sr-neo/shaders/includes",
                     ])
                     .status()
                     .expect("Failed to run glslangValidator");

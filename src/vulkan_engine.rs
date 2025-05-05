@@ -3,6 +3,7 @@ use std::{
     cell::RefCell,
     ffi::{self, c_char},
     mem::ManuallyDrop,
+    rc::{Rc, Weak},
 };
 
 use ash::{
@@ -28,6 +29,267 @@ use crate::{
     swapchain::{Swapchain, SwapchainError},
 };
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
+
+// TODO: Check size at compile time, and maybe only pad when uploading
+struct MaterialConstants {
+    color_factors: Vector4<f32>,
+    metal_rough_factors: Vector4<f32>,
+    extra: [Vector4<f32>; 14], // padding
+}
+
+// TODO: Tracking?
+struct MaterialResources<'a> {
+    color_image: &'a AllocatedImage,
+    color_sampler: vk::Sampler,
+    metal_rough_image: &'a AllocatedImage,
+    metal_rough_sampler: vk::Sampler,
+    data_buffer: vk::Buffer,
+    data_buffer_offset: u32,
+}
+
+struct GLTFMaterial {
+    data: Rc<MaterialInstance>,
+}
+
+struct GLTFMetallicRoughness {
+    opaque_pipeline: Rc<MaterialPipeline>,
+    transparent_pipeline: Rc<MaterialPipeline>,
+
+    material_layout: vk::DescriptorSetLayout,
+
+    writer: DescriptorWriter,
+}
+
+impl GLTFMetallicRoughness {
+    fn new(
+        device: &Device,
+        shader_manager: &mut ShaderManager,
+        frame_layout: vk::DescriptorSetLayout,
+        draw_format: vk::Format,
+        depth_format: vk::Format,
+    ) -> Self {
+        let shader = shader_manager.get_graphics_shader_combined(device, "mesh");
+
+        let matrix_range = [vk::PushConstantRange::default()
+            .offset(0)
+            .size(size_of::<GPUPushDrawConstant>() as u32)
+            .stage_flags(vk::ShaderStageFlags::VERTEX)];
+
+        let material_layout = DescriptorLayoutBuilder::default()
+            .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
+            .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .build(
+                device,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorSetLayoutCreateFlags::empty(),
+            );
+
+        let layouts = [frame_layout, material_layout];
+
+        let pipeline_layouts_create_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&layouts)
+            .push_constant_ranges(&matrix_range);
+
+        let new_layout = unsafe {
+            device
+                .create_pipeline_layout(&pipeline_layouts_create_info, None)
+                .unwrap()
+        };
+
+        let opaque_pipeline_builder = PipelineBuilder::default()
+            .set_shaders(shader.vert, shader.frag)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE) // TODO: Cull and CounterClockwise
+            .set_multisampling_none()
+            .disable_blending()
+            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
+            .set_color_attachment_formats(&[draw_format])
+            .set_depth_format(depth_format)
+            .set_pipeline_layout(new_layout);
+
+        let transparent_pipeline_builder = opaque_pipeline_builder
+            .clone()
+            .enable_blending_additive()
+            .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
+
+        let opaque_pipeline = opaque_pipeline_builder.build_pipeline(device);
+        let transparent_pipeline = transparent_pipeline_builder.build_pipeline(device);
+
+        let opaque_pipeline = Rc::new(MaterialPipeline {
+            pipeline_layout: new_layout,
+            pipeline: opaque_pipeline,
+        });
+
+        let transparent_pipeline = Rc::new(MaterialPipeline {
+            pipeline_layout: new_layout,
+            pipeline: transparent_pipeline,
+        });
+
+        Self {
+            opaque_pipeline,
+            transparent_pipeline,
+            material_layout,
+            writer: DescriptorWriter::default(),
+        }
+    }
+
+    // TODO: this and other destroys could take mut self instead?
+    fn destroy(&self, device: &Device) {
+        self.opaque_pipeline.destroy(device);
+        self.transparent_pipeline.destroy(device);
+
+        unsafe {
+            // TODO: This mess, they share the layout
+            device.destroy_pipeline_layout(self.opaque_pipeline.pipeline_layout, None);
+            device.destroy_descriptor_set_layout(self.material_layout, None);
+        };
+    }
+
+    fn write_material(
+        &mut self,
+        device: &Device,
+        pass: MaterialPass,
+        resources: &MaterialResources,
+        descriptor_allocator: &mut DescriptorAllocatorGrowable,
+    ) -> MaterialInstance {
+        let pipeline = match pass {
+            MaterialPass::MainColor => Rc::clone(&self.opaque_pipeline),
+            MaterialPass::Transparent => Rc::clone(&self.transparent_pipeline),
+        };
+
+        let set = descriptor_allocator.allocate(device, self.material_layout);
+
+        self.writer.write_buffer(
+            0,
+            resources.data_buffer,
+            size_of::<MaterialResources>() as u64,
+            u64::from(resources.data_buffer_offset),
+            vk::DescriptorType::UNIFORM_BUFFER,
+        );
+
+        self.writer.write_image(
+            1,
+            resources.color_sampler,
+            resources.color_image.image_view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+
+        self.writer.write_image(
+            2,
+            resources.metal_rough_sampler,
+            resources.metal_rough_image.image_view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+
+        self.writer.update_set(device, set);
+
+        MaterialInstance {
+            pipeline,
+            set,
+            pass,
+        }
+    }
+}
+
+struct DrawContext {
+    opaque_surfaces: Vec<RenderObject>,
+}
+
+trait Renderable {
+    fn draw(&self, top_matrix: &Matrix4<f32>, ctx: &mut DrawContext);
+}
+
+struct Node {
+    parent: Weak<Node>,
+    children: Vec<Rc<Node>>,
+
+    local_transform: Matrix4<f32>,
+    world_transform: Matrix4<f32>,
+}
+
+impl Node {
+    fn refresh_transform(&mut self, parent_matrix: &Matrix4<f32>) {
+        self.world_transform = parent_matrix * self.local_transform;
+    }
+}
+
+impl Renderable for Node {
+    #[allow(clippy::only_used_in_recursion)]
+    fn draw(&self, top_matrix: &Matrix4<f32>, ctx: &mut DrawContext) {
+        for child in &self.children {
+            child.draw(top_matrix, ctx);
+        }
+    }
+}
+
+struct MeshNode {
+    node: Node,
+    mesh: Rc<MeshAsset>,
+}
+
+impl Renderable for MeshNode {
+    fn draw(&self, top_matrix: &Matrix4<f32>, ctx: &mut DrawContext) {
+        let node_matrix = top_matrix * self.node.local_transform;
+
+        for surface in &self.mesh.surfaces {
+            let render_object = RenderObject {
+                index_count: surface.count,
+                first_index: surface.start_index,
+                index_buffer: self.mesh.mesh_buffers.index_buffer.buffer,
+                vertex_buffer_address: self.mesh.mesh_buffers.vertex_buffer_address,
+                material: Rc::clone(&surface.material.data),
+                transform: node_matrix,
+            };
+
+            ctx.opaque_surfaces.push(render_object);
+        }
+
+        self.node.draw(top_matrix, ctx);
+    }
+}
+
+#[derive(Default)]
+struct MaterialPipeline {
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+}
+
+impl MaterialPipeline {
+    fn destroy(&self, device: &Device) {
+        unsafe {
+            device.destroy_pipeline(self.pipeline, None);
+            // TODO: pipeline layout is not owned here, figure out this mess
+            // device.destroy_pipeline_layout(self.pipeline_layout, None);
+        }
+    }
+}
+
+enum MaterialPass {
+    MainColor,
+    Transparent,
+}
+
+// TODO: drop Rc, should be fine to have a copy?
+struct MaterialInstance {
+    pipeline: Rc<MaterialPipeline>,
+    set: vk::DescriptorSet,
+    pass: MaterialPass,
+}
+
+struct RenderObject {
+    index_count: u32,
+    first_index: u32,
+    index_buffer: vk::Buffer,
+    vertex_buffer_address: vk::DeviceAddress,
+
+    material: Rc<MaterialInstance>,
+
+    transform: Matrix4<f32>,
+}
 
 #[derive(Default)]
 struct GPUSceneData {
@@ -98,7 +360,8 @@ impl DescriptorWriter {
         });
     }
 
-    pub fn update_set(mut self, device: &Device, set: vk::DescriptorSet) {
+    // TODO: refactor to create_set, allocate and return the new set
+    pub fn update_set(&mut self, device: &Device, set: vk::DescriptorSet) {
         let mut writes = vec![];
 
         for buffer_info in &self.buffer_infos {
@@ -270,6 +533,7 @@ pub enum DrawError {
 struct GeoSurface {
     start_index: u32,
     count: u32,
+    material: Rc<GLTFMaterial>, // Weak?
 }
 
 struct MeshAsset {
@@ -411,20 +675,23 @@ struct DescriptorLayoutBuilder<'a> {
 }
 
 impl DescriptorLayoutBuilder<'_> {
-    fn add_binding(&mut self, binding: u32, descriptor_type: vk::DescriptorType) {
+    // TODO: Drop binding and increment?
+    fn add_binding(mut self, binding: u32, descriptor_type: vk::DescriptorType) -> Self {
         self.bindings.push(
             vk::DescriptorSetLayoutBinding::default()
                 .binding(binding)
                 .descriptor_count(1)
                 .descriptor_type(descriptor_type),
         );
+
+        self
     }
 
     fn build(
         mut self,
         device: &Device,
         shader_stages: vk::ShaderStageFlags,
-        /* , void* pNext = nullptr */ flags: vk::DescriptorSetLayoutCreateFlags,
+        flags: vk::DescriptorSetLayoutCreateFlags, // TODO: Remove?
     ) -> vk::DescriptorSetLayout {
         for binding in &mut self.bindings {
             binding.stage_flags |= shader_stages;
@@ -448,11 +715,11 @@ pub struct PoolSizeRatio {
 }
 
 #[derive(Default)]
-struct DescriptorAllocator {
+struct DescriptorAllocatora {
     pool: vk::DescriptorPool,
 }
 
-impl DescriptorAllocator {
+impl DescriptorAllocatora {
     fn init_pool(&mut self, device: &Device, max_sets: u32, pool_ratios: &[PoolSizeRatio]) {
         let mut pool_sizes = Vec::new();
         for ratio in pool_ratios {
@@ -591,7 +858,7 @@ pub struct VulkanEngine {
 
     shader_manager: ShaderManager,
 
-    descriptor_allocator: DescriptorAllocator,
+    descriptor_allocator: DescriptorAllocatorGrowable,
 
     _draw_image_descriptor_layout: vk::DescriptorSetLayout,
     draw_image_descriptors: vk::DescriptorSet,
@@ -618,6 +885,9 @@ pub struct VulkanEngine {
     default_sampler_linear: vk::Sampler,
 
     single_image_descriptor_layout: vk::DescriptorSetLayout,
+
+    metal_rough_material: GLTFMetallicRoughness,
+    default_data: MaterialInstance,
 }
 
 impl VulkanEngine {
@@ -729,28 +999,32 @@ impl VulkanEngine {
             "depth_image",
         );
 
-        let mut shader_manager = ShaderManager::new();
+        let mut shader_manager = ShaderManager::default();
 
         // init descriptors
-        let sizes = vec![PoolSizeRatio {
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            ratio: 1,
-        }];
+        let pool_ratios = vec![
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                ratio: 1,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                ratio: 1,
+            },
+        ];
 
-        let mut descriptor_allocator = DescriptorAllocator::default();
-        descriptor_allocator.init_pool(&device, 10, &sizes);
+        let mut descriptor_allocator = DescriptorAllocatorGrowable::new(&device, 10, pool_ratios);
 
-        let mut builder = DescriptorLayoutBuilder::default();
-        builder.add_binding(0, vk::DescriptorType::STORAGE_IMAGE);
-
-        let draw_image_descriptor_layout = builder.build(
-            &device,
-            vk::ShaderStageFlags::COMPUTE,
-            vk::DescriptorSetLayoutCreateFlags::empty(),
-        );
+        let draw_image_descriptor_layout = DescriptorLayoutBuilder::default()
+            .add_binding(0, vk::DescriptorType::STORAGE_IMAGE)
+            .build(
+                &device,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorSetLayoutCreateFlags::empty(),
+            );
 
         let draw_image_descriptors =
-            descriptor_allocator.allocate(&device, &[draw_image_descriptor_layout]);
+            descriptor_allocator.allocate(&device, draw_image_descriptor_layout);
 
         let mut descriptor_writer = DescriptorWriter::default();
         descriptor_writer.write_image(
@@ -762,27 +1036,25 @@ impl VulkanEngine {
         );
         descriptor_writer.update_set(&device, draw_image_descriptors);
 
-        let mut builder = DescriptorLayoutBuilder::default();
-        builder.add_binding(0, vk::DescriptorType::UNIFORM_BUFFER);
-
-        let gpu_scene_data_descriptor_layout = builder.build(
-            &device,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            vk::DescriptorSetLayoutCreateFlags::empty(),
-        );
+        let gpu_scene_data_descriptor_layout = DescriptorLayoutBuilder::default()
+            .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
+            .build(
+                &device,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorSetLayoutCreateFlags::empty(),
+            );
 
         deletion_queue.push(DeletionType::DescriptorSetLayout(
             gpu_scene_data_descriptor_layout,
         ));
 
-        let mut builder = DescriptorLayoutBuilder::default();
-        builder.add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
-
-        let single_image_descriptor_layout = builder.build(
-            &device,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            vk::DescriptorSetLayoutCreateFlags::empty(),
-        );
+        let single_image_descriptor_layout = DescriptorLayoutBuilder::default()
+            .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .build(
+                &device,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorSetLayoutCreateFlags::empty(),
+            );
 
         deletion_queue.push(DeletionType::DescriptorSetLayout(
             single_image_descriptor_layout,
@@ -854,7 +1126,7 @@ impl VulkanEngine {
                 .unwrap()
         };
 
-        let mut mesh_pipeline_builder = PipelineBuilder::default()
+        let mesh_pipeline_builder = PipelineBuilder::default()
             .set_shaders(triangle_mesh_shader.vert, triangle_mesh_shader.frag)
             .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .set_polygon_mode(vk::PolygonMode::FILL)
@@ -969,6 +1241,42 @@ impl VulkanEngine {
                 .unwrap()
         };
 
+        let mut metal_rough_material = GLTFMetallicRoughness::new(
+            &device,
+            &mut shader_manager,
+            gpu_scene_data_descriptor_layout,
+            draw_image.format,
+            depth_image.format,
+        );
+
+        let material_constants = AllocatedBuffer::new(
+            &device,
+            &mut allocator,
+            size_of::<GLTFMetallicRoughness>() as u64,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            MemoryLocation::CpuToGpu,
+            "default_data_constants_buffer",
+        );
+
+        let resources = MaterialResources {
+            color_image: &white_image,
+            color_sampler: default_sampler_linear,
+            metal_rough_image: &white_image,
+            metal_rough_sampler: default_sampler_linear,
+            data_buffer: material_constants.buffer,
+            data_buffer_offset: 0,
+        };
+
+        // TODO: Buffer management, and also image, just Rc everywhere?
+        deletion_queue.push(DeletionType::AllocatedBuffer(material_constants));
+
+        let default_data = metal_rough_material.write_material(
+            &device,
+            MaterialPass::MainColor,
+            &resources,
+            &mut descriptor_allocator,
+        );
+
         Self {
             frame_number: 0,
             _stop_rendering: false,
@@ -1022,9 +1330,13 @@ impl VulkanEngine {
             default_sampler_linear,
 
             single_image_descriptor_layout,
+
+            metal_rough_material,
+            default_data,
         }
     }
 
+    //TODO: drop
     pub fn cleanup(&mut self) {
         unsafe { self.device.queue_wait_idle(self.graphics_queue).unwrap() };
 
@@ -1041,7 +1353,7 @@ impl VulkanEngine {
 
         self.shader_manager.destroy(device);
 
-        self.descriptor_allocator.destroy_pool(device);
+        self.descriptor_allocator.destroy(device);
 
         self.immediate_submit.destroy(device);
 
@@ -1051,6 +1363,8 @@ impl VulkanEngine {
             device.destroy_sampler(self.default_sampler_nearest, None);
             device.destroy_sampler(self.default_sampler_linear, None);
         }
+
+        self.metal_rough_material.destroy(device);
 
         self.draw_image.destroy(device, allocator);
         self.depth_image.destroy(device, allocator);
@@ -1811,6 +2125,17 @@ impl VulkanEngine {
                 surfaces.push(GeoSurface {
                     start_index: start_index as u32,
                     count: count as u32,
+                    // TODO: Temporary to compile
+                    material: Rc::new(GLTFMaterial {
+                        data: Rc::new(MaterialInstance {
+                            pipeline: Rc::new(MaterialPipeline {
+                                pipeline_layout: vk::PipelineLayout::null(),
+                                pipeline: vk::Pipeline::null(),
+                            }),
+                            set: vk::DescriptorSet::null(),
+                            pass: MaterialPass::MainColor,
+                        }),
+                    }),
                 });
 
                 let initial_vtx = vertices.len();

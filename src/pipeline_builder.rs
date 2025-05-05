@@ -1,6 +1,6 @@
 use ash::{Device, vk};
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct PipelineBuilder<'a> {
     shader_stages: Vec<vk::PipelineShaderStageCreateInfo<'a>>,
     input_assembly: vk::PipelineInputAssemblyStateCreateInfo<'a>,
@@ -13,7 +13,7 @@ pub struct PipelineBuilder<'a> {
 }
 
 impl PipelineBuilder<'_> {
-    pub fn build_pipeline(&mut self, device: &Device) -> vk::Pipeline {
+    pub fn build_pipeline(mut self, device: &Device) -> vk::Pipeline {
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
