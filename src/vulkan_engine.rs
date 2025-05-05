@@ -13,12 +13,13 @@ use ash::{
     vk,
 };
 
+use egui_winit::egui::ahash::HashMap;
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocator, AllocatorCreateDesc},
 };
 
-use nalgebra::{Matrix4, Rotation3, Translation3, Vector3, Vector4, vector};
+use nalgebra::{Matrix4, Rotation3, Scale3, Translation3, Vector3, Vector4, vector};
 use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
@@ -31,6 +32,7 @@ use crate::{
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
 
 // TODO: Check size at compile time, and maybe only pad when uploading
+#[repr(C)]
 struct MaterialConstants {
     color_factors: Vector4<f32>,
     metal_rough_factors: Vector4<f32>,
@@ -45,10 +47,6 @@ struct MaterialResources<'a> {
     metal_rough_sampler: vk::Sampler,
     data_buffer: vk::Buffer,
     data_buffer_offset: u32,
-}
-
-struct GLTFMaterial {
-    data: Rc<MaterialInstance>,
 }
 
 struct GLTFMetallicRoughness {
@@ -164,7 +162,7 @@ impl GLTFMetallicRoughness {
         self.writer.write_buffer(
             0,
             resources.data_buffer,
-            size_of::<MaterialResources>() as u64,
+            size_of::<MaterialConstants>() as u64,
             u64::from(resources.data_buffer_offset),
             vk::DescriptorType::UNIFORM_BUFFER,
         );
@@ -195,6 +193,7 @@ impl GLTFMetallicRoughness {
     }
 }
 
+#[derive(Default)]
 struct DrawContext {
     opaque_surfaces: Vec<RenderObject>,
 }
@@ -228,20 +227,22 @@ impl Renderable for Node {
 
 struct MeshNode {
     node: Node,
-    mesh: Rc<MeshAsset>,
+    mesh: Rc<RefCell<MeshAsset>>,
 }
 
 impl Renderable for MeshNode {
     fn draw(&self, top_matrix: &Matrix4<f32>, ctx: &mut DrawContext) {
         let node_matrix = top_matrix * self.node.local_transform;
 
-        for surface in &self.mesh.surfaces {
+        let mesh = self.mesh.borrow_mut();
+
+        for surface in &mesh.surfaces {
             let render_object = RenderObject {
                 index_count: surface.count,
                 first_index: surface.start_index,
-                index_buffer: self.mesh.mesh_buffers.index_buffer.buffer,
-                vertex_buffer_address: self.mesh.mesh_buffers.vertex_buffer_address,
-                material: Rc::clone(&surface.material.data),
+                index_buffer: mesh.mesh_buffers.index_buffer.buffer,
+                vertex_buffer_address: mesh.mesh_buffers.vertex_buffer_address,
+                material: Rc::clone(&surface.material),
                 transform: node_matrix,
             };
 
@@ -293,12 +294,12 @@ struct RenderObject {
 
 #[derive(Default)]
 struct GPUSceneData {
-    _view: Matrix4<f32>,
-    _proj: Matrix4<f32>,
-    _view_proj: Matrix4<f32>,
-    _ambient_color: Vector4<f32>,
-    _sunlight_direction: Vector4<f32>, // w for sun power
-    _sunlight_color: Vector4<f32>,
+    view: Matrix4<f32>,
+    proj: Matrix4<f32>,
+    view_proj: Matrix4<f32>,
+    ambient_color: Vector4<f32>,
+    sunlight_direction: Vector4<f32>, // w for sun power
+    sunlight_color: Vector4<f32>,
 }
 
 struct DescriptorBufferInfo {
@@ -533,11 +534,11 @@ pub enum DrawError {
 struct GeoSurface {
     start_index: u32,
     count: u32,
-    material: Rc<GLTFMaterial>, // Weak?
+    material: Rc<MaterialInstance>, // Weak?
 }
 
 struct MeshAsset {
-    _name: String,
+    name: String,
     surfaces: Vec<GeoSurface>,
     mesh_buffers: GPUMeshBuffers,
 }
@@ -644,7 +645,7 @@ impl GPUPushDrawConstant {
         unsafe {
             std::slice::from_raw_parts(
                 std::ptr::from_ref::<Self>(self).cast::<u8>(),
-                std::mem::size_of::<Self>(),
+                size_of::<Self>(),
             )
         }
     }
@@ -663,7 +664,7 @@ impl ComputePushConstants {
         unsafe {
             std::slice::from_raw_parts(
                 std::ptr::from_ref::<Self>(self).cast::<u8>(),
-                std::mem::size_of::<Self>(),
+                size_of::<Self>(),
             )
         }
     }
@@ -714,56 +715,56 @@ pub struct PoolSizeRatio {
     ratio: u32,
 }
 
-#[derive(Default)]
-struct DescriptorAllocatora {
-    pool: vk::DescriptorPool,
-}
+// #[derive(Default)]
+// struct DescriptorAllocatora {
+//     pool: vk::DescriptorPool,
+// }
 
-impl DescriptorAllocatora {
-    fn init_pool(&mut self, device: &Device, max_sets: u32, pool_ratios: &[PoolSizeRatio]) {
-        let mut pool_sizes = Vec::new();
-        for ratio in pool_ratios {
-            pool_sizes.push(
-                vk::DescriptorPoolSize::default()
-                    .ty(ratio.descriptor_type)
-                    .descriptor_count(ratio.ratio * max_sets),
-            );
-        }
+// impl DescriptorAllocatora {
+//     fn init_pool(&mut self, device: &Device, max_sets: u32, pool_ratios: &[PoolSizeRatio]) {
+//         let mut pool_sizes = Vec::new();
+//         for ratio in pool_ratios {
+//             pool_sizes.push(
+//                 vk::DescriptorPoolSize::default()
+//                     .ty(ratio.descriptor_type)
+//                     .descriptor_count(ratio.ratio * max_sets),
+//             );
+//         }
 
-        let create_info = vk::DescriptorPoolCreateInfo::default()
-            .flags(vk::DescriptorPoolCreateFlags::empty())
-            .max_sets(max_sets)
-            .pool_sizes(&pool_sizes);
+//         let create_info = vk::DescriptorPoolCreateInfo::default()
+//             .flags(vk::DescriptorPoolCreateFlags::empty())
+//             .max_sets(max_sets)
+//             .pool_sizes(&pool_sizes);
 
-        self.pool = unsafe { device.create_descriptor_pool(&create_info, None).unwrap() };
-    }
+//         self.pool = unsafe { device.create_descriptor_pool(&create_info, None).unwrap() };
+//     }
 
-    fn clear_descriptors(&self, device: &Device) {
-        unsafe {
-            device
-                .reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty())
-                .unwrap();
-        };
-    }
+//     fn clear_descriptors(&self, device: &Device) {
+//         unsafe {
+//             device
+//                 .reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty())
+//                 .unwrap();
+//         };
+//     }
 
-    fn destroy_pool(&self, device: &Device) {
-        unsafe { device.destroy_descriptor_pool(self.pool, None) };
-    }
+//     fn destroy_pool(&self, device: &Device) {
+//         unsafe { device.destroy_descriptor_pool(self.pool, None) };
+//     }
 
-    fn allocate(&self, device: &Device, layouts: &[vk::DescriptorSetLayout]) -> vk::DescriptorSet {
-        let allocate_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(self.pool)
-            .set_layouts(layouts);
+//     fn allocate(&self, device: &Device, layouts: &[vk::DescriptorSetLayout]) -> vk::DescriptorSet {
+//         let allocate_info = vk::DescriptorSetAllocateInfo::default()
+//             .descriptor_pool(self.pool)
+//             .set_layouts(layouts);
 
-        unsafe {
-            *device
-                .allocate_descriptor_sets(&allocate_info)
-                .unwrap()
-                .first()
-                .unwrap()
-        }
-    }
-}
+//         unsafe {
+//             *device
+//                 .allocate_descriptor_sets(&allocate_info)
+//                 .unwrap()
+//                 .first()
+//                 .unwrap()
+//         }
+//     }
+// }
 
 struct FrameData {
     command_pool: vk::CommandPool,
@@ -868,10 +869,8 @@ pub struct VulkanEngine {
 
     immediate_submit: ImmediateSubmit,
 
-    triangle_mesh_pipeline_layout: vk::PipelineLayout,
-    triangle_mesh_pipeline: vk::Pipeline,
-
-    mesh_assets: Vec<MeshAsset>,
+    // TODO: remove?
+    mesh_assets: Vec<Rc<RefCell<MeshAsset>>>,
 
     scene_data: GPUSceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
@@ -884,10 +883,11 @@ pub struct VulkanEngine {
     default_sampler_nearest: vk::Sampler,
     default_sampler_linear: vk::Sampler,
 
-    single_image_descriptor_layout: vk::DescriptorSetLayout,
-
     metal_rough_material: GLTFMetallicRoughness,
-    default_data: MaterialInstance,
+    default_data: Rc<MaterialInstance>,
+
+    main_draw_context: DrawContext,
+    loaded_nodes: HashMap<String, Rc<MeshNode>>, // TODO: virtual Node in tutorial, refactor
 }
 
 impl VulkanEngine {
@@ -1067,7 +1067,7 @@ impl VulkanEngine {
 
         let push_constant_ranges = [vk::PushConstantRange::default()
             .offset(0)
-            .size(std::mem::size_of::<ComputePushConstants>() as u32)
+            .size(size_of::<ComputePushConstants>() as u32)
             .stage_flags(vk::ShaderStageFlags::COMPUTE)];
 
         let compute_layout_create_info = vk::PipelineLayoutCreateInfo::default()
@@ -1113,7 +1113,7 @@ impl VulkanEngine {
 
         let buffer_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .size(std::mem::size_of::<GPUPushDrawConstant>() as u32)];
+            .size(size_of::<GPUPushDrawConstant>() as u32)];
 
         let single_image_descriptor_layouts = [single_image_descriptor_layout];
         let triangle_mesh_pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
@@ -1249,33 +1249,73 @@ impl VulkanEngine {
             depth_image.format,
         );
 
-        let material_constants = AllocatedBuffer::new(
+        let material_constants_buffer = AllocatedBuffer::new(
             &device,
             &mut allocator,
-            size_of::<GLTFMetallicRoughness>() as u64,
+            size_of::<MaterialConstants>() as u64,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             MemoryLocation::CpuToGpu,
             "default_data_constants_buffer",
         );
+
+        let material_constants = MaterialConstants {
+            color_factors: vector![1.0, 1.0, 1.0, 1.0],
+            metal_rough_factors: vector![1.0, 0.5, 0.0, 0.0],
+            extra: [Vector4::default(); 14],
+        };
+        unsafe {
+            std::ptr::copy(
+                &raw const material_constants,
+                material_constants_buffer
+                    .allocation
+                    .as_ref()
+                    .unwrap()
+                    .mapped_ptr()
+                    .unwrap()
+                    .cast()
+                    .as_ptr(),
+                1,
+            );
+        }
 
         let resources = MaterialResources {
             color_image: &white_image,
             color_sampler: default_sampler_linear,
             metal_rough_image: &white_image,
             metal_rough_sampler: default_sampler_linear,
-            data_buffer: material_constants.buffer,
+            data_buffer: material_constants_buffer.buffer,
             data_buffer_offset: 0,
         };
 
         // TODO: Buffer management, and also image, just Rc everywhere?
-        deletion_queue.push(DeletionType::AllocatedBuffer(material_constants));
+        deletion_queue.push(DeletionType::AllocatedBuffer(material_constants_buffer));
 
-        let default_data = metal_rough_material.write_material(
+        let default_data = Rc::new(metal_rough_material.write_material(
             &device,
             MaterialPass::MainColor,
             &resources,
             &mut descriptor_allocator,
-        );
+        ));
+
+        let mut loaded_nodes = HashMap::default();
+
+        for mesh_asset in mesh_assets.as_ref().unwrap() {
+            for surface in &mut mesh_asset.borrow_mut().surfaces {
+                surface.material = Rc::clone(&default_data);
+            }
+
+            let new_node = Rc::new(MeshNode {
+                node: Node {
+                    parent: Weak::new(),
+                    children: vec![],
+                    local_transform: Matrix4::identity(),
+                    world_transform: Matrix4::identity(),
+                },
+                mesh: Rc::clone(mesh_asset),
+            });
+
+            loaded_nodes.insert(mesh_asset.borrow_mut().name.clone(), new_node);
+        }
 
         Self {
             frame_number: 0,
@@ -1313,9 +1353,6 @@ impl VulkanEngine {
 
             immediate_submit,
 
-            triangle_mesh_pipeline_layout,
-            triangle_mesh_pipeline,
-
             mesh_assets: mesh_assets.unwrap(),
 
             scene_data: GPUSceneData::default(),
@@ -1329,10 +1366,11 @@ impl VulkanEngine {
             default_sampler_nearest,
             default_sampler_linear,
 
-            single_image_descriptor_layout,
-
             metal_rough_material,
             default_data,
+
+            main_draw_context: DrawContext::default(),
+            loaded_nodes,
         }
     }
 
@@ -1348,7 +1386,7 @@ impl VulkanEngine {
         }
 
         for mesh_asset in &mut self.mesh_assets {
-            mesh_asset.destroy(device, allocator);
+            mesh_asset.borrow_mut().destroy(device, allocator);
         }
 
         self.shader_manager.destroy(device);
@@ -1460,7 +1498,7 @@ impl VulkanEngine {
         let gpu_scene_data_buffer = AllocatedBuffer::new(
             &self.device,
             &mut self.allocator,
-            std::mem::size_of::<GPUSceneData>() as u64,
+            size_of::<GPUSceneData>() as u64,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             MemoryLocation::CpuToGpu,
             "draw_geometry",
@@ -1492,7 +1530,7 @@ impl VulkanEngine {
         writer.write_buffer(
             0,
             gpu_scene_data_buffer.buffer,
-            std::mem::size_of::<GPUSceneData>() as u64,
+            size_of::<GPUSceneData>() as u64,
             0,
             vk::DescriptorType::UNIFORM_BUFFER,
         );
@@ -1518,22 +1556,6 @@ impl VulkanEngine {
         let rendering_info =
             vk_util::rendering_info(draw_extent, &color_attachment, &depth_attachment);
 
-        let aspect_ratio = draw_extent.height as f32 / draw_extent.width as f32;
-        let fov = 90_f32.to_radians();
-        let near = 100.0;
-        let far = 0.1;
-
-        let projection = Self::get_projection(aspect_ratio, fov, near, far);
-
-        let view = Translation3::new(0.0, 0.0, 0.0).inverse().to_homogeneous();
-
-        let world = Translation3::new(0.0, 0.0, -5.0).to_homogeneous();
-
-        let push_constants = GPUPushDrawConstant {
-            world_matrix: projection * view * world,
-            vertex_buffer: self.mesh_assets[2].mesh_buffers.vertex_buffer_address,
-        };
-
         let viewports = [vk::Viewport::default()
             .width(draw_extent.width as f32)
             .height(draw_extent.height as f32)
@@ -1542,98 +1564,67 @@ impl VulkanEngine {
 
         let scissors = [vk::Rect2D::default().extent(draw_extent)];
 
-        let image_set = self
-            .get_current_frame()
-            .descriptors
-            .borrow_mut()
-            .allocate(&self.device, self.single_image_descriptor_layout);
-        {
-            let mut writer = DescriptorWriter::default();
-            writer.write_image(
-                0,
-                self.default_sampler_nearest,
-                self.error_checkerboard_image.image_view,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            );
-
-            writer.update_set(&self.device, image_set);
-        }
-
         unsafe {
             self.device.cmd_begin_rendering(cmd, &rendering_info);
-
-            self.device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.triangle_mesh_pipeline,
-            );
 
             self.device.cmd_set_viewport(cmd, 0, &viewports);
             self.device.cmd_set_scissor(cmd, 0, &scissors);
 
-            self.device.cmd_push_constants(
-                cmd,
-                self.triangle_mesh_pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                push_constants.as_bytes(),
-            );
-
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.triangle_mesh_pipeline_layout,
-                0,
-                &[image_set],
-                &[],
-            );
-
-            self.device.cmd_bind_index_buffer(
-                cmd,
-                self.mesh_assets[2].mesh_buffers.index_buffer.buffer,
-                0,
-                vk::IndexType::UINT32,
-            );
-
-            self.device.cmd_draw_indexed(
-                cmd,
-                self.mesh_assets[2].surfaces[0].count,
-                1,
-                self.mesh_assets[2].surfaces[0].start_index,
-                0,
-                0,
-            );
-
-            let world = Translation3::new(3.0, 0.0, -5.0).to_homogeneous();
-            // let world =
-            //     Rotation3::from_axis_angle(&Vector3::y_axis(), 180_f32.to_radians()).to_homogeneous();
-
-            let push_constants = GPUPushDrawConstant {
-                world_matrix: projection * view * world,
-                vertex_buffer: self.mesh_assets[2].mesh_buffers.vertex_buffer_address,
-            };
-
-            self.device.cmd_push_constants(
-                cmd,
-                self.triangle_mesh_pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                push_constants.as_bytes(),
-            );
-
-            self.device.cmd_draw_indexed(
-                cmd,
-                self.mesh_assets[2].surfaces[0].count,
-                1,
-                self.mesh_assets[2].surfaces[0].start_index,
-                0,
-                0,
-            );
+            self.draw_meshes(cmd, global_descriptor);
         };
 
         unsafe {
             self.device.cmd_end_rendering(cmd);
+        }
+    }
+
+    // TODO: Move to RenderObject?
+    fn draw_meshes(&mut self, cmd: vk::CommandBuffer, global_descriptor: vk::DescriptorSet) {
+        for draw in &self.main_draw_context.opaque_surfaces {
+            unsafe {
+                self.device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    draw.material.pipeline.pipeline,
+                );
+
+                self.device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    draw.material.pipeline.pipeline_layout,
+                    0,
+                    &[global_descriptor],
+                    &[],
+                );
+
+                self.device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    draw.material.pipeline.pipeline_layout,
+                    1,
+                    &[draw.material.set],
+                    &[],
+                );
+
+                self.device
+                    .cmd_bind_index_buffer(cmd, draw.index_buffer, 0, vk::IndexType::UINT32);
+
+                let push_constants = GPUPushDrawConstant {
+                    world_matrix: draw.transform,
+                    vertex_buffer: draw.vertex_buffer_address,
+                };
+
+                self.device.cmd_push_constants(
+                    cmd,
+                    draw.material.pipeline.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    push_constants.as_bytes(),
+                );
+
+                self.device
+                    .cmd_draw_indexed(cmd, draw.index_count, 1, draw.first_index, 0, 0);
+            }
         }
     }
 
@@ -1645,6 +1636,8 @@ impl VulkanEngine {
         let current_frame_command_buffer = self.get_current_frame().command_buffer;
         let current_frame_swapchain_semaphore = self.get_current_frame().swapchain_semaphore;
         let current_frame_render_semaphore = self.get_current_frame().render_semaphore;
+
+        self.update_scene();
 
         unsafe {
             self.device
@@ -2005,8 +1998,8 @@ impl VulkanEngine {
         indices: &[u32],
         vertices: &[Vertex],
     ) -> GPUMeshBuffers {
-        let index_buffer_size = std::mem::size_of_val(indices) as vk::DeviceSize;
-        let vertex_buffer_size = std::mem::size_of_val(vertices) as vk::DeviceSize;
+        let index_buffer_size = size_of_val(indices) as vk::DeviceSize;
+        let vertex_buffer_size = size_of_val(vertices) as vk::DeviceSize;
 
         let index_buffer = AllocatedBuffer::new(
             device,
@@ -2103,7 +2096,7 @@ impl VulkanEngine {
         allocator: &mut Allocator,
         immediate_submit: &ImmediateSubmit,
         file_path: &std::path::Path,
-    ) -> Option<Vec<MeshAsset>> {
+    ) -> Option<Vec<Rc<RefCell<MeshAsset>>>> {
         println!("Loading GLTF: {}", file_path.display());
 
         let (gltf, buffers, _images) = gltf::import(file_path).unwrap();
@@ -2126,15 +2119,13 @@ impl VulkanEngine {
                     start_index: start_index as u32,
                     count: count as u32,
                     // TODO: Temporary to compile
-                    material: Rc::new(GLTFMaterial {
-                        data: Rc::new(MaterialInstance {
-                            pipeline: Rc::new(MaterialPipeline {
-                                pipeline_layout: vk::PipelineLayout::null(),
-                                pipeline: vk::Pipeline::null(),
-                            }),
-                            set: vk::DescriptorSet::null(),
-                            pass: MaterialPass::MainColor,
+                    material: Rc::new(MaterialInstance {
+                        pipeline: Rc::new(MaterialPipeline {
+                            pipeline_layout: vk::PipelineLayout::null(),
+                            pipeline: vk::Pipeline::null(),
                         }),
+                        set: vk::DescriptorSet::null(),
+                        pass: MaterialPass::MainColor,
                     }),
                 });
 
@@ -2196,7 +2187,8 @@ impl VulkanEngine {
                 }
 
                 {
-                    const OVERRIDE_COLORS: bool = true;
+                    // TODO: Remove
+                    const OVERRIDE_COLORS: bool = false;
                     if OVERRIDE_COLORS {
                         for vertex in &mut vertices {
                             vertex.color = vertex.normal.push(1.0);
@@ -2205,8 +2197,8 @@ impl VulkanEngine {
                 }
             }
 
-            mesh_assets.push(MeshAsset {
-                _name: mesh.name().unwrap().into(),
+            mesh_assets.push(Rc::new(RefCell::new(MeshAsset {
+                name: mesh.name().unwrap().into(),
                 surfaces,
                 mesh_buffers: Self::upload_mesh(
                     device,
@@ -2215,10 +2207,41 @@ impl VulkanEngine {
                     &indices,
                     &vertices,
                 ),
-            });
+            })));
         }
 
         Some(mesh_assets)
+    }
+
+    fn update_scene(&mut self) {
+        self.main_draw_context.opaque_surfaces.clear();
+
+        let aspect_ratio =
+            self.draw_image.extent.height as f32 / self.draw_image.extent.width as f32;
+        let fov = 90_f32.to_radians();
+        let near = 100.0;
+        let far = 0.1;
+
+        self.loaded_nodes["Suzanne"].draw(&Matrix4::identity(), &mut self.main_draw_context);
+
+        for x in -3..3 {
+            let scale = Scale3::new(0.2, 0.2, 0.2).to_homogeneous();
+            let translation = Translation3::new(x as f32, 1.0, 0.0).to_homogeneous();
+
+            self.loaded_nodes["Cube"].draw(&(translation * scale), &mut self.main_draw_context);
+        }
+
+        self.scene_data.view = Translation3::new(0.0, 0.0, -5.0).to_homogeneous()
+            * Rotation3::new(Vector3::y() * (self.frame_number as f32 / 100.0))
+                .to_homogeneous()
+                .try_inverse()
+                .unwrap();
+        self.scene_data.proj = Self::get_projection(aspect_ratio, fov, near, far);
+        self.scene_data.view_proj = self.scene_data.proj * self.scene_data.view;
+
+        self.scene_data.ambient_color = Vector4::from_element(0.1);
+        self.scene_data.sunlight_color = Vector4::from_element(1.0);
+        self.scene_data.sunlight_direction = vector![0.0, 1.0, 0.5, 1.0];
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {

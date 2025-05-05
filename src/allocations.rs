@@ -137,7 +137,7 @@ impl AllocatedImage {
         data: &[T],
         name: &str,
     ) -> AllocatedImage {
-        // TODO: Why is this not std::mem::size_of_val(data);
+        // TODO: Why is this not size_of_val(data);
         let data_size = extent.width * extent.height * extent.depth * 4;
 
         let mut upload_buffer = AllocatedBuffer::new(
