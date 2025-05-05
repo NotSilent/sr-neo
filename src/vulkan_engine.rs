@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     ffi::{self, c_char},
+    mem::ManuallyDrop,
 };
 
 use ash::{
@@ -583,8 +584,7 @@ pub struct VulkanEngine {
 
     frame_datas: [FrameData; FRAME_OVERLAP],
     deletion_queue: DeletionQueue,
-    // TODO: Vulkan engine created from context so order of drops is correct
-    allocator: Option<Allocator>,
+    allocator: ManuallyDrop<Allocator>,
 
     draw_image: AllocatedImage,
     depth_image: AllocatedImage,
@@ -990,7 +990,7 @@ impl VulkanEngine {
             swapchain,
             frame_datas: frames,
             deletion_queue,
-            allocator: Some(allocator),
+            allocator: ManuallyDrop::new(allocator),
             draw_image,
             depth_image,
 
@@ -1029,7 +1029,7 @@ impl VulkanEngine {
         unsafe { self.device.queue_wait_idle(self.graphics_queue).unwrap() };
 
         let device = &self.device;
-        let allocator = self.allocator.as_mut().unwrap();
+        let allocator = &mut self.allocator;
 
         for frame_data in self.frame_datas.as_mut() {
             frame_data.destroy(device, allocator);
@@ -1060,9 +1060,9 @@ impl VulkanEngine {
         self.grey_image.destroy(device, allocator);
         self.error_checkerboard_image.destroy(device, allocator);
 
-        dbg!(self.allocator.as_ref().unwrap().generate_report());
+        dbg!(allocator.generate_report());
 
-        self.allocator.take();
+        unsafe { ManuallyDrop::drop(allocator) };
 
         unsafe {
             self.swapchain.destroy(&self.swapchain_device, device);
@@ -1145,7 +1145,7 @@ impl VulkanEngine {
     fn draw_geometry(&mut self, cmd: vk::CommandBuffer, draw_extent: vk::Extent2D) {
         let gpu_scene_data_buffer = AllocatedBuffer::new(
             &self.device,
-            self.allocator.as_mut().unwrap(),
+            &mut self.allocator,
             std::mem::size_of::<GPUSceneData>() as u64,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             MemoryLocation::CpuToGpu,
@@ -1351,9 +1351,8 @@ impl VulkanEngine {
 
                 let mut deletion_queue = current_frame.deletion_queue.borrow_mut();
                 let device = &self.device;
-                let allocator = self.allocator.as_mut().unwrap();
 
-                deletion_queue.flush(device, allocator);
+                deletion_queue.flush(device, &mut self.allocator);
 
                 current_frame.descriptors.borrow_mut().clear_pools(device);
             }
