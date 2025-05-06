@@ -25,6 +25,7 @@ use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
     allocations::{AllocatedBuffer, AllocatedImage},
+    camera::{Camera, InputManager},
     deletion_queue::{DeletionQueue, DeletionType},
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
@@ -888,6 +889,8 @@ pub struct VulkanEngine {
 
     main_draw_context: DrawContext,
     loaded_nodes: HashMap<String, Rc<MeshNode>>, // TODO: virtual Node in tutorial, refactor
+
+    main_camera: Camera, // TODO: Shouldn't be part of renderer
 }
 
 impl VulkanEngine {
@@ -1317,6 +1320,13 @@ impl VulkanEngine {
             loaded_nodes.insert(mesh_asset.borrow_mut().name.clone(), new_node);
         }
 
+        let main_camera = Camera {
+            position: vector![0.0, 0.0, 5.0],
+            velocity: Vector3::from_element(0.0),
+            pitch: 0.0,
+            yaw: 0.0,
+        };
+
         Self {
             frame_number: 0,
             _stop_rendering: false,
@@ -1371,6 +1381,8 @@ impl VulkanEngine {
 
             main_draw_context: DrawContext::default(),
             loaded_nodes,
+
+            main_camera,
         }
     }
 
@@ -1424,6 +1436,11 @@ impl VulkanEngine {
                 .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
             self.instance.destroy_instance(None);
         };
+    }
+
+    // TODO: Shouldn't be part of renderer
+    pub fn update(&mut self, input_manager: &InputManager) {
+        self.main_camera.process_winit_events(input_manager);
     }
 
     fn draw_background(&self, cmd: vk::CommandBuffer, draw_extent: vk::Extent2D) {
@@ -2214,6 +2231,8 @@ impl VulkanEngine {
     }
 
     fn update_scene(&mut self) {
+        self.main_camera.update();
+
         self.main_draw_context.opaque_surfaces.clear();
 
         let aspect_ratio =
@@ -2231,11 +2250,7 @@ impl VulkanEngine {
             self.loaded_nodes["Cube"].draw(&(translation * scale), &mut self.main_draw_context);
         }
 
-        self.scene_data.view = Translation3::new(0.0, 0.0, -5.0).to_homogeneous()
-            * Rotation3::new(Vector3::y() * (self.frame_number as f32 / 100.0))
-                .to_homogeneous()
-                .try_inverse()
-                .unwrap();
+        self.scene_data.view = self.main_camera.get_view_matrix();
         self.scene_data.proj = Self::get_projection(aspect_ratio, fov, near, far);
         self.scene_data.view_proj = self.scene_data.proj * self.scene_data.view;
 

@@ -1,8 +1,11 @@
 use std::env;
 
+use camera::{InputManager, KeyEvent};
 use egui_winit::egui::{ViewportBuilder, ViewportInfo};
 use egui_winit::{State, egui};
+use nalgebra::vector;
 use vulkan_engine::VulkanEngine;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::{
     application::ApplicationHandler,
@@ -12,6 +15,7 @@ use winit::{
 };
 
 mod allocations;
+mod camera;
 mod deletion_queue;
 mod pipeline_builder;
 mod shader_manager;
@@ -29,6 +33,8 @@ struct App<'a> {
     is_closing: bool,
 
     gltf_name: Option<&'a str>,
+
+    input_manager: InputManager,
 }
 
 impl<'a> App<'a> {
@@ -49,10 +55,16 @@ impl ApplicationHandler for App<'_> {
             &egui_ctx,
             event_loop,
             &ViewportBuilder::default()
+                .with_title("sr-neo")
                 .with_inner_size(egui::Vec2::new(width as f32, height as f32))
                 .with_resizable(true),
         )
         .unwrap();
+
+        window
+            .set_cursor_grab(winit::window::CursorGrabMode::Confined)
+            .unwrap();
+        window.set_cursor_visible(false);
 
         let state = State::new(
             egui_ctx,
@@ -136,15 +148,46 @@ impl ApplicationHandler for App<'_> {
                             .egui_ctx()
                             .tessellate(full_output.shapes, full_output.pixels_per_point);
 
-                        if let Err(error) = self.vulkan_engine.as_mut().unwrap().draw(1.0) {
-                            println!("{error}");
+                        if let Some(engine) = &mut self.vulkan_engine {
+                            engine.update(&self.input_manager);
+
+                            if let Err(error) = engine.draw(1.0) {
+                                println!("{error}");
+                            }
                         }
+
+                        self.input_manager.clear();
                     }
 
                     self.window.as_ref().unwrap().request_redraw();
                 }
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(key_code) = event.physical_key {
+                    self.input_manager.key_events.push(KeyEvent {
+                        key_code,
+                        element_state: event.state,
+                    });
+                }
+
+                if let PhysicalKey::Code(key_code) = event.physical_key {
+                    if key_code == KeyCode::Escape {
+                        event_loop.exit();
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            self.input_manager.mouse_delta = vector![delta.0, delta.1];
         }
     }
 }
