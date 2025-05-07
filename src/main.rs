@@ -18,6 +18,7 @@ mod allocations;
 mod camera;
 mod deletion_queue;
 mod pipeline_builder;
+mod resource_manager;
 mod shader_manager;
 mod swapchain;
 mod vk_util;

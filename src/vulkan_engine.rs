@@ -27,10 +27,13 @@ use crate::{
     allocations::{AllocatedBuffer, AllocatedImage},
     camera::{Camera, InputManager},
     deletion_queue::{DeletionQueue, DeletionType},
+    resource_manager::ResourceManager,
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
 };
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
+
+// New material stuff
 
 #[derive(Copy, Clone, Debug)]
 struct MaterialInstanceIndex(u16);
@@ -47,39 +50,43 @@ impl From<MaterialInstanceIndex> for usize {
     }
 }
 
-// TODO: trait, sparse, removal, ref counting
-struct ResourceManager<T, I>
-where
-    I: From<usize> + Into<usize>,
-{
-    dense: Vec<T>,
-    _phantom_data: std::marker::PhantomData<I>,
+type MaterialInstanceManager = ResourceManager<MaterialInstance, MaterialInstanceIndex>;
+
+// New mesh stuff
+
+#[derive(Copy, Clone, Debug)]
+struct MeshIndex(u16);
+
+impl From<usize> for MeshIndex {
+    fn from(val: usize) -> Self {
+        MeshIndex(val as u16)
+    }
 }
 
-impl<T, I> ResourceManager<T, I>
-where
-    I: From<usize> + Into<usize>,
-{
-    pub fn new() -> Self {
-        Self {
-            dense: vec![],
-            _phantom_data: std::marker::PhantomData,
-        }
+impl From<MeshIndex> for usize {
+    fn from(val: MeshIndex) -> Self {
+        val.0 as usize
     }
+}
 
-    pub fn add(&mut self, material_instance: T) -> I {
-        let len = self.dense.len();
-        self.dense.push(material_instance);
+type MeshManager = ResourceManager<Mesh, MeshIndex>;
 
-        From::from(len)
+struct Mesh {
+    name: String,
+    surfaces: Vec<GeoSurface>,
+    buffers: GPUMeshBuffers,
+}
+
+impl Mesh {
+    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+        self.buffers.destroy(device, allocator);
     }
+}
 
-    pub fn get(&self, index: I) -> &T {
-        &self.dense[index.into()]
-    }
-
-    // TODO: Figure this out
-    pub fn _destroy(_device: &Device, _allocator: &mut Allocator) {}
+struct GeoSurface {
+    start_index: u32,
+    count: u32,
+    material_instance_index: MaterialInstanceIndex,
 }
 
 // TODO: Check size at compile time, and maybe only pad when uploading
@@ -99,6 +106,8 @@ struct MaterialResources<'a> {
     data_buffer: vk::Buffer,
     data_buffer_offset: u32,
 }
+
+struct MasterMaterial {}
 
 // Semi-master material
 struct GLTFMetallicRoughness {
@@ -278,27 +287,19 @@ impl Renderable for Node {
 
 struct MeshNode {
     node: Node,
-    mesh: Rc<RefCell<MeshAsset>>,
+    mesh_index: MeshIndex,
 }
 
 impl Renderable for MeshNode {
     fn draw(&self, top_matrix: &Matrix4<f32>, ctx: &mut DrawContext) {
         let node_matrix = top_matrix * self.node.local_transform;
 
-        let mesh = self.mesh.borrow_mut();
+        let render_object = RenderObject {
+            mesh_index: self.mesh_index,
+            transform: node_matrix,
+        };
 
-        for surface in &mesh.surfaces {
-            let render_object = RenderObject {
-                index_count: surface.count,
-                first_index: surface.start_index,
-                index_buffer: mesh.mesh_buffers.index_buffer.buffer,
-                vertex_buffer_address: mesh.mesh_buffers.vertex_buffer_address,
-                material_instance_index: surface.material_instance_index,
-                transform: node_matrix,
-            };
-
-            ctx.opaque_surfaces.push(render_object);
-        }
+        ctx.opaque_surfaces.push(render_object);
 
         self.node.draw(top_matrix, ctx);
     }
@@ -330,16 +331,11 @@ enum MaterialPass {
 struct MaterialInstance {
     pipeline: Rc<MaterialPipeline>,
     set: vk::DescriptorSet,
-    pass: MaterialPass, // MasterMaterial
+    pass: MaterialPass, // TODO: MasterMaterial
 }
 
 struct RenderObject {
-    index_count: u32,
-    first_index: u32,
-    index_buffer: vk::Buffer,
-    vertex_buffer_address: vk::DeviceAddress,
-
-    material_instance_index: MaterialInstanceIndex,
+    mesh_index: MeshIndex,
 
     transform: Matrix4<f32>,
 }
@@ -594,24 +590,6 @@ pub enum DrawError {
     Swapchain(SwapchainError),
 }
 
-struct GeoSurface {
-    start_index: u32,
-    count: u32,
-    material_instance_index: MaterialInstanceIndex,
-}
-
-struct MeshAsset {
-    name: String,
-    surfaces: Vec<GeoSurface>,
-    mesh_buffers: GPUMeshBuffers,
-}
-
-impl MeshAsset {
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        self.mesh_buffers.destroy(device, allocator);
-    }
-}
-
 pub struct ImmediateSubmit {
     graphics_queue: vk::Queue,
     fence: vk::Fence,
@@ -778,57 +756,6 @@ pub struct PoolSizeRatio {
     ratio: u32,
 }
 
-// #[derive(Default)]
-// struct DescriptorAllocatora {
-//     pool: vk::DescriptorPool,
-// }
-
-// impl DescriptorAllocatora {
-//     fn init_pool(&mut self, device: &Device, max_sets: u32, pool_ratios: &[PoolSizeRatio]) {
-//         let mut pool_sizes = Vec::new();
-//         for ratio in pool_ratios {
-//             pool_sizes.push(
-//                 vk::DescriptorPoolSize::default()
-//                     .ty(ratio.descriptor_type)
-//                     .descriptor_count(ratio.ratio * max_sets),
-//             );
-//         }
-
-//         let create_info = vk::DescriptorPoolCreateInfo::default()
-//             .flags(vk::DescriptorPoolCreateFlags::empty())
-//             .max_sets(max_sets)
-//             .pool_sizes(&pool_sizes);
-
-//         self.pool = unsafe { device.create_descriptor_pool(&create_info, None).unwrap() };
-//     }
-
-//     fn clear_descriptors(&self, device: &Device) {
-//         unsafe {
-//             device
-//                 .reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty())
-//                 .unwrap();
-//         };
-//     }
-
-//     fn destroy_pool(&self, device: &Device) {
-//         unsafe { device.destroy_descriptor_pool(self.pool, None) };
-//     }
-
-//     fn allocate(&self, device: &Device, layouts: &[vk::DescriptorSetLayout]) -> vk::DescriptorSet {
-//         let allocate_info = vk::DescriptorSetAllocateInfo::default()
-//             .descriptor_pool(self.pool)
-//             .set_layouts(layouts);
-
-//         unsafe {
-//             *device
-//                 .allocate_descriptor_sets(&allocate_info)
-//                 .unwrap()
-//                 .first()
-//                 .unwrap()
-//         }
-//     }
-// }
-
 struct FrameData {
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
@@ -932,8 +859,8 @@ pub struct VulkanEngine {
 
     immediate_submit: ImmediateSubmit,
 
-    // TODO: remove?
-    mesh_assets: Vec<Rc<RefCell<MeshAsset>>>,
+    // TODO: remove
+    mesh_assets: Vec<MeshIndex>,
 
     scene_data: GPUSceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
@@ -948,7 +875,8 @@ pub struct VulkanEngine {
 
     metal_rough_material: GLTFMetallicRoughness,
 
-    material_instance_manager: ResourceManager<MaterialInstance, MaterialInstanceIndex>,
+    mesh_manager: MeshManager,
+    material_instance_manager: MaterialInstanceManager,
     default_material_instance_index: MaterialInstanceIndex,
 
     main_draw_context: DrawContext,
@@ -1215,10 +1143,13 @@ impl VulkanEngine {
         deletion_queue.push(DeletionType::Pipeline(triangle_mesh_pipeline));
         deletion_queue.push(DeletionType::PipelineLayout(triangle_mesh_pipeline_layout));
 
+        let mut mesh_manager = MeshManager::new();
+
         let mesh_assets = Self::load_gltf_meshes(
             &device,
             &mut allocator,
-            &immediate_submit,
+            &mut mesh_manager,
+            &mut &immediate_submit,
             std::path::PathBuf::from(gltf_name).as_path(),
         );
 
@@ -1353,14 +1284,15 @@ impl VulkanEngine {
             &mut descriptor_allocator,
         );
 
-        let mut material_instance_manager = ResourceManager::new();
+        let mut material_instance_manager = MaterialInstanceManager::new();
 
         let default_material_instance_index = material_instance_manager.add(default_material);
 
         let mut loaded_nodes = HashMap::default();
 
         for mesh_asset in mesh_assets.as_ref().unwrap() {
-            for surface in &mut mesh_asset.borrow_mut().surfaces {
+            let mesh = mesh_manager.get_mut(*mesh_asset);
+            for surface in &mut mesh.surfaces {
                 surface.material_instance_index = default_material_instance_index;
             }
 
@@ -1371,10 +1303,10 @@ impl VulkanEngine {
                     local_transform: Matrix4::identity(),
                     world_transform: Matrix4::identity(),
                 },
-                mesh: Rc::clone(mesh_asset),
+                mesh_index: *mesh_asset,
             });
 
-            loaded_nodes.insert(mesh_asset.borrow_mut().name.clone(), new_node);
+            loaded_nodes.insert(mesh.name.clone(), new_node);
         }
 
         let main_camera = Camera {
@@ -1435,6 +1367,8 @@ impl VulkanEngine {
 
             metal_rough_material,
 
+            //Managers
+            mesh_manager,
             material_instance_manager,
             default_material_instance_index,
 
@@ -1456,8 +1390,10 @@ impl VulkanEngine {
             frame_data.destroy(device, allocator);
         }
 
-        for mesh_asset in &mut self.mesh_assets {
-            mesh_asset.borrow_mut().destroy(device, allocator);
+        // TODO: Abstract in ResourceManager/specific managers
+        for mesh_asset in &self.mesh_assets {
+            let mesh = self.mesh_manager.get_mut(*mesh_asset);
+            mesh.destroy(device, allocator);
         }
 
         self.shader_manager.destroy(device);
@@ -1648,52 +1584,60 @@ impl VulkanEngine {
     fn draw_meshes(&mut self, cmd: vk::CommandBuffer, global_descriptor: vk::DescriptorSet) {
         for draw in &self.main_draw_context.opaque_surfaces {
             unsafe {
-                let material = self
-                    .material_instance_manager
-                    .get(draw.material_instance_index);
+                let mesh = self.mesh_manager.get(draw.mesh_index);
 
-                self.device.cmd_bind_pipeline(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    material.pipeline.pipeline,
-                );
+                for surface in &mesh.surfaces {
+                    let material = self
+                        .material_instance_manager
+                        .get(surface.material_instance_index);
 
-                self.device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    material.pipeline.pipeline_layout,
-                    0,
-                    &[global_descriptor],
-                    &[],
-                );
+                    self.device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        material.pipeline.pipeline,
+                    );
 
-                self.device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    material.pipeline.pipeline_layout,
-                    1,
-                    &[material.set],
-                    &[],
-                );
+                    self.device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        material.pipeline.pipeline_layout,
+                        0,
+                        &[global_descriptor],
+                        &[],
+                    );
 
-                self.device
-                    .cmd_bind_index_buffer(cmd, draw.index_buffer, 0, vk::IndexType::UINT32);
+                    self.device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        material.pipeline.pipeline_layout,
+                        1,
+                        &[material.set],
+                        &[],
+                    );
 
-                let push_constants = GPUPushDrawConstant {
-                    world_matrix: draw.transform,
-                    vertex_buffer: draw.vertex_buffer_address,
-                };
+                    self.device.cmd_bind_index_buffer(
+                        cmd,
+                        mesh.buffers.index_buffer.buffer,
+                        0,
+                        vk::IndexType::UINT32,
+                    );
 
-                self.device.cmd_push_constants(
-                    cmd,
-                    material.pipeline.pipeline_layout,
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    push_constants.as_bytes(),
-                );
+                    let push_constants = GPUPushDrawConstant {
+                        world_matrix: draw.transform,
+                        vertex_buffer: mesh.buffers.vertex_buffer_address,
+                    };
 
-                self.device
-                    .cmd_draw_indexed(cmd, draw.index_count, 1, draw.first_index, 0, 0);
+                    self.device.cmd_push_constants(
+                        cmd,
+                        material.pipeline.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        push_constants.as_bytes(),
+                    );
+
+                    self.device
+                        .cmd_draw_indexed(cmd, surface.count, 1, surface.start_index, 0, 0);
+                }
             }
         }
     }
@@ -2141,9 +2085,10 @@ impl VulkanEngine {
     fn load_gltf_meshes(
         device: &Device,
         allocator: &mut Allocator,
+        mesh_manager: &mut MeshManager,
         immediate_submit: &ImmediateSubmit,
         file_path: &std::path::Path,
-    ) -> Option<Vec<Rc<RefCell<MeshAsset>>>> {
+    ) -> Option<Vec<MeshIndex>> {
         println!("Loading GLTF: {}", file_path.display());
 
         let (gltf, buffers, _images) = gltf::import(file_path).unwrap();
@@ -2237,17 +2182,21 @@ impl VulkanEngine {
                 }
             }
 
-            mesh_assets.push(Rc::new(RefCell::new(MeshAsset {
+            let mesh = Mesh {
                 name: mesh.name().unwrap().into(),
                 surfaces,
-                mesh_buffers: Self::upload_mesh(
+                buffers: Self::upload_mesh(
                     device,
                     allocator,
                     immediate_submit,
                     &indices,
                     &vertices,
                 ),
-            })));
+            };
+
+            let mesh_index = mesh_manager.add(mesh);
+
+            mesh_assets.push(mesh_index);
         }
 
         Some(mesh_assets)
