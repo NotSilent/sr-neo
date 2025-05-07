@@ -172,6 +172,12 @@ impl ApplicationHandler for App<'_> {
 
                 if let PhysicalKey::Code(key_code) = event.physical_key {
                     if key_code == KeyCode::Escape {
+                        self.is_closing = true;
+
+                        if let Some(vulkan_engine) = &mut self.vulkan_engine {
+                            vulkan_engine.cleanup();
+                        }
+
                         event_loop.exit();
                     }
                 }

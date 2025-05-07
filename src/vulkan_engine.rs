@@ -32,6 +32,56 @@ use crate::{
 };
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
 
+#[derive(Copy, Clone, Debug)]
+struct MaterialInstanceIndex(u16);
+
+impl From<usize> for MaterialInstanceIndex {
+    fn from(val: usize) -> Self {
+        MaterialInstanceIndex(val as u16)
+    }
+}
+
+impl From<MaterialInstanceIndex> for usize {
+    fn from(val: MaterialInstanceIndex) -> Self {
+        val.0 as usize
+    }
+}
+
+// TODO: trait, sparse, removal, ref counting
+struct ResourceManager<T, I>
+where
+    I: From<usize> + Into<usize>,
+{
+    dense: Vec<T>,
+    _phantom_data: std::marker::PhantomData<I>,
+}
+
+impl<T, I> ResourceManager<T, I>
+where
+    I: From<usize> + Into<usize>,
+{
+    pub fn new() -> Self {
+        Self {
+            dense: vec![],
+            _phantom_data: std::marker::PhantomData,
+        }
+    }
+
+    pub fn add(&mut self, material_instance: T) -> I {
+        let len = self.dense.len();
+        self.dense.push(material_instance);
+
+        From::from(len)
+    }
+
+    pub fn get(&self, index: I) -> &T {
+        &self.dense[index.into()]
+    }
+
+    // TODO: Figure this out
+    pub fn _destroy(_device: &Device, _allocator: &mut Allocator) {}
+}
+
 // TODO: Check size at compile time, and maybe only pad when uploading
 #[repr(C)]
 struct MaterialConstants {
@@ -50,6 +100,7 @@ struct MaterialResources<'a> {
     data_buffer_offset: u32,
 }
 
+// Semi-master material
 struct GLTFMetallicRoughness {
     opaque_pipeline: Rc<MaterialPipeline>,
     transparent_pipeline: Rc<MaterialPipeline>,
@@ -242,7 +293,7 @@ impl Renderable for MeshNode {
                 first_index: surface.start_index,
                 index_buffer: mesh.mesh_buffers.index_buffer.buffer,
                 vertex_buffer_address: mesh.mesh_buffers.vertex_buffer_address,
-                material: Rc::clone(&surface.material),
+                material_instance_index: surface.material_instance_index,
                 transform: node_matrix,
             };
 
@@ -279,7 +330,7 @@ enum MaterialPass {
 struct MaterialInstance {
     pipeline: Rc<MaterialPipeline>,
     set: vk::DescriptorSet,
-    pass: MaterialPass,
+    pass: MaterialPass, // MasterMaterial
 }
 
 struct RenderObject {
@@ -288,7 +339,7 @@ struct RenderObject {
     index_buffer: vk::Buffer,
     vertex_buffer_address: vk::DeviceAddress,
 
-    material: Rc<MaterialInstance>,
+    material_instance_index: MaterialInstanceIndex,
 
     transform: Matrix4<f32>,
 }
@@ -546,7 +597,7 @@ pub enum DrawError {
 struct GeoSurface {
     start_index: u32,
     count: u32,
-    material: Rc<MaterialInstance>, // Weak?
+    material_instance_index: MaterialInstanceIndex,
 }
 
 struct MeshAsset {
@@ -896,7 +947,9 @@ pub struct VulkanEngine {
     default_sampler_linear: vk::Sampler,
 
     metal_rough_material: GLTFMetallicRoughness,
-    default_data: Rc<MaterialInstance>,
+
+    material_instance_manager: ResourceManager<MaterialInstance, MaterialInstanceIndex>,
+    default_material_instance_index: MaterialInstanceIndex,
 
     main_draw_context: DrawContext,
     loaded_nodes: HashMap<String, Rc<MeshNode>>, // TODO: virtual Node in tutorial, refactor
@@ -1293,18 +1346,22 @@ impl VulkanEngine {
         // TODO: Buffer management, and also image, just Rc everywhere?
         deletion_queue.push(DeletionType::AllocatedBuffer(material_constants_buffer));
 
-        let default_data = Rc::new(metal_rough_material.write_material(
+        let default_material = metal_rough_material.write_material(
             &device,
             MaterialPass::MainColor,
             &resources,
             &mut descriptor_allocator,
-        ));
+        );
+
+        let mut material_instance_manager = ResourceManager::new();
+
+        let default_material_instance_index = material_instance_manager.add(default_material);
 
         let mut loaded_nodes = HashMap::default();
 
         for mesh_asset in mesh_assets.as_ref().unwrap() {
             for surface in &mut mesh_asset.borrow_mut().surfaces {
-                surface.material = Rc::clone(&default_data);
+                surface.material_instance_index = default_material_instance_index;
             }
 
             let new_node = Rc::new(MeshNode {
@@ -1377,7 +1434,9 @@ impl VulkanEngine {
             default_sampler_linear,
 
             metal_rough_material,
-            default_data,
+
+            material_instance_manager,
+            default_material_instance_index,
 
             main_draw_context: DrawContext::default(),
             loaded_nodes,
@@ -1589,16 +1648,20 @@ impl VulkanEngine {
     fn draw_meshes(&mut self, cmd: vk::CommandBuffer, global_descriptor: vk::DescriptorSet) {
         for draw in &self.main_draw_context.opaque_surfaces {
             unsafe {
+                let material = self
+                    .material_instance_manager
+                    .get(draw.material_instance_index);
+
                 self.device.cmd_bind_pipeline(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
-                    draw.material.pipeline.pipeline,
+                    material.pipeline.pipeline,
                 );
 
                 self.device.cmd_bind_descriptor_sets(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
-                    draw.material.pipeline.pipeline_layout,
+                    material.pipeline.pipeline_layout,
                     0,
                     &[global_descriptor],
                     &[],
@@ -1607,9 +1670,9 @@ impl VulkanEngine {
                 self.device.cmd_bind_descriptor_sets(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
-                    draw.material.pipeline.pipeline_layout,
+                    material.pipeline.pipeline_layout,
                     1,
-                    &[draw.material.set],
+                    &[material.set],
                     &[],
                 );
 
@@ -1623,7 +1686,7 @@ impl VulkanEngine {
 
                 self.device.cmd_push_constants(
                     cmd,
-                    draw.material.pipeline.pipeline_layout,
+                    material.pipeline.pipeline_layout,
                     vk::ShaderStageFlags::VERTEX,
                     0,
                     push_constants.as_bytes(),
@@ -2103,14 +2166,7 @@ impl VulkanEngine {
                     start_index: start_index as u32,
                     count: count as u32,
                     // TODO: Temporary to compile
-                    material: Rc::new(MaterialInstance {
-                        pipeline: Rc::new(MaterialPipeline {
-                            pipeline_layout: vk::PipelineLayout::null(),
-                            pipeline: vk::Pipeline::null(),
-                        }),
-                        set: vk::DescriptorSet::null(),
-                        pass: MaterialPass::MainColor,
-                    }),
+                    material_instance_index: MaterialInstanceIndex(0),
                 });
 
                 let initial_vtx = vertices.len();
