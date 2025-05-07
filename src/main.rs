@@ -121,41 +121,54 @@ impl ApplicationHandler for App<'_> {
             WindowEvent::RedrawRequested => {
                 if !self.is_closing {
                     if !self.is_minimized {
-                        let viewport_info = self.viewport_info.as_mut().unwrap();
-                        let state = self.state.as_mut().unwrap();
-                        let window = self.window.as_ref().unwrap();
+                        // let viewport_info = self.viewport_info.as_mut().unwrap();
+                        // let state = self.state.as_mut().unwrap();
+                        // let window = self.window.as_ref().unwrap();
 
-                        egui_winit::update_viewport_info(
-                            viewport_info,
-                            state.egui_ctx(),
-                            window,
-                            false,
-                        );
+                        // egui_winit::update_viewport_info(
+                        //     viewport_info,
+                        //     state.egui_ctx(),
+                        //     window,
+                        //     false,
+                        // );
 
-                        let raw_input = state.take_egui_input(window);
+                        // let raw_input = state.take_egui_input(window);
 
-                        let full_output = state.egui_ctx().run(raw_input, |ctx| {
-                            egui::CentralPanel::default().show(ctx, |ui| {
-                                ui.label("Hello world!");
-                                if ui.button("Click me").clicked() {
-                                    // take some action here
-                                }
-                            });
-                        });
+                        // let full_output = state.egui_ctx().run(raw_input, |ctx| {
+                        //     egui::CentralPanel::default().show(ctx, |ui| {
+                        //         ui.label("Hello world!");
+                        //         if ui.button("Click me").clicked() {
+                        //             // take some action here
+                        //         }
+                        //     });
+                        // });
 
-                        state.handle_platform_output(window, full_output.platform_output);
+                        // state.handle_platform_output(window, full_output.platform_output);
 
-                        let _clipped_primitives = state
-                            .egui_ctx()
-                            .tessellate(full_output.shapes, full_output.pixels_per_point);
+                        // let _clipped_primitives = state
+                        //     .egui_ctx()
+                        //     .tessellate(full_output.shapes, full_output.pixels_per_point);
+
+                        let mut gpu_time = 0.0;
+
+                        let elapsed = std::time::Instant::now();
 
                         if let Some(engine) = &mut self.vulkan_engine {
                             engine.update(&self.input_manager);
 
-                            if let Err(error) = engine.draw(1.0) {
-                                println!("{error}");
+                            match engine.draw(1.0) {
+                                Ok(time) => gpu_time = time,
+                                Err(error) => println!("{error}"),
                             }
                         }
+
+                        // TODO: Should count since last redraw
+                        let cpu_time = elapsed.elapsed().as_secs_f32() * 1000.0;
+
+                        self.window
+                            .as_mut()
+                            .unwrap()
+                            .set_title(&format!("sr-neo: CPU: {cpu_time} GPU: {gpu_time}"));
 
                         self.input_manager.clear();
                     }

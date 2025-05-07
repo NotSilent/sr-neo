@@ -883,6 +883,8 @@ pub struct VulkanEngine {
     loaded_nodes: HashMap<String, Rc<MeshNode>>, // TODO: virtual Node in tutorial, refactor
 
     main_camera: Camera, // TODO: Shouldn't be part of renderer
+
+    query_pool: vk::QueryPool,
 }
 
 impl VulkanEngine {
@@ -1316,6 +1318,16 @@ impl VulkanEngine {
             yaw: 0.0,
         };
 
+        let query_pool_create_info = vk::QueryPoolCreateInfo::default()
+            .query_type(vk::QueryType::TIMESTAMP)
+            .query_count(2);
+
+        let query_pool = unsafe {
+            device
+                .create_query_pool(&query_pool_create_info, None)
+                .unwrap()
+        };
+
         Self {
             frame_number: 0,
             _stop_rendering: false,
@@ -1376,6 +1388,8 @@ impl VulkanEngine {
             loaded_nodes,
 
             main_camera,
+
+            query_pool,
         }
     }
 
@@ -1405,6 +1419,7 @@ impl VulkanEngine {
         self.deletion_queue.flush(device, allocator);
 
         unsafe {
+            device.destroy_query_pool(self.query_pool, None);
             device.destroy_sampler(self.default_sampler_nearest, None);
             device.destroy_sampler(self.default_sampler_linear, None);
         }
@@ -1643,7 +1658,9 @@ impl VulkanEngine {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn draw(&mut self, render_scale: f32) -> Result<(), DrawError> {
+    pub fn draw(&mut self, render_scale: f32) -> Result<f64, DrawError> {
+        let mut gpu_time = 0.0_f64;
+
         let render_scale = render_scale.clamp(0.25, 1.0);
 
         let current_frame_fence = self.get_current_frame().fence;
@@ -1732,6 +1749,14 @@ impl VulkanEngine {
                 .begin_command_buffer(cmd, &cmd_begin_info)
                 .expect("Failed to begin command buffer");
 
+            self.device.reset_query_pool(self.query_pool, 0, 2);
+            self.device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.query_pool,
+                0,
+            );
+
             vk_util::transition_image(
                 &self.device,
                 cmd,
@@ -1796,6 +1821,13 @@ impl VulkanEngine {
                 vk::ImageLayout::PRESENT_SRC_KHR,
             );
 
+            self.device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.query_pool,
+                1,
+            );
+
             self.device
                 .end_command_buffer(cmd)
                 .expect("Failed to end command buffer");
@@ -1854,9 +1886,30 @@ impl VulkanEngine {
                     panic!();
                 }
             }
+
+            self.device.device_wait_idle().unwrap();
+
+            let mut query_results: [u64; 2] = [0, 0];
+
+            self.device
+                .get_query_pool_results(
+                    self.query_pool,
+                    0,
+                    &mut query_results,
+                    vk::QueryResultFlags::TYPE_64,
+                )
+                .unwrap();
+
+            let properties = self
+                .instance
+                .get_physical_device_properties(self.physical_device);
+
+            gpu_time = (query_results[1] as f64 - query_results[0] as f64)
+                * properties.limits.timestamp_period as f64
+                / 1_000_000.0f64;
         };
 
-        Ok(())
+        Ok(gpu_time)
     }
 
     fn create_allocator(
@@ -1952,7 +2005,8 @@ impl VulkanEngine {
 
         let mut vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default()
             .buffer_device_address(true)
-            .descriptor_indexing(true);
+            .descriptor_indexing(true)
+            .host_query_reset(true);
 
         let mut vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default()
             .dynamic_rendering(true)
