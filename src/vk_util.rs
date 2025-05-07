@@ -1,4 +1,5 @@
 use ash::{Device, vk};
+use gpu_allocator::vulkan::Allocation;
 
 pub fn extent_2d_from_3d(extent: &vk::Extent3D) -> vk::Extent2D {
     vk::Extent2D::default()
@@ -228,4 +229,34 @@ pub fn pack_u32(values: &[f32; 4]) -> u32 {
         packed |= int_val << (index * 8);
     }
     packed
+}
+
+pub fn copy_data_to_allocation<T>(data: &[T], allocation: &Allocation) {
+    unsafe {
+        std::ptr::copy(
+            data.as_ptr(),
+            allocation.mapped_ptr().unwrap().cast().as_ptr(),
+            data.len(),
+        );
+    };
+}
+
+pub fn copy_data_to_allocation_with_byte_offset<T>(
+    data: &[T],
+    allocation: &Allocation,
+    byte_offset: usize,
+) {
+    unsafe {
+        std::ptr::copy(
+            data.as_ptr(),
+            allocation
+                .mapped_ptr()
+                .unwrap()
+                .as_ptr()
+                .cast::<u8>()
+                .add(byte_offset)
+                .cast(),
+            data.len(),
+        );
+    };
 }

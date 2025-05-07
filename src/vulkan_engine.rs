@@ -134,7 +134,6 @@ impl GLTFMetallicRoughness {
         }
     }
 
-    // TODO: this and other destroys could take mut self instead?
     fn destroy(&self, device: &Device) {
         self.opaque_pipeline.destroy(device);
         self.transparent_pipeline.destroy(device);
@@ -276,6 +275,7 @@ enum MaterialPass {
 }
 
 // TODO: drop Rc, should be fine to have a copy?
+// TODO: Probably better to have an index to MasterMaterial
 struct MaterialInstance {
     pipeline: Rc<MaterialPipeline>,
     set: vk::DescriptorSet,
@@ -301,6 +301,17 @@ struct GPUSceneData {
     ambient_color: Vector4<f32>,
     sunlight_direction: Vector4<f32>, // w for sun power
     sunlight_color: Vector4<f32>,
+}
+
+impl GPUSceneData {
+    fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref::<Self>(self).cast::<u8>(),
+                size_of::<Self>(),
+            )
+        }
+    }
 }
 
 struct DescriptorBufferInfo {
@@ -420,7 +431,7 @@ impl DescriptorAllocatorGrowable {
         }
     }
 
-    pub fn destroy(&mut self, device: &Device) {
+    pub fn destroy(&self, device: &Device) {
         for pool in &self.ready_pools {
             unsafe {
                 device.destroy_descriptor_pool(*pool, None);
@@ -963,10 +974,8 @@ impl VulkanEngine {
             physical_device,
             surface,
             vk::Extent2D::default().width(width).height(height),
-            &[graphics_queue_family_index],
         );
 
-        // TODO: Abstract
         let frames: [FrameData; FRAME_OVERLAP] = [
             FrameData::new(&device, graphics_queue_family_index),
             FrameData::new(&device, graphics_queue_family_index),
@@ -1266,20 +1275,11 @@ impl VulkanEngine {
             metal_rough_factors: vector![1.0, 0.5, 0.0, 0.0],
             extra: [Vector4::default(); 14],
         };
-        unsafe {
-            std::ptr::copy(
-                &raw const material_constants,
-                material_constants_buffer
-                    .allocation
-                    .as_ref()
-                    .unwrap()
-                    .mapped_ptr()
-                    .unwrap()
-                    .cast()
-                    .as_ptr(),
-                1,
-            );
-        }
+
+        vk_util::copy_data_to_allocation(
+            &[material_constants],
+            material_constants_buffer.allocation.as_ref().unwrap(),
+        );
 
         let resources = MaterialResources {
             color_image: &white_image,
@@ -1522,20 +1522,10 @@ impl VulkanEngine {
         );
 
         // TODO: part of allocated buffer?
-        unsafe {
-            std::ptr::copy(
-                &raw const self.scene_data,
-                gpu_scene_data_buffer
-                    .allocation
-                    .as_ref()
-                    .unwrap()
-                    .mapped_ptr()
-                    .unwrap()
-                    .cast()
-                    .as_ptr(),
-                1,
-            );
-        }
+        vk_util::copy_data_to_allocation(
+            self.scene_data.as_bytes(),
+            gpu_scene_data_buffer.allocation.as_ref().unwrap(),
+        );
 
         let global_descriptor = self
             .get_current_frame()
@@ -2015,8 +2005,8 @@ impl VulkanEngine {
         indices: &[u32],
         vertices: &[Vertex],
     ) -> GPUMeshBuffers {
-        let index_buffer_size = size_of_val(indices) as vk::DeviceSize;
-        let vertex_buffer_size = size_of_val(vertices) as vk::DeviceSize;
+        let index_buffer_size = size_of_val(indices) as u64;
+        let vertex_buffer_size = size_of_val(vertices) as u64;
 
         let index_buffer = AllocatedBuffer::new(
             device,
@@ -2052,35 +2042,12 @@ impl VulkanEngine {
             "staging",
         );
 
-        unsafe {
-            std::ptr::copy(
-                indices.as_ptr(),
-                staging
-                    .allocation
-                    .as_ref()
-                    .unwrap()
-                    .mapped_ptr()
-                    .unwrap()
-                    .cast()
-                    .as_ptr(),
-                indices.len(),
-            );
-
-            std::ptr::copy(
-                vertices.as_ptr(),
-                staging
-                    .allocation
-                    .as_ref()
-                    .unwrap()
-                    .mapped_ptr()
-                    .unwrap()
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(index_buffer_size as usize)
-                    .cast(),
-                vertices.len(),
-            );
-        };
+        vk_util::copy_data_to_allocation(indices, staging.allocation.as_ref().unwrap());
+        vk_util::copy_data_to_allocation_with_byte_offset(
+            vertices,
+            staging.allocation.as_ref().unwrap(),
+            index_buffer_size as usize,
+        );
 
         immediate_submit.submit(device, |cmd| {
             let index_regions = [vk::BufferCopy::default().size(index_buffer_size)];
@@ -2272,7 +2239,6 @@ impl VulkanEngine {
             self.physical_device,
             self.surface,
             vk::Extent2D::default().width(width).height(height),
-            &[self.graphics_queue_family_index],
         );
     }
 }

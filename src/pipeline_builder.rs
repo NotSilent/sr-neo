@@ -73,7 +73,6 @@ impl PipelineBuilder<'_> {
     }
 
     pub fn set_input_topology(mut self, topology: vk::PrimitiveTopology) -> Self {
-        // TODO: set directly
         self.input_assembly.topology = topology;
         self.input_assembly.primitive_restart_enable = vk::FALSE;
 

@@ -137,33 +137,18 @@ impl AllocatedImage {
         data: &[T],
         name: &str,
     ) -> AllocatedImage {
-        // TODO: Why is this not size_of_val(data);
-        let data_size = extent.width * extent.height * extent.depth * 4;
+        let data_size = size_of_val(data);
 
         let mut upload_buffer = AllocatedBuffer::new(
             device,
             allocator,
-            u64::from(data_size),
+            data_size as u64,
             vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
             "upload_buffer",
         );
 
-        unsafe {
-            // TODO: wrap this in helper
-            std::ptr::copy(
-                data.as_ptr(),
-                upload_buffer
-                    .allocation
-                    .as_ref()
-                    .unwrap()
-                    .mapped_ptr()
-                    .unwrap()
-                    .cast()
-                    .as_ptr(),
-                data.len(),
-            );
-        }
+        vk_util::copy_data_to_allocation(data, upload_buffer.allocation.as_ref().unwrap());
 
         let new_image = AllocatedImage::new(
             device,

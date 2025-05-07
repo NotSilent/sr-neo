@@ -20,7 +20,7 @@ pub struct ShaderManager {
 }
 
 impl ShaderManager {
-    pub fn destroy(&mut self, device: &Device) {
+    pub fn destroy(&self, device: &Device) {
         for shader in self
             .comp_shaders
             .values()

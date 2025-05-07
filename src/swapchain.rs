@@ -31,7 +31,6 @@ impl Swapchain {
         physical_device: vk::PhysicalDevice,
         surface: vk::SurfaceKHR,
         extent: vk::Extent2D,
-        queue_family_indices: &[u32],
     ) -> Self {
         let surface_format = unsafe {
             surface_instance
@@ -44,13 +43,8 @@ impl Swapchain {
         }
         .unwrap();
 
-        let create_info = Self::swapchain_create_info(
-            surface,
-            &surface_format,
-            &surface_capabilities,
-            extent,
-            queue_family_indices,
-        );
+        let create_info =
+            Self::swapchain_create_info(surface, &surface_format, &surface_capabilities, extent);
 
         let swapchain = unsafe {
             swapchain_device
@@ -86,7 +80,6 @@ impl Swapchain {
         surface_format: &'a vk::SurfaceFormatKHR,
         surface_capabilities: &'a vk::SurfaceCapabilitiesKHR,
         extent: vk::Extent2D,
-        queue_family_indices: &'a [u32],
     ) -> vk::SwapchainCreateInfoKHR<'a> {
         vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
@@ -97,7 +90,8 @@ impl Swapchain {
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .queue_family_indices(queue_family_indices)
+            // Not needed for exclusive
+            // .queue_family_indices(queue_family_indices)
             .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(vk::PresentModeKHR::FIFO)
