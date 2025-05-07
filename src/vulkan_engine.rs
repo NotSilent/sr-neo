@@ -692,25 +692,6 @@ impl GPUPushDrawConstant {
     }
 }
 
-#[repr(C)]
-struct ComputePushConstants {
-    data1: Vector4<f32>,
-    data2: Vector4<f32>,
-    data3: Vector4<f32>,
-    data4: Vector4<f32>,
-}
-
-impl ComputePushConstants {
-    fn as_bytes(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                std::ptr::from_ref::<Self>(self).cast::<u8>(),
-                size_of::<Self>(),
-            )
-        }
-    }
-}
-
 #[derive(Default)]
 struct DescriptorLayoutBuilder<'a> {
     bindings: Vec<vk::DescriptorSetLayoutBinding<'a>>,
@@ -853,9 +834,6 @@ pub struct VulkanEngine {
 
     _draw_image_descriptor_layout: vk::DescriptorSetLayout,
     draw_image_descriptors: vk::DescriptorSet,
-
-    gradient_pipeline_layout: vk::PipelineLayout,
-    gradient_pipeline: vk::Pipeline,
 
     immediate_submit: ImmediateSubmit,
 
@@ -1059,43 +1037,6 @@ impl VulkanEngine {
 
         // init pipelines
         let draw_image_descriptor_layouts = [draw_image_descriptor_layout];
-
-        let push_constant_ranges = [vk::PushConstantRange::default()
-            .offset(0)
-            .size(size_of::<ComputePushConstants>() as u32)
-            .stage_flags(vk::ShaderStageFlags::COMPUTE)];
-
-        let compute_layout_create_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(&draw_image_descriptor_layouts)
-            .push_constant_ranges(&push_constant_ranges);
-
-        let compute_layout = unsafe {
-            device
-                .create_pipeline_layout(&compute_layout_create_info, None)
-                .unwrap()
-        };
-
-        let compute_shader = shader_manager.get_compute_shader(&device, "gradient_color");
-
-        let stage_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(compute_shader)
-            .name(c"main");
-
-        let compute_pipeline_create_info = vk::ComputePipelineCreateInfo::default()
-            .layout(compute_layout)
-            .stage(stage_info);
-
-        let compute_pipeline = *unsafe {
-            device.create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &[compute_pipeline_create_info],
-                None,
-            )
-        }
-        .unwrap()
-        .first()
-        .unwrap();
         // ~init pipelines
 
         let immediate_submit =
@@ -1140,8 +1081,6 @@ impl VulkanEngine {
         deletion_queue.push(DeletionType::DescriptorSetLayout(
             draw_image_descriptor_layout,
         ));
-        deletion_queue.push(DeletionType::PipelineLayout(compute_layout));
-        deletion_queue.push(DeletionType::Pipeline(compute_pipeline));
         deletion_queue.push(DeletionType::Pipeline(triangle_mesh_pipeline));
         deletion_queue.push(DeletionType::PipelineLayout(triangle_mesh_pipeline_layout));
 
@@ -1359,9 +1298,6 @@ impl VulkanEngine {
             draw_image_descriptors,
             _draw_image_descriptor_layout: draw_image_descriptor_layout,
 
-            gradient_pipeline_layout: compute_layout,
-            gradient_pipeline: compute_pipeline,
-
             immediate_submit,
 
             mesh_assets: mesh_assets.unwrap(),
@@ -1453,46 +1389,6 @@ impl VulkanEngine {
         self.main_camera.process_winit_events(input_manager);
     }
 
-    fn draw_background(&self, cmd: vk::CommandBuffer, draw_extent: vk::Extent2D) {
-        unsafe {
-            self.device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.gradient_pipeline,
-            );
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.gradient_pipeline_layout,
-                0,
-                &[self.draw_image_descriptors],
-                &[],
-            );
-
-            let push_constants = ComputePushConstants {
-                data1: vector![1.0, 0.0, 0.0, 1.0],
-                data2: vector![0.0, 0.0, 1.0, 1.0],
-                data3: vector![0.0, 0.0, 0.0, 1.0],
-                data4: vector![0.0, 0.0, 0.0, 1.0],
-            };
-
-            self.device.cmd_push_constants(
-                cmd,
-                self.gradient_pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                push_constants.as_bytes(),
-            );
-
-            self.device.cmd_dispatch(
-                cmd,
-                f32::ceil(draw_extent.width as f32 / 16.0) as u32,
-                f32::ceil(draw_extent.height as f32 / 16.0) as u32,
-                1,
-            );
-        }
-    }
-
     fn get_projection(aspect_ratio: f32, fov: f32, near: f32, far: f32) -> Matrix4<f32> {
         let projection = Matrix4::new(
             aspect_ratio / (fov / 2.0).tan(),
@@ -1559,9 +1455,15 @@ impl VulkanEngine {
             .borrow_mut()
             .push(DeletionType::AllocatedBuffer(gpu_scene_data_buffer));
 
+        let clear_color = Some(vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [1.0, 0.0, 1.0, 1.0],
+            },
+        });
+
         let color_attachment = [vk_util::attachment_info(
             self.draw_image.image_view,
-            None,
+            clear_color,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         )];
 
@@ -1762,16 +1664,6 @@ impl VulkanEngine {
                 cmd,
                 self.draw_image.image,
                 vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::GENERAL,
-            );
-
-            self.draw_background(cmd, draw_extent);
-
-            vk_util::transition_image(
-                &self.device,
-                cmd,
-                self.draw_image.image,
-                vk::ImageLayout::GENERAL,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             );
 
@@ -1905,7 +1797,7 @@ impl VulkanEngine {
                 .get_physical_device_properties(self.physical_device);
 
             gpu_time = (query_results[1] as f64 - query_results[0] as f64)
-                * properties.limits.timestamp_period as f64
+                * f64::from(properties.limits.timestamp_period)
                 / 1_000_000.0f64;
         };
 
