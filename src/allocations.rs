@@ -32,7 +32,7 @@ impl AllocatedBuffer {
             requirements,
             location: memory_location,
             linear: true,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            allocation_scheme: AllocationScheme::DedicatedBuffer(buffer),
         };
 
         let allocation = allocator.allocate(&allocation_info).unwrap();
@@ -91,7 +91,7 @@ impl AllocatedImage {
             requirements,
             location: MemoryLocation::GpuOnly,
             linear: true,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            allocation_scheme: AllocationScheme::DedicatedImage(image),
         };
 
         let allocation = allocator.allocate(&description).unwrap();

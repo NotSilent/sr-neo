@@ -2,9 +2,14 @@ use gpu_allocator::vulkan::Allocator;
 
 use ash::Device;
 
+pub trait VulkanResource {
+    fn destroy(&mut self, device: &Device, allocator: &mut Allocator);
+}
+
 // TODO: trait, sparse, removal, ref counting
 pub struct ResourceManager<T, I>
 where
+    T: VulkanResource,
     I: From<usize> + Into<usize>,
 {
     pub dense: Vec<T>,
@@ -13,6 +18,7 @@ where
 
 impl<T, I> ResourceManager<T, I>
 where
+    T: VulkanResource,
     I: From<usize> + Into<usize>,
 {
     pub fn new() -> Self {
@@ -22,8 +28,7 @@ where
         }
     }
 
-    // TODO: Should this also return ref to added material for convenience?
-    // TODO: Probably better if resource manager allocates and returns both index and ref
+    // TODO: Probably better if resource manager allocates
     pub fn add(&mut self, resource: T) -> I {
         let len = self.dense.len();
         self.dense.push(resource);
@@ -39,11 +44,10 @@ where
         &mut self.dense[index.into()]
     }
 
-    // TODO: Temp for cleanup
-    pub fn get_dense_fix_this(&self) -> &[T] {
-        &self.dense
-    }
-
     // TODO: Figure this out
-    pub fn _destroy(_device: &Device, _allocator: &mut Allocator) {}
+    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+        for resource in &mut self.dense {
+            resource.destroy(device, allocator);
+        }
+    }
 }

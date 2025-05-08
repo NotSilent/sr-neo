@@ -28,7 +28,7 @@ use crate::{
     camera::{Camera, InputManager},
     default_resources,
     deletion_queue::{DeletionQueue, DeletionType},
-    resource_manager::ResourceManager,
+    resource_manager::{ResourceManager, VulkanResource},
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
 };
@@ -59,6 +59,15 @@ impl From<MaterialInstanceIndex> for usize {
 }
 
 type MaterialInstanceManager = ResourceManager<MaterialInstance, MaterialInstanceIndex>;
+
+struct MaterialInstance {
+    master_material_index: MasterMaterialIndex,
+    set: vk::DescriptorSet,
+}
+
+impl VulkanResource for MaterialInstance {
+    fn destroy(&mut self, _device: &Device, _allocator: &mut Allocator) {}
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct MasterMaterialIndex(u16);
@@ -156,13 +165,6 @@ impl MasterMaterial {
         }
     }
 
-    fn destroy(&self, device: &Device) {
-        unsafe {
-            device.destroy_descriptor_set_layout(self.material_layout, None);
-            device.destroy_pipeline(self.pipeline, None);
-        };
-    }
-
     fn create_instance(
         // TODO: &self
         &mut self,
@@ -206,6 +208,16 @@ impl MasterMaterial {
     }
 }
 
+impl VulkanResource for MasterMaterial {
+    fn destroy(&mut self, device: &Device, _allocator: &mut Allocator) {
+        unsafe {
+            device.destroy_descriptor_set_layout(self.material_layout, None);
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.pipeline_layout, None);
+        }
+    }
+}
+
 // New mesh stuff
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -231,8 +243,8 @@ struct Mesh {
     buffers: GPUMeshBuffers,
 }
 
-impl Mesh {
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+impl VulkanResource for Mesh {
+    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
         self.buffers.destroy(device, allocator);
     }
 }
@@ -316,11 +328,6 @@ impl Renderable for MeshNode {
 enum MaterialPass {
     MainColor,
     Transparent,
-}
-
-struct MaterialInstance {
-    master_material_index: MasterMaterialIndex,
-    set: vk::DescriptorSet,
 }
 
 struct RenderObject {
@@ -1252,15 +1259,9 @@ impl VulkanEngine {
             let mesh = self.mesh_manager.get_mut(*mesh_asset);
             mesh.destroy(device, allocator);
         }
-
-        for master_material in self.master_material_manager.get_dense_fix_this() {
-            unsafe {
-                device.destroy_descriptor_set_layout(master_material.material_layout, None);
-                device.destroy_pipeline(master_material.pipeline, None);
-                device.destroy_pipeline_layout(master_material.pipeline_layout, None);
-            }
-        }
         // ~TODO: Abstract in ResourceManager/specific managers
+
+        self.master_material_manager.destroy(device, allocator);
 
         self.shader_manager.destroy(device);
 
