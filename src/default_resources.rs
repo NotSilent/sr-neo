@@ -1,4 +1,4 @@
-use crate::{allocations::AllocatedImage, immediate_submit::ImmediateSubmit, vk_util};
+use crate::{images::Image, immediate_submit::ImmediateSubmit, vk_util};
 use ash::{Device, vk};
 use gpu_allocator::vulkan::Allocator;
 
@@ -6,10 +6,10 @@ pub fn image_white(
     device: &Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
-) -> AllocatedImage {
+) -> Image {
     let white = vk_util::pack_u32(&[1.0, 1.0, 1.0, 1.0]);
 
-    AllocatedImage::new_with_data(
+    Image::new_with_data(
         device,
         allocator,
         immediate_submit,
@@ -26,10 +26,10 @@ pub fn image_black(
     device: &Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
-) -> AllocatedImage {
+) -> Image {
     let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
 
-    AllocatedImage::new_with_data(
+    Image::new_with_data(
         device,
         allocator,
         immediate_submit,
@@ -46,7 +46,7 @@ pub fn image_error(
     device: &Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
-) -> AllocatedImage {
+) -> Image {
     let magenta = vk_util::pack_u32(&[1.0, 0.0, 1.0, 1.0]);
     let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
 
@@ -63,7 +63,7 @@ pub fn image_error(
         })
         .collect::<Vec<u32>>();
 
-    AllocatedImage::new_with_data(
+    Image::new_with_data(
         device,
         allocator,
         immediate_submit,

@@ -3,8 +3,8 @@ use gpu_allocator::vulkan::Allocator;
 use nalgebra::Vector4;
 
 use crate::{
-    allocations::AllocatedImage,
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter},
+    images::Image,
     pipeline_builder::PipelineBuilder,
     resource_manager::{ResourceManager, VulkanResource},
     shader_manager::ShaderManager,
@@ -63,9 +63,9 @@ pub struct MaterialConstants {
 
 // TODO: Tracking?
 pub struct MaterialResources<'a> {
-    pub color_image: &'a AllocatedImage,
+    pub color_image: &'a Image,
     pub color_sampler: vk::Sampler,
-    pub metal_rough_image: &'a AllocatedImage,
+    pub metal_rough_image: &'a Image,
     pub metal_rough_sampler: vk::Sampler,
     pub data_buffer: vk::Buffer,
     pub data_buffer_offset: u32,

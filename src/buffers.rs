@@ -1,4 +1,10 @@
-use crate::resource_manager::{ResourceManager, VulkanResource, VulkanSubresource};
+use crate::resource_manager::{ResourceManager, VulkanResource};
+
+use ash::{Device, vk};
+use gpu_allocator::{
+    MemoryLocation,
+    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
+};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BufferIndex(u16);
@@ -16,11 +22,6 @@ impl From<BufferIndex> for usize {
 }
 
 pub type BufferManager = ResourceManager<Buffer, (), BufferIndex>;
-use ash::{Device, vk};
-use gpu_allocator::{
-    MemoryLocation,
-    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
-};
 
 pub struct Buffer {
     pub buffer: vk::Buffer,

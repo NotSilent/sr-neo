@@ -14,12 +14,12 @@ use winit::{
     window::{Window, WindowId},
 };
 
-mod allocations;
 mod buffers;
 mod camera;
 mod default_resources;
 mod deletion_queue;
 mod descriptors;
+mod images;
 mod immediate_submit;
 mod materials;
 mod pipeline_builder;

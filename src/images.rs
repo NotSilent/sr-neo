@@ -1,15 +1,34 @@
+use crate::{
+    buffers::Buffer,
+    immediate_submit::ImmediateSubmit,
+    resource_manager::{ResourceManager, VulkanResource},
+    vk_util,
+};
 use ash::{Device, vk};
 use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
 };
 
-use crate::{
-    buffers::Buffer, immediate_submit::ImmediateSubmit, resource_manager::VulkanResource, vk_util,
-};
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ImageIndex(u16);
+
+impl From<usize> for ImageIndex {
+    fn from(val: usize) -> Self {
+        ImageIndex(val as u16)
+    }
+}
+
+impl From<ImageIndex> for usize {
+    fn from(val: ImageIndex) -> Self {
+        val.0 as usize
+    }
+}
+
+pub type ImageManager = ResourceManager<Image, (), ImageIndex>;
 
 // TODO: split into struct of arrays? split into AllocatedImage2D and AllocatedImage3D?
-pub struct AllocatedImage {
+pub struct Image {
     pub image: vk::Image,
     pub image_view: vk::ImageView,
     pub extent: vk::Extent3D,
@@ -17,7 +36,7 @@ pub struct AllocatedImage {
     allocation: Option<Allocation>,
 }
 
-impl AllocatedImage {
+impl Image {
     #[allow(clippy::too_many_lines)]
     pub fn new(
         device: &Device,
@@ -89,7 +108,7 @@ impl AllocatedImage {
         mipmapped: bool,
         data: &[T],
         name: &str,
-    ) -> AllocatedImage {
+    ) -> Image {
         let data_size = size_of_val(data);
 
         let mut upload_buffer = Buffer::new(
@@ -103,7 +122,7 @@ impl AllocatedImage {
 
         vk_util::copy_data_to_allocation(data, upload_buffer.allocation.as_ref().unwrap());
 
-        let new_image = AllocatedImage::new(
+        let new_image = Image::new(
             device,
             allocator,
             extent,
@@ -160,6 +179,18 @@ impl AllocatedImage {
     }
 
     pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+        unsafe {
+            device.destroy_image_view(self.image_view, None);
+            device.destroy_image(self.image, None);
+        }
+        allocator.free(self.allocation.take().unwrap()).unwrap();
+    }
+}
+
+impl VulkanResource for Image {
+    type Subresource = ();
+
+    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
         unsafe {
             device.destroy_image_view(self.image_view, None);
             device.destroy_image(self.image, None);

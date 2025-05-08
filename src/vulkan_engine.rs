@@ -14,7 +14,6 @@ use ash::{
 };
 
 use egui_winit::egui::ahash::HashMap;
-use gltf::buffer;
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocator, AllocatorCreateDesc},
@@ -25,7 +24,6 @@ use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
-    allocations::AllocatedImage,
     buffers::{Buffer, BufferIndex, BufferManager},
     camera::{Camera, InputManager},
     default_resources,
@@ -33,6 +31,7 @@ use crate::{
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
+    images::{Image, ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
     materials::{
         MasterMaterial, MasterMaterialManager, MaterialConstants, MaterialInstanceIndex,
@@ -309,8 +308,8 @@ pub struct VulkanEngine {
     deletion_queue: DeletionQueue,
     allocator: ManuallyDrop<Allocator>,
 
-    draw_image: AllocatedImage,
-    depth_image: AllocatedImage,
+    draw_image_index: ImageIndex,
+    depth_image_index: ImageIndex,
 
     shader_manager: ShaderManager,
 
@@ -324,14 +323,15 @@ pub struct VulkanEngine {
     scene_data: GPUSceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
-    image_white: AllocatedImage,
-    image_black: AllocatedImage,
-    image_error: AllocatedImage,
+    image_white_index: ImageIndex,
+    image_black_index: ImageIndex,
+    _image_error_index: ImageIndex,
 
     default_sampler_nearest: vk::Sampler,
     default_sampler_linear: vk::Sampler,
 
     buffer_manager: BufferManager,
+    image_manager: ImageManager,
 
     mesh_manager: MeshManager,
     master_material_manager: MasterMaterialManager,
@@ -431,7 +431,9 @@ impl VulkanEngine {
 
         let draw_image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
-        let draw_image = AllocatedImage::new(
+        let mut image_manager = ImageManager::new();
+
+        let draw_image = Image::new(
             &device,
             &mut allocator,
             draw_image_extent,
@@ -443,7 +445,7 @@ impl VulkanEngine {
             "draw_image",
         );
 
-        let depth_image = AllocatedImage::new(
+        let depth_image = Image::new(
             &device,
             &mut allocator,
             draw_image_extent,
@@ -636,6 +638,12 @@ impl VulkanEngine {
                 .unwrap()
         };
 
+        let image_white_index = image_manager.add(image_white);
+        let image_black_index = image_manager.add(image_black);
+        let image_error_index = image_manager.add(image_error);
+        let draw_image_index = image_manager.add(draw_image);
+        let depth_image_index = image_manager.add(depth_image);
+
         Self {
             frame_number: 0,
             _stop_rendering: false,
@@ -658,8 +666,8 @@ impl VulkanEngine {
             frame_datas: frames,
             deletion_queue,
             allocator: ManuallyDrop::new(allocator),
-            draw_image,
-            depth_image,
+            draw_image_index,
+            depth_image_index,
 
             shader_manager,
 
@@ -668,15 +676,16 @@ impl VulkanEngine {
             immediate_submit,
 
             buffer_manager,
+            image_manager,
 
             _mesh_assets: mesh_assets.unwrap(),
 
             scene_data: GPUSceneData::default(),
             gpu_scene_data_descriptor_layout,
 
-            image_white,
-            image_black,
-            image_error,
+            image_white_index,
+            image_black_index,
+            _image_error_index: image_error_index,
 
             default_sampler_nearest,
             default_sampler_linear,
@@ -716,9 +725,22 @@ impl VulkanEngine {
                 .remove(device, allocator, resouce.vertex_buffer_index);
         }
 
+        self.image_manager
+            .remove(device, allocator, self.draw_image_index);
+        self.image_manager
+            .remove(device, allocator, self.depth_image_index);
+        self.image_manager
+            .remove(device, allocator, self.image_white_index);
+        self.image_manager
+            .remove(device, allocator, self.image_black_index);
+
+        // TODO: Shouldn't be needed if all resources are removed properly
+        self.image_manager.destroy(device, allocator);
+
         self.buffer_manager.destroy(device, allocator);
 
         self.master_material_manager.destroy(device, allocator);
+        // ~Shouldn't be needed if all resources are removed properly
 
         self.shader_manager.destroy(device);
 
@@ -733,13 +755,6 @@ impl VulkanEngine {
             device.destroy_sampler(self.default_sampler_nearest, None);
             device.destroy_sampler(self.default_sampler_linear, None);
         }
-
-        self.draw_image.destroy(device, allocator);
-        self.depth_image.destroy(device, allocator);
-
-        self.image_white.destroy(device, allocator);
-        self.image_black.destroy(device, allocator);
-        self.image_error.destroy(device, allocator);
 
         dbg!(allocator.generate_report());
 
@@ -793,6 +808,8 @@ impl VulkanEngine {
         cmd: vk::CommandBuffer,
         draw_extent: vk::Extent2D,
         gpu_stats: &mut GPUStats,
+        draw_image_view: vk::ImageView,
+        depth_image_view: vk::ImageView,
     ) {
         let gpu_scene_data_buffer = Buffer::new(
             &self.device,
@@ -838,13 +855,13 @@ impl VulkanEngine {
         });
 
         let color_attachment = [vk_util::attachment_info(
-            self.draw_image.image_view,
+            draw_image_view,
             clear_color,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         )];
 
         let depth_attachment = vk_util::depth_attachment_info(
-            self.depth_image.image_view,
+            depth_image_view,
             vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
         );
 
@@ -1009,19 +1026,14 @@ impl VulkanEngine {
                 }
             };
 
-            let draw_width = self
-                .swapchain
-                .extent
-                .width
-                .min(self.draw_image.extent.width) as f32
-                * render_scale;
+            let draw_image = self.image_manager.get(self.draw_image_index);
+            let depth_image = self.image_manager.get(self.depth_image_index);
 
-            let draw_height = self
-                .swapchain
-                .extent
-                .height
-                .min(self.draw_image.extent.height) as f32
-                * render_scale;
+            let draw_width =
+                self.swapchain.extent.width.min(draw_image.extent.width) as f32 * render_scale;
+
+            let draw_height =
+                self.swapchain.extent.height.min(draw_image.extent.height) as f32 * render_scale;
 
             let draw_extent = vk::Extent2D::default()
                 .width(draw_width as u32)
@@ -1052,7 +1064,7 @@ impl VulkanEngine {
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                self.draw_image.image,
+                draw_image.image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             );
@@ -1060,17 +1072,26 @@ impl VulkanEngine {
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                self.depth_image.image,
+                depth_image.image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             );
 
-            self.draw_geometry(cmd, draw_extent, &mut gpu_stats);
+            self.draw_geometry(
+                cmd,
+                draw_extent,
+                &mut gpu_stats,
+                draw_image.image_view,
+                depth_image.image_view,
+            );
+
+            // TODO: That damn frame_data
+            let draw_image = self.image_manager.get(self.draw_image_index);
 
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                self.draw_image.image,
+                draw_image.image,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             );
@@ -1089,7 +1110,7 @@ impl VulkanEngine {
             vk_util::copy_image_to_image(
                 &self.device,
                 cmd,
-                self.draw_image.image,
+                draw_image.image,
                 swapchain_image,
                 draw_extent,
                 self.swapchain.extent,
@@ -1549,8 +1570,9 @@ impl VulkanEngine {
 
         self.main_draw_context.opaque_surfaces.clear();
 
-        let aspect_ratio =
-            self.draw_image.extent.height as f32 / self.draw_image.extent.width as f32;
+        let draw_image = self.image_manager.get(self.draw_image_index);
+
+        let aspect_ratio = draw_image.extent.height as f32 / draw_image.extent.width as f32;
         let fov = 90_f32.to_radians();
         let near = 100.0;
         let far = 0.1;

@@ -13,7 +13,7 @@ pub trait VulkanResource {
 }
 
 // TODO: Probably better if resource manager allocates
-// TODO: For now, not allocating, since images would a paint with transfers
+// TODO: For now, not allocating, since images would a pain with transfers
 // TODO: Ref counting
 pub struct ResourceManager<T, S, I>
 where
@@ -75,7 +75,6 @@ where
         &mut self.dense[index.into()]
     }
 
-    // TODO: Figure this out
     pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) -> Vec<T::Subresource> {
         let mut subresources: Vec<T::Subresource> = vec![];
 
