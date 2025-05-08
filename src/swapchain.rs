@@ -15,6 +15,7 @@ pub enum SwapchainError {
 
 use crate::vk_util;
 
+#[allow(clippy::struct_field_names)]
 pub struct Swapchain {
     pub _format: vk::Format,
     pub extent: vk::Extent2D,

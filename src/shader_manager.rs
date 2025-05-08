@@ -63,7 +63,7 @@ impl ShaderManager {
         unsafe { device.create_shader_module(&create_info, None).unwrap() }
     }
 
-    pub fn get_compute_shader(&mut self, device: &Device, name: &str) -> vk::ShaderModule {
+    pub fn _get_compute_shader(&mut self, device: &Device, name: &str) -> vk::ShaderModule {
         let value = self
             .comp_shaders
             .entry(name.to_string())

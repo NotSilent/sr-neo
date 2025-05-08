@@ -6,6 +6,7 @@ pub fn image_white(
     device: &Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
+    access_mask: vk::AccessFlags2,
 ) -> Image {
     let white = vk_util::pack_u32(&[1.0, 1.0, 1.0, 1.0]);
 
@@ -16,6 +17,7 @@ pub fn image_white(
         vk::Extent3D::default().width(1).height(1).depth(1),
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageUsageFlags::SAMPLED,
+        access_mask,
         false,
         &[white],
         "image_white",
@@ -26,6 +28,7 @@ pub fn image_black(
     device: &Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
+    access_mask: vk::AccessFlags2,
 ) -> Image {
     let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
 
@@ -36,6 +39,7 @@ pub fn image_black(
         vk::Extent3D::default().width(1).height(1).depth(1),
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageUsageFlags::SAMPLED,
+        access_mask,
         false,
         &[black],
         "image_black",
@@ -46,6 +50,7 @@ pub fn image_error(
     device: &Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
+    access_mask: vk::AccessFlags2,
 ) -> Image {
     let magenta = vk_util::pack_u32(&[1.0, 0.0, 1.0, 1.0]);
     let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
@@ -70,6 +75,7 @@ pub fn image_error(
         vk::Extent3D::default().width(16).height(16).depth(1),
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageUsageFlags::SAMPLED,
+        access_mask,
         false,
         &pixels,
         "image_error",

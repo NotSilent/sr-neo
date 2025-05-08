@@ -28,6 +28,7 @@ impl From<ImageIndex> for usize {
 pub type ImageManager = ResourceManager<Image, (), ImageIndex>;
 
 // TODO: split into struct of arrays? split into AllocatedImage2D and AllocatedImage3D?
+#[allow(clippy::struct_field_names)]
 pub struct Image {
     pub image: vk::Image,
     pub image_view: vk::ImageView,
@@ -105,6 +106,7 @@ impl Image {
         extent: vk::Extent3D,
         format: vk::Format,
         image_usage: vk::ImageUsageFlags,
+        access_flags: vk::AccessFlags2,
         mipmapped: bool,
         data: &[T],
         name: &str,
@@ -139,6 +141,10 @@ impl Image {
                 new_image.image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::AccessFlags2::NONE,
+                vk::PipelineStageFlags2::COPY,
+                vk::AccessFlags2::TRANSFER_WRITE,
             );
 
             let copy_regions = [vk::BufferImageCopy::default()
@@ -170,20 +176,16 @@ impl Image {
                 new_image.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::PipelineStageFlags2::COPY,
+                vk::AccessFlags2::TRANSFER_WRITE,
+                vk::PipelineStageFlags2::ALL_GRAPHICS,
+                access_flags,
             );
         });
 
         upload_buffer.destroy(device, allocator);
 
         new_image
-    }
-
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        unsafe {
-            device.destroy_image_view(self.image_view, None);
-            device.destroy_image(self.image, None);
-        }
-        allocator.free(self.allocation.take().unwrap()).unwrap();
     }
 }
 

@@ -158,10 +158,19 @@ impl ApplicationHandler for App<'_> {
                             engine.update(&self.input_manager);
                             match engine.draw(1.0) {
                                 Ok(gpu_stats) => gpu_stats,
-                                Err(error) => {
-                                    println!("{error}");
-                                    panic!();
-                                }
+                                Err(error) => match error {
+                                    vulkan_engine::DrawError::Swapchain(_swapchain_error) => {
+                                        let size = self.window.as_mut().unwrap().inner_size();
+                                        engine.recreate_swapchain(size.width, size.height);
+
+                                        if let Ok(gpu_stats) = engine.draw(1.0) {
+                                            gpu_stats
+                                        } else {
+                                            println!("Swapchain broken beyond repair");
+                                            panic!();
+                                        }
+                                    }
+                                },
                             }
                         } else {
                             println!("No engine");

@@ -1,6 +1,5 @@
 use ash::Device;
 use ash::vk;
-use gpu_allocator::vulkan::Allocator;
 
 pub enum DeletionType {
     DescriptorSetLayout(vk::DescriptorSetLayout),

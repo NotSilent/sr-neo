@@ -356,6 +356,10 @@ impl VulkanEngine {
         p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
         _user_data: *mut std::os::raw::c_void,
     ) -> vk::Bool32 {
+        if message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
+            return vk::FALSE;
+        }
+
         let callback_data = unsafe { *p_callback_data };
         let message_id_number = callback_data.message_id_number;
 
@@ -483,18 +487,6 @@ impl VulkanEngine {
             gpu_scene_data_descriptor_layout,
         ));
 
-        let single_image_descriptor_layout = DescriptorLayoutBuilder::default()
-            .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .build(
-                &device,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                vk::DescriptorSetLayoutCreateFlags::empty(),
-            );
-
-        deletion_queue.push(DeletionType::DescriptorSetLayout(
-            single_image_descriptor_layout,
-        ));
-
         let immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
 
@@ -511,14 +503,26 @@ impl VulkanEngine {
             std::path::PathBuf::from(gltf_name).as_path(),
         );
 
-        let image_white =
-            default_resources::image_white(&device, &mut allocator, &immediate_submit);
+        let image_white = default_resources::image_white(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            vk::AccessFlags2::SHADER_READ,
+        );
 
-        let image_black =
-            default_resources::image_black(&device, &mut allocator, &immediate_submit);
+        let image_black = default_resources::image_black(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            vk::AccessFlags2::SHADER_READ,
+        );
 
-        let image_error =
-            default_resources::image_error(&device, &mut allocator, &immediate_submit);
+        let image_error = default_resources::image_error(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            vk::AccessFlags2::SHADER_READ,
+        );
 
         let sampler_nearest_create_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::NEAREST)
@@ -1002,6 +1006,10 @@ impl VulkanEngine {
                 draw_image.image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::AccessFlags2::NONE,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
             );
 
             vk_util::transition_image(
@@ -1010,6 +1018,11 @@ impl VulkanEngine {
                 depth_image.image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::AccessFlags2::NONE,
+                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             );
 
             self.draw_geometry(
@@ -1029,6 +1042,10 @@ impl VulkanEngine {
                 draw_image.image,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::TRANSFER_READ,
             );
 
             // TODO: Encapsulate, into swapchain?
@@ -1040,9 +1057,13 @@ impl VulkanEngine {
                 swapchain_image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::AccessFlags2::NONE,
+                vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
+                vk::AccessFlags2::TRANSFER_WRITE,
             );
 
-            vk_util::copy_image_to_image(
+            vk_util::blit_image(
                 &self.device,
                 cmd,
                 draw_image.image,
@@ -1057,6 +1078,10 @@ impl VulkanEngine {
                 swapchain_image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
+                vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
+                vk::AccessFlags2::TRANSFER_WRITE,
+                vk::PipelineStageFlags2::NONE,
+                vk::AccessFlags2::NONE,
             );
 
             self.device.cmd_write_timestamp(
@@ -1078,13 +1103,13 @@ impl VulkanEngine {
 
             let wait_infos = [vk::SemaphoreSubmitInfo::default()
                 .semaphore(current_frame_swapchain_semaphore)
-                .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
                 .device_index(0)
                 .value(1)];
 
             let signal_infos = [vk::SemaphoreSubmitInfo::default()
                 .semaphore(current_frame_render_semaphore)
-                .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)
+                .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
                 .device_index(0)
                 .value(1)];
 
