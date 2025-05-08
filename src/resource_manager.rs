@@ -22,6 +22,8 @@ where
         }
     }
 
+    // TODO: Should this also return ref to added material for convenience?
+    // TODO: Probably better if resource manager allocates and returns both index and ref
     pub fn add(&mut self, resource: T) -> I {
         let len = self.dense.len();
         self.dense.push(resource);
@@ -35,6 +37,11 @@ where
 
     pub fn get_mut(&mut self, index: I) -> &mut T {
         &mut self.dense[index.into()]
+    }
+
+    // TODO: Temp for cleanup
+    pub fn get_dense_fix_this(&self) -> &[T] {
+        &self.dense
     }
 
     // TODO: Figure this out

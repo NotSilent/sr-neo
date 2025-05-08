@@ -26,6 +26,7 @@ use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use crate::{
     allocations::{AllocatedBuffer, AllocatedImage},
     camera::{Camera, InputManager},
+    default_resources,
     deletion_queue::{DeletionQueue, DeletionType},
     resource_manager::ResourceManager,
     shader_manager::ShaderManager,
@@ -33,9 +34,16 @@ use crate::{
 };
 use crate::{pipeline_builder::PipelineBuilder, vk_util};
 
+#[derive(Default)]
+pub struct GPUStats {
+    pub draw_time: f64,
+    pub draw_calls: u32,
+    pub triangles: usize,
+}
+
 // New material stuff
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 struct MaterialInstanceIndex(u16);
 
 impl From<usize> for MaterialInstanceIndex {
@@ -52,9 +60,155 @@ impl From<MaterialInstanceIndex> for usize {
 
 type MaterialInstanceManager = ResourceManager<MaterialInstance, MaterialInstanceIndex>;
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct MasterMaterialIndex(u16);
+
+impl From<usize> for MasterMaterialIndex {
+    fn from(val: usize) -> Self {
+        MasterMaterialIndex(val as u16)
+    }
+}
+
+impl From<MasterMaterialIndex> for usize {
+    fn from(val: MasterMaterialIndex) -> Self {
+        val.0 as usize
+    }
+}
+
+type MasterMaterialManager = ResourceManager<MasterMaterial, MasterMaterialIndex>;
+
+struct MasterMaterial {
+    material_pass: MaterialPass,
+
+    // TODO: Split layout?
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+
+    material_layout: vk::DescriptorSetLayout,
+
+    writer: DescriptorWriter,
+}
+
+impl MasterMaterial {
+    fn new(
+        device: &Device,
+        shader_manager: &mut ShaderManager,
+        frame_layout: vk::DescriptorSetLayout,
+        draw_format: vk::Format,
+        depth_format: vk::Format,
+        material_pass: MaterialPass,
+    ) -> Self {
+        let shader = shader_manager.get_graphics_shader_combined(device, "mesh");
+
+        let matrix_range = [vk::PushConstantRange::default()
+            .offset(0)
+            .size(size_of::<GPUPushDrawConstant>() as u32)
+            .stage_flags(vk::ShaderStageFlags::VERTEX)];
+
+        let material_layout = DescriptorLayoutBuilder::default()
+            .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
+            .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .build(
+                device,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorSetLayoutCreateFlags::empty(),
+            );
+
+        let layouts = [frame_layout, material_layout];
+
+        let pipeline_layouts_create_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&layouts)
+            .push_constant_ranges(&matrix_range);
+
+        let pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&pipeline_layouts_create_info, None)
+                .unwrap()
+        };
+
+        let pipeline_builder = PipelineBuilder::default()
+            .set_shaders(shader.vert, shader.frag)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE) // TODO: Cull and CounterClockwise
+            .set_multisampling_none()
+            .disable_blending()
+            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
+            .set_color_attachment_formats(&[draw_format])
+            .set_depth_format(depth_format)
+            .set_pipeline_layout(pipeline_layout);
+
+        // TODO: Transparent material
+        // let transparent_pipeline_builder = pipeline_builder
+        //     .clone()
+        //     .enable_blending_additive()
+        //     .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
+
+        let pipeline = pipeline_builder.build_pipeline(device);
+
+        Self {
+            material_pass,
+            pipeline_layout,
+            pipeline,
+            material_layout,
+            writer: DescriptorWriter::default(),
+        }
+    }
+
+    fn destroy(&self, device: &Device) {
+        unsafe {
+            device.destroy_descriptor_set_layout(self.material_layout, None);
+            device.destroy_pipeline(self.pipeline, None);
+        };
+    }
+
+    fn create_instance(
+        // TODO: &self
+        &mut self,
+        device: &Device,
+        resources: &MaterialResources,
+        descriptor_allocator: &mut DescriptorAllocatorGrowable,
+        master_material_index: MasterMaterialIndex, // TODO: move allocation to MasterMaterialManager
+    ) -> MaterialInstance {
+        let set = descriptor_allocator.allocate(device, self.material_layout);
+
+        self.writer.write_buffer(
+            0,
+            resources.data_buffer,
+            size_of::<MaterialConstants>() as u64,
+            u64::from(resources.data_buffer_offset),
+            vk::DescriptorType::UNIFORM_BUFFER,
+        );
+
+        self.writer.write_image(
+            1,
+            resources.color_sampler,
+            resources.color_image.image_view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+
+        self.writer.write_image(
+            2,
+            resources.metal_rough_sampler,
+            resources.metal_rough_image.image_view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+
+        self.writer.update_set(device, set);
+
+        MaterialInstance {
+            master_material_index,
+            set,
+        }
+    }
+}
+
 // New mesh stuff
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 struct MeshIndex(u16);
 
 impl From<usize> for MeshIndex {
@@ -105,152 +259,6 @@ struct MaterialResources<'a> {
     metal_rough_sampler: vk::Sampler,
     data_buffer: vk::Buffer,
     data_buffer_offset: u32,
-}
-
-struct MasterMaterial {}
-
-// Semi-master material
-struct GLTFMetallicRoughness {
-    opaque_pipeline: Rc<MaterialPipeline>,
-    transparent_pipeline: Rc<MaterialPipeline>,
-
-    material_layout: vk::DescriptorSetLayout,
-
-    writer: DescriptorWriter,
-}
-
-impl GLTFMetallicRoughness {
-    fn new(
-        device: &Device,
-        shader_manager: &mut ShaderManager,
-        frame_layout: vk::DescriptorSetLayout,
-        draw_format: vk::Format,
-        depth_format: vk::Format,
-    ) -> Self {
-        let shader = shader_manager.get_graphics_shader_combined(device, "mesh");
-
-        let matrix_range = [vk::PushConstantRange::default()
-            .offset(0)
-            .size(size_of::<GPUPushDrawConstant>() as u32)
-            .stage_flags(vk::ShaderStageFlags::VERTEX)];
-
-        let material_layout = DescriptorLayoutBuilder::default()
-            .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
-            .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .build(
-                device,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                vk::DescriptorSetLayoutCreateFlags::empty(),
-            );
-
-        let layouts = [frame_layout, material_layout];
-
-        let pipeline_layouts_create_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(&layouts)
-            .push_constant_ranges(&matrix_range);
-
-        let new_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layouts_create_info, None)
-                .unwrap()
-        };
-
-        let opaque_pipeline_builder = PipelineBuilder::default()
-            .set_shaders(shader.vert, shader.frag)
-            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE) // TODO: Cull and CounterClockwise
-            .set_multisampling_none()
-            .disable_blending()
-            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
-            .set_color_attachment_formats(&[draw_format])
-            .set_depth_format(depth_format)
-            .set_pipeline_layout(new_layout);
-
-        let transparent_pipeline_builder = opaque_pipeline_builder
-            .clone()
-            .enable_blending_additive()
-            .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
-
-        let opaque_pipeline = opaque_pipeline_builder.build_pipeline(device);
-        let transparent_pipeline = transparent_pipeline_builder.build_pipeline(device);
-
-        let opaque_pipeline = Rc::new(MaterialPipeline {
-            pipeline_layout: new_layout,
-            pipeline: opaque_pipeline,
-        });
-
-        let transparent_pipeline = Rc::new(MaterialPipeline {
-            pipeline_layout: new_layout,
-            pipeline: transparent_pipeline,
-        });
-
-        Self {
-            opaque_pipeline,
-            transparent_pipeline,
-            material_layout,
-            writer: DescriptorWriter::default(),
-        }
-    }
-
-    fn destroy(&self, device: &Device) {
-        self.opaque_pipeline.destroy(device);
-        self.transparent_pipeline.destroy(device);
-
-        unsafe {
-            // TODO: This mess, they share the layout
-            device.destroy_pipeline_layout(self.opaque_pipeline.pipeline_layout, None);
-            device.destroy_descriptor_set_layout(self.material_layout, None);
-        };
-    }
-
-    fn write_material(
-        &mut self,
-        device: &Device,
-        pass: MaterialPass,
-        resources: &MaterialResources,
-        descriptor_allocator: &mut DescriptorAllocatorGrowable,
-    ) -> MaterialInstance {
-        let pipeline = match pass {
-            MaterialPass::MainColor => Rc::clone(&self.opaque_pipeline),
-            MaterialPass::Transparent => Rc::clone(&self.transparent_pipeline),
-        };
-
-        let set = descriptor_allocator.allocate(device, self.material_layout);
-
-        self.writer.write_buffer(
-            0,
-            resources.data_buffer,
-            size_of::<MaterialConstants>() as u64,
-            u64::from(resources.data_buffer_offset),
-            vk::DescriptorType::UNIFORM_BUFFER,
-        );
-
-        self.writer.write_image(
-            1,
-            resources.color_sampler,
-            resources.color_image.image_view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-
-        self.writer.write_image(
-            2,
-            resources.metal_rough_sampler,
-            resources.metal_rough_image.image_view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-
-        self.writer.update_set(device, set);
-
-        MaterialInstance {
-            pipeline,
-            set,
-            pass,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -305,33 +313,14 @@ impl Renderable for MeshNode {
     }
 }
 
-#[derive(Default)]
-struct MaterialPipeline {
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-}
-
-impl MaterialPipeline {
-    fn destroy(&self, device: &Device) {
-        unsafe {
-            device.destroy_pipeline(self.pipeline, None);
-            // TODO: pipeline layout is not owned here, figure out this mess
-            // device.destroy_pipeline_layout(self.pipeline_layout, None);
-        }
-    }
-}
-
 enum MaterialPass {
     MainColor,
     Transparent,
 }
 
-// TODO: drop Rc, should be fine to have a copy?
-// TODO: Probably better to have an index to MasterMaterial
 struct MaterialInstance {
-    pipeline: Rc<MaterialPipeline>,
+    master_material_index: MasterMaterialIndex,
     set: vk::DescriptorSet,
-    pass: MaterialPass, // TODO: MasterMaterial
 }
 
 struct RenderObject {
@@ -811,7 +800,7 @@ pub struct VulkanEngine {
     debug_utils_messenger: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
     device: Device,
-    graphics_queue_family_index: u32,
+    _graphics_queue_family_index: u32,
     graphics_queue: vk::Queue,
 
     surface_instance: surface::Instance,
@@ -832,9 +821,6 @@ pub struct VulkanEngine {
 
     descriptor_allocator: DescriptorAllocatorGrowable,
 
-    _draw_image_descriptor_layout: vk::DescriptorSetLayout,
-    draw_image_descriptors: vk::DescriptorSet,
-
     immediate_submit: ImmediateSubmit,
 
     // TODO: remove
@@ -843,19 +829,18 @@ pub struct VulkanEngine {
     scene_data: GPUSceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
-    white_image: AllocatedImage,
-    black_image: AllocatedImage,
-    grey_image: AllocatedImage,
-    error_checkerboard_image: AllocatedImage,
+    image_white: AllocatedImage,
+    image_black: AllocatedImage,
+    image_error: AllocatedImage,
 
     default_sampler_nearest: vk::Sampler,
     default_sampler_linear: vk::Sampler,
 
-    metal_rough_material: GLTFMetallicRoughness,
-
     mesh_manager: MeshManager,
+    master_material_manager: MasterMaterialManager,
     material_instance_manager: MaterialInstanceManager,
-    default_material_instance_index: MaterialInstanceIndex,
+
+    _default_opaque_material_instance_index: MaterialInstanceIndex,
 
     main_draw_context: DrawContext,
     loaded_nodes: HashMap<String, Rc<MeshNode>>, // TODO: virtual Node in tutorial, refactor
@@ -956,7 +941,6 @@ impl VulkanEngine {
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::STORAGE
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             false,
             "draw_image",
@@ -988,27 +972,6 @@ impl VulkanEngine {
 
         let mut descriptor_allocator = DescriptorAllocatorGrowable::new(&device, 10, pool_ratios);
 
-        let draw_image_descriptor_layout = DescriptorLayoutBuilder::default()
-            .add_binding(0, vk::DescriptorType::STORAGE_IMAGE)
-            .build(
-                &device,
-                vk::ShaderStageFlags::COMPUTE,
-                vk::DescriptorSetLayoutCreateFlags::empty(),
-            );
-
-        let draw_image_descriptors =
-            descriptor_allocator.allocate(&device, draw_image_descriptor_layout);
-
-        let mut descriptor_writer = DescriptorWriter::default();
-        descriptor_writer.write_image(
-            0,
-            vk::Sampler::null(),
-            draw_image.image_view,
-            vk::ImageLayout::GENERAL,
-            vk::DescriptorType::STORAGE_IMAGE,
-        );
-        descriptor_writer.update_set(&device, draw_image_descriptors);
-
         let gpu_scene_data_descriptor_layout = DescriptorLayoutBuilder::default()
             .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
             .build(
@@ -1034,10 +997,6 @@ impl VulkanEngine {
         ));
 
         // ~init descriptors
-
-        // init pipelines
-        let draw_image_descriptor_layouts = [draw_image_descriptor_layout];
-        // ~init pipelines
 
         let immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
@@ -1078,9 +1037,7 @@ impl VulkanEngine {
         let triangle_mesh_pipeline = mesh_pipeline_builder.build_pipeline(&device);
 
         // ~mesh
-        deletion_queue.push(DeletionType::DescriptorSetLayout(
-            draw_image_descriptor_layout,
-        ));
+
         deletion_queue.push(DeletionType::Pipeline(triangle_mesh_pipeline));
         deletion_queue.push(DeletionType::PipelineLayout(triangle_mesh_pipeline_layout));
 
@@ -1090,73 +1047,18 @@ impl VulkanEngine {
             &device,
             &mut allocator,
             &mut mesh_manager,
-            &mut &immediate_submit,
+            &immediate_submit,
             std::path::PathBuf::from(gltf_name).as_path(),
         );
 
-        let white = vk_util::pack_u32(&[1.0, 1.0, 1.0, 1.0]);
-        let white_image = AllocatedImage::new_with_data(
-            &device,
-            &mut allocator,
-            &immediate_submit,
-            vk::Extent3D::default().width(1).height(1).depth(1),
-            vk::Format::R8G8B8A8_UNORM,
-            vk::ImageUsageFlags::SAMPLED,
-            false,
-            &[white],
-            "white_image",
-        );
+        let image_white =
+            default_resources::image_white(&device, &mut allocator, &immediate_submit);
 
-        let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
-        let black_image = AllocatedImage::new_with_data(
-            &device,
-            &mut allocator,
-            &immediate_submit,
-            vk::Extent3D::default().width(1).height(1).depth(1),
-            vk::Format::R8G8B8A8_UNORM,
-            vk::ImageUsageFlags::SAMPLED,
-            false,
-            &[black],
-            "black_image",
-        );
+        let image_black =
+            default_resources::image_black(&device, &mut allocator, &immediate_submit);
 
-        let grey = vk_util::pack_u32(&[0.66, 0.66, 0.66, 1.0]);
-        let grey_image = AllocatedImage::new_with_data(
-            &device,
-            &mut allocator,
-            &immediate_submit,
-            vk::Extent3D::default().width(1).height(1).depth(1),
-            vk::Format::R8G8B8A8_UNORM,
-            vk::ImageUsageFlags::SAMPLED,
-            false,
-            &[grey],
-            "grey_image",
-        );
-
-        let magenta = vk_util::pack_u32(&[1.0, 0.0, 1.0, 1.0]);
-        let pixels = (0..16 * 16)
-            .map(|i| {
-                let x = i % 16;
-                let y = i / 16;
-                if (x % 2) ^ (y % 2) > 0 {
-                    magenta
-                } else {
-                    black
-                }
-            })
-            .collect::<Vec<u32>>();
-
-        let error_checkerboard_image = AllocatedImage::new_with_data(
-            &device,
-            &mut allocator,
-            &immediate_submit,
-            vk::Extent3D::default().width(16).height(16).depth(1),
-            vk::Format::R8G8B8A8_UNORM,
-            vk::ImageUsageFlags::SAMPLED,
-            false,
-            &pixels,
-            "error_checkerboard_image",
-        );
+        let image_error =
+            default_resources::image_error(&device, &mut allocator, &immediate_submit);
 
         let sampler_nearest_create_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::NEAREST)
@@ -1178,13 +1080,18 @@ impl VulkanEngine {
                 .unwrap()
         };
 
-        let mut metal_rough_material = GLTFMetallicRoughness::new(
+        let mut master_material_manager = MasterMaterialManager::new();
+
+        let default_opaque_material = MasterMaterial::new(
             &device,
             &mut shader_manager,
             gpu_scene_data_descriptor_layout,
             draw_image.format,
             depth_image.format,
+            MaterialPass::MainColor,
         );
+
+        let default_opaque_material_index = master_material_manager.add(default_opaque_material);
 
         let material_constants_buffer = AllocatedBuffer::new(
             &device,
@@ -1207,9 +1114,9 @@ impl VulkanEngine {
         );
 
         let resources = MaterialResources {
-            color_image: &white_image,
+            color_image: &image_white,
             color_sampler: default_sampler_linear,
-            metal_rough_image: &white_image,
+            metal_rough_image: &image_white,
             metal_rough_sampler: default_sampler_linear,
             data_buffer: material_constants_buffer.buffer,
             data_buffer_offset: 0,
@@ -1218,23 +1125,27 @@ impl VulkanEngine {
         // TODO: Buffer management, and also image, just Rc everywhere?
         deletion_queue.push(DeletionType::AllocatedBuffer(material_constants_buffer));
 
-        let default_material = metal_rough_material.write_material(
+        let default_opaque_master_material =
+            master_material_manager.get_mut(default_opaque_material_index);
+
+        let default_opaque_material_instance = default_opaque_master_material.create_instance(
             &device,
-            MaterialPass::MainColor,
             &resources,
             &mut descriptor_allocator,
+            default_opaque_material_index,
         );
 
         let mut material_instance_manager = MaterialInstanceManager::new();
 
-        let default_material_instance_index = material_instance_manager.add(default_material);
+        let default_opaque_material_instance_index =
+            material_instance_manager.add(default_opaque_material_instance);
 
         let mut loaded_nodes = HashMap::default();
 
         for mesh_asset in mesh_assets.as_ref().unwrap() {
             let mesh = mesh_manager.get_mut(*mesh_asset);
             for surface in &mut mesh.surfaces {
-                surface.material_instance_index = default_material_instance_index;
+                surface.material_instance_index = default_opaque_material_instance_index;
             }
 
             let new_node = Rc::new(MeshNode {
@@ -1278,7 +1189,7 @@ impl VulkanEngine {
             debug_utils_messenger,
             physical_device,
             device,
-            graphics_queue_family_index,
+            _graphics_queue_family_index: graphics_queue_family_index,
             graphics_queue,
 
             surface_instance,
@@ -1295,8 +1206,6 @@ impl VulkanEngine {
             shader_manager,
 
             descriptor_allocator,
-            draw_image_descriptors,
-            _draw_image_descriptor_layout: draw_image_descriptor_layout,
 
             immediate_submit,
 
@@ -1305,20 +1214,18 @@ impl VulkanEngine {
             scene_data: GPUSceneData::default(),
             gpu_scene_data_descriptor_layout,
 
-            white_image,
-            black_image,
-            grey_image,
-            error_checkerboard_image,
+            image_white,
+            image_black,
+            image_error,
 
             default_sampler_nearest,
             default_sampler_linear,
 
-            metal_rough_material,
-
             //Managers
             mesh_manager,
+            master_material_manager,
             material_instance_manager,
-            default_material_instance_index,
+            _default_opaque_material_instance_index: default_opaque_material_instance_index,
 
             main_draw_context: DrawContext::default(),
             loaded_nodes,
@@ -1346,6 +1253,15 @@ impl VulkanEngine {
             mesh.destroy(device, allocator);
         }
 
+        for master_material in self.master_material_manager.get_dense_fix_this() {
+            unsafe {
+                device.destroy_descriptor_set_layout(master_material.material_layout, None);
+                device.destroy_pipeline(master_material.pipeline, None);
+                device.destroy_pipeline_layout(master_material.pipeline_layout, None);
+            }
+        }
+        // ~TODO: Abstract in ResourceManager/specific managers
+
         self.shader_manager.destroy(device);
 
         self.descriptor_allocator.destroy(device);
@@ -1360,15 +1276,12 @@ impl VulkanEngine {
             device.destroy_sampler(self.default_sampler_linear, None);
         }
 
-        self.metal_rough_material.destroy(device);
-
         self.draw_image.destroy(device, allocator);
         self.depth_image.destroy(device, allocator);
 
-        self.white_image.destroy(device, allocator);
-        self.black_image.destroy(device, allocator);
-        self.grey_image.destroy(device, allocator);
-        self.error_checkerboard_image.destroy(device, allocator);
+        self.image_white.destroy(device, allocator);
+        self.image_black.destroy(device, allocator);
+        self.image_error.destroy(device, allocator);
 
         dbg!(allocator.generate_report());
 
@@ -1417,7 +1330,12 @@ impl VulkanEngine {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn draw_geometry(&mut self, cmd: vk::CommandBuffer, draw_extent: vk::Extent2D) {
+    fn draw_geometry(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        draw_extent: vk::Extent2D,
+        gpu_stats: &mut GPUStats,
+    ) {
         let gpu_scene_data_buffer = AllocatedBuffer::new(
             &self.device,
             &mut self.allocator,
@@ -1489,7 +1407,7 @@ impl VulkanEngine {
             self.device.cmd_set_viewport(cmd, 0, &viewports);
             self.device.cmd_set_scissor(cmd, 0, &scissors);
 
-            self.draw_meshes(cmd, global_descriptor);
+            self.draw_meshes(cmd, global_descriptor, gpu_stats);
         };
 
         unsafe {
@@ -1498,7 +1416,12 @@ impl VulkanEngine {
     }
 
     // TODO: Move to RenderObject?
-    fn draw_meshes(&mut self, cmd: vk::CommandBuffer, global_descriptor: vk::DescriptorSet) {
+    fn draw_meshes(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        global_descriptor: vk::DescriptorSet,
+        gpu_stats: &mut GPUStats,
+    ) {
         for draw in &self.main_draw_context.opaque_surfaces {
             unsafe {
                 let mesh = self.mesh_manager.get(draw.mesh_index);
@@ -1508,16 +1431,20 @@ impl VulkanEngine {
                         .material_instance_manager
                         .get(surface.material_instance_index);
 
+                    let master_material = self
+                        .master_material_manager
+                        .get(material.master_material_index);
+
                     self.device.cmd_bind_pipeline(
                         cmd,
                         vk::PipelineBindPoint::GRAPHICS,
-                        material.pipeline.pipeline,
+                        master_material.pipeline,
                     );
 
                     self.device.cmd_bind_descriptor_sets(
                         cmd,
                         vk::PipelineBindPoint::GRAPHICS,
-                        material.pipeline.pipeline_layout,
+                        master_material.pipeline_layout,
                         0,
                         &[global_descriptor],
                         &[],
@@ -1526,7 +1453,7 @@ impl VulkanEngine {
                     self.device.cmd_bind_descriptor_sets(
                         cmd,
                         vk::PipelineBindPoint::GRAPHICS,
-                        material.pipeline.pipeline_layout,
+                        master_material.pipeline_layout,
                         1,
                         &[material.set],
                         &[],
@@ -1546,7 +1473,7 @@ impl VulkanEngine {
 
                     self.device.cmd_push_constants(
                         cmd,
-                        material.pipeline.pipeline_layout,
+                        master_material.pipeline_layout,
                         vk::ShaderStageFlags::VERTEX,
                         0,
                         push_constants.as_bytes(),
@@ -1554,14 +1481,18 @@ impl VulkanEngine {
 
                     self.device
                         .cmd_draw_indexed(cmd, surface.count, 1, surface.start_index, 0, 0);
+
+                    gpu_stats.draw_calls += 1;
+                    gpu_stats.triangles += surface.count as usize / 3;
                 }
             }
         }
     }
 
+    #[allow(unused_assignments)] // Why? gpu_draw is written and returned?
     #[allow(clippy::too_many_lines)]
-    pub fn draw(&mut self, render_scale: f32) -> Result<f64, DrawError> {
-        let mut gpu_time = 0.0_f64;
+    pub fn draw(&mut self, render_scale: f32) -> Result<GPUStats, DrawError> {
+        let mut gpu_stats = GPUStats::default();
 
         let render_scale = render_scale.clamp(0.25, 1.0);
 
@@ -1675,7 +1606,7 @@ impl VulkanEngine {
                 vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             );
 
-            self.draw_geometry(cmd, draw_extent);
+            self.draw_geometry(cmd, draw_extent, &mut gpu_stats);
 
             vk_util::transition_image(
                 &self.device,
@@ -1760,8 +1691,6 @@ impl VulkanEngine {
                 .wait_semaphores(&wait_semaphores)
                 .image_indices(&image_indices);
 
-            self.frame_number += 1;
-
             match self
                 .swapchain_device
                 .queue_present(self.graphics_queue, &present_info)
@@ -1796,12 +1725,14 @@ impl VulkanEngine {
                 .instance
                 .get_physical_device_properties(self.physical_device);
 
-            gpu_time = (query_results[1] as f64 - query_results[0] as f64)
+            gpu_stats.draw_time = (query_results[1] as f64 - query_results[0] as f64)
                 * f64::from(properties.limits.timestamp_period)
                 / 1_000_000.0f64;
+
+            self.frame_number += 1;
         };
 
-        Ok(gpu_time)
+        Ok(gpu_stats)
     }
 
     fn create_allocator(

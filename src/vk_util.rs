@@ -76,6 +76,9 @@ pub fn transition_image(
         .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
         .old_layout(current_layout)
         .new_layout(new_layout)
+        // Used for barriers between queues?
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .subresource_range(image_subresource_range(aspect_mask))
         .image(image);
 

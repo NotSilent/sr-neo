@@ -16,6 +16,7 @@ use winit::{
 
 mod allocations;
 mod camera;
+mod default_resources;
 mod deletion_queue;
 mod pipeline_builder;
 mod resource_manager;
@@ -63,8 +64,8 @@ impl ApplicationHandler for App<'_> {
         .unwrap();
 
         window
-            .set_cursor_grab(winit::window::CursorGrabMode::Confined)
-            .unwrap();
+            .set_cursor_grab(winit::window::CursorGrabMode::None)
+            .unwrap_or(());
         window.set_cursor_visible(false);
 
         let state = State::new(
@@ -149,26 +150,34 @@ impl ApplicationHandler for App<'_> {
                         //     .egui_ctx()
                         //     .tessellate(full_output.shapes, full_output.pixels_per_point);
 
-                        let mut gpu_time = 0.0;
-
                         let elapsed = std::time::Instant::now();
 
-                        if let Some(engine) = &mut self.vulkan_engine {
+                        let gpu_stats = if let Some(engine) = &mut self.vulkan_engine {
                             engine.update(&self.input_manager);
-
                             match engine.draw(1.0) {
-                                Ok(time) => gpu_time = time,
-                                Err(error) => println!("{error}"),
+                                Ok(gpu_stats) => gpu_stats,
+                                Err(error) => {
+                                    println!("{error}");
+                                    panic!();
+                                }
                             }
-                        }
+                        } else {
+                            println!("No engine");
+                            panic!();
+                        };
 
                         // TODO: Should count since last redraw
-                        let cpu_time = elapsed.elapsed().as_secs_f32() * 1000.0;
+                        let cpu_time = elapsed.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / gpu_stats.draw_time;
 
-                        self.window
-                            .as_mut()
-                            .unwrap()
-                            .set_title(&format!("sr-neo: CPU: {cpu_time} GPU: {gpu_time}"));
+                        self.window.as_mut().unwrap().set_title(&format!(
+                            "sr-neo: CPU: {:.2} GPU: {:.2} DrawCalls: {} Triangles: {} FPS: {:.2}",
+                            cpu_time,
+                            gpu_stats.draw_time,
+                            gpu_stats.draw_calls,
+                            gpu_stats.triangles,
+                            fps
+                        ));
 
                         self.input_manager.clear();
                     }
