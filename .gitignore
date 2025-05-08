@@ -17,3 +17,6 @@
 
 shaders/*.spv
 imgui.ini
+
+*.gltf
+*.glb

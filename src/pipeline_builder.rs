@@ -122,7 +122,7 @@ impl PipelineBuilder<'_> {
         self
     }
 
-    pub fn enable_blending_additive(mut self) -> Self {
+    pub fn _enable_blending_additive(mut self) -> Self {
         let Self {
             color_blend_attachment,
             ..
@@ -140,7 +140,7 @@ impl PipelineBuilder<'_> {
         self
     }
 
-    pub fn enable_blending_alphablend(mut self) -> Self {
+    pub fn _enable_blending_alphablend(mut self) -> Self {
         let Self {
             color_blend_attachment,
             ..
@@ -171,7 +171,7 @@ impl PipelineBuilder<'_> {
         self
     }
 
-    pub fn disable_depth_test(mut self) -> Self {
+    pub fn _disable_depth_test(mut self) -> Self {
         let Self { depth_stencil, .. } = &mut self;
 
         depth_stencil.depth_test_enable = vk::FALSE;

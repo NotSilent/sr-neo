@@ -15,6 +15,7 @@ use winit::{
 };
 
 mod allocations;
+mod buffers;
 mod camera;
 mod default_resources;
 mod deletion_queue;

@@ -18,7 +18,7 @@ use crate::vk_util;
 pub struct Swapchain {
     pub _format: vk::Format,
     pub extent: vk::Extent2D,
-    pub handle: vk::SwapchainKHR,
+    pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
     pub image_views: Vec<vk::ImageView>,
 }
@@ -59,7 +59,7 @@ impl Swapchain {
         Self {
             _format: surface_format.format,
             extent,
-            handle: swapchain,
+            swapchain,
             images,
             image_views,
         }
@@ -72,7 +72,7 @@ impl Swapchain {
 
         self.image_views.clear();
 
-        unsafe { swapchain_device.destroy_swapchain(self.handle, None) };
+        unsafe { swapchain_device.destroy_swapchain(self.swapchain, None) };
     }
 
     fn swapchain_create_info<'a>(

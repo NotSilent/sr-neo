@@ -4,56 +4,9 @@ use gpu_allocator::{
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
 };
 
-use crate::{immediate_submit::ImmediateSubmit, vk_util};
-
-pub struct AllocatedBuffer {
-    pub buffer: vk::Buffer,
-    pub allocation: Option<Allocation>, // TODO: Drop Option<> somehow (maybe put in sparse vec and index for deletion?)
-}
-
-impl AllocatedBuffer {
-    pub fn new(
-        device: &Device,
-        allocator: &mut Allocator,
-        alloc_size: vk::DeviceSize,
-        usage: vk::BufferUsageFlags,
-        memory_location: MemoryLocation,
-        name: &str,
-    ) -> AllocatedBuffer {
-        let create_info = vk::BufferCreateInfo::default()
-            .size(alloc_size)
-            .usage(usage);
-
-        let buffer = unsafe { device.create_buffer(&create_info, None).unwrap() };
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-
-        let allocation_info = AllocationCreateDesc {
-            name,
-            requirements,
-            location: memory_location,
-            linear: true,
-            allocation_scheme: AllocationScheme::DedicatedBuffer(buffer),
-        };
-
-        let allocation = allocator.allocate(&allocation_info).unwrap();
-
-        unsafe {
-            device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .unwrap();
-        };
-
-        AllocatedBuffer {
-            buffer,
-            allocation: Some(allocation),
-        }
-    }
-
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        unsafe { device.destroy_buffer(self.buffer, None) };
-        allocator.free(self.allocation.take().unwrap()).unwrap();
-    }
-}
+use crate::{
+    buffers::Buffer, immediate_submit::ImmediateSubmit, resource_manager::VulkanResource, vk_util,
+};
 
 // TODO: split into struct of arrays? split into AllocatedImage2D and AllocatedImage3D?
 pub struct AllocatedImage {
@@ -139,7 +92,7 @@ impl AllocatedImage {
     ) -> AllocatedImage {
         let data_size = size_of_val(data);
 
-        let mut upload_buffer = AllocatedBuffer::new(
+        let mut upload_buffer = Buffer::new(
             device,
             allocator,
             data_size as u64,

@@ -2,38 +2,69 @@ use gpu_allocator::vulkan::Allocator;
 
 use ash::Device;
 
+pub trait VulkanSubresource {}
+
+impl VulkanSubresource for () {}
+
 pub trait VulkanResource {
-    fn destroy(&mut self, device: &Device, allocator: &mut Allocator);
+    type Subresource: VulkanSubresource;
+
+    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) -> Self::Subresource;
 }
 
-// TODO: trait, sparse, removal, ref counting
-pub struct ResourceManager<T, I>
+// TODO: Probably better if resource manager allocates
+// TODO: For now, not allocating, since images would a paint with transfers
+// TODO: Ref counting
+pub struct ResourceManager<T, S, I>
 where
     T: VulkanResource,
-    I: From<usize> + Into<usize>,
+    S: VulkanSubresource,
+    I: Copy + From<usize> + Into<usize> + PartialEq,
 {
-    pub dense: Vec<T>,
-    pub _phantom_data: std::marker::PhantomData<I>,
+    dense: Vec<T>,
+    destroyed: Vec<I>,
+
+    _phantom_subresource: std::marker::PhantomData<S>,
+    _phantom_index: std::marker::PhantomData<I>,
 }
 
-impl<T, I> ResourceManager<T, I>
+impl<T, S, I> ResourceManager<T, S, I>
 where
     T: VulkanResource,
-    I: From<usize> + Into<usize>,
+    S: VulkanSubresource,
+    I: Copy + From<usize> + Into<usize> + PartialEq,
 {
     pub fn new() -> Self {
         Self {
             dense: vec![],
-            _phantom_data: std::marker::PhantomData,
+            destroyed: vec![],
+            _phantom_subresource: std::marker::PhantomData,
+            _phantom_index: std::marker::PhantomData,
         }
     }
 
-    // TODO: Probably better if resource manager allocates
     pub fn add(&mut self, resource: T) -> I {
-        let len = self.dense.len();
-        self.dense.push(resource);
+        if let Some(index) = self.destroyed.pop() {
+            self.dense[index.into()] = resource;
 
-        From::from(len)
+            index
+        } else {
+            let len = self.dense.len().into();
+            self.dense.push(resource);
+
+            len
+        }
+    }
+
+    pub fn remove(
+        &mut self,
+        device: &Device,
+        allocator: &mut Allocator,
+        index: I,
+    ) -> T::Subresource {
+        self.destroyed.push(index);
+        let item = &mut self.dense[index.into()];
+        item.destroy(device, allocator)
     }
 
     pub fn get(&self, index: I) -> &T {
@@ -45,9 +76,21 @@ where
     }
 
     // TODO: Figure this out
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        for resource in &mut self.dense {
-            resource.destroy(device, allocator);
+    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) -> Vec<T::Subresource> {
+        let mut subresources: Vec<T::Subresource> = vec![];
+
+        for (index, resource) in &mut self.dense.iter_mut().enumerate() {
+            if !self.destroyed.contains(&index.into()) {
+                subresources.push(resource.destroy(device, allocator));
+                self.destroyed.push(index.into());
+            }
         }
+
+        if !subresources.is_empty() {
+            // TODO: This
+            // println!("This shouldn't actualy happen, all assets should remove their resources.");
+        }
+
+        subresources
     }
 }

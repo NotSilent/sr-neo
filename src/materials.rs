@@ -28,7 +28,7 @@ impl From<MasterMaterialIndex> for usize {
     }
 }
 
-pub type MasterMaterialManager = ResourceManager<MasterMaterial, MasterMaterialIndex>;
+pub type MasterMaterialManager = ResourceManager<MasterMaterial, (), MasterMaterialIndex>;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MaterialInstanceIndex(pub u16);
@@ -45,7 +45,7 @@ impl From<MaterialInstanceIndex> for usize {
     }
 }
 
-pub type MaterialInstanceManager = ResourceManager<MaterialInstance, MaterialInstanceIndex>;
+pub type MaterialInstanceManager = ResourceManager<MaterialInstance, (), MaterialInstanceIndex>;
 
 // ~~Resource Managers
 
@@ -83,6 +83,8 @@ pub struct MasterMaterial {
 }
 
 impl VulkanResource for MasterMaterial {
+    type Subresource = ();
+
     fn destroy(&mut self, device: &Device, _allocator: &mut Allocator) {
         unsafe {
             device.destroy_descriptor_set_layout(self.material_layout, None);
@@ -208,5 +210,7 @@ pub struct MaterialInstance {
 }
 
 impl VulkanResource for MaterialInstance {
+    type Subresource = ();
+
     fn destroy(&mut self, _device: &Device, _allocator: &mut Allocator) {}
 }

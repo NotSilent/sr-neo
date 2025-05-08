@@ -14,6 +14,7 @@ use ash::{
 };
 
 use egui_winit::egui::ahash::HashMap;
+use gltf::buffer;
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocator, AllocatorCreateDesc},
@@ -24,7 +25,8 @@ use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
-    allocations::{AllocatedBuffer, AllocatedImage},
+    allocations::AllocatedImage,
+    buffers::{Buffer, BufferIndex, BufferManager},
     camera::{Camera, InputManager},
     default_resources,
     deletion_queue::{DeletionQueue, DeletionType},
@@ -32,10 +34,11 @@ use crate::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
     immediate_submit::ImmediateSubmit,
-    materials::MaterialInstanceIndex,
-    materials::{MasterMaterial, MaterialConstants, MaterialPass, MaterialResources},
-    materials::{MasterMaterialManager, MaterialInstanceManager},
-    resource_manager::{ResourceManager, VulkanResource},
+    materials::{
+        MasterMaterial, MasterMaterialManager, MaterialConstants, MaterialInstanceIndex,
+        MaterialInstanceManager, MaterialPass, MaterialResources,
+    },
+    resource_manager::{ResourceManager, VulkanResource, VulkanSubresource},
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
     vk_util,
@@ -65,7 +68,16 @@ impl From<MeshIndex> for usize {
     }
 }
 
-type MeshManager = ResourceManager<Mesh, MeshIndex>;
+// TODO: Should material alo be a part of this?
+// Probably yeah
+struct MeshSubresource {
+    index_buffer_index: BufferIndex,
+    vertex_buffer_index: BufferIndex,
+}
+
+impl VulkanSubresource for MeshSubresource {}
+
+type MeshManager = ResourceManager<Mesh, MeshSubresource, MeshIndex>;
 
 struct Mesh {
     name: String,
@@ -74,8 +86,13 @@ struct Mesh {
 }
 
 impl VulkanResource for Mesh {
-    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        self.buffers.destroy(device, allocator);
+    type Subresource = MeshSubresource;
+
+    fn destroy(&mut self, _device: &Device, _allocator: &mut Allocator) -> MeshSubresource {
+        MeshSubresource {
+            index_buffer_index: self.buffers.index_buffer_index,
+            vertex_buffer_index: self.buffers.vertex_buffer_index,
+        }
     }
 }
 
@@ -180,17 +197,11 @@ struct Vertex {
     color: Vector4<f32>,
 }
 
+// TODO: Probably can be part of Mesh
 struct GPUMeshBuffers {
-    index_buffer: AllocatedBuffer,
-    vertex_buffer: AllocatedBuffer,
+    index_buffer_index: BufferIndex,
+    vertex_buffer_index: BufferIndex,
     vertex_buffer_address: vk::DeviceAddress,
-}
-
-impl GPUMeshBuffers {
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        self.index_buffer.destroy(device, allocator);
-        self.vertex_buffer.destroy(device, allocator);
-    }
 }
 
 #[repr(C)]
@@ -218,8 +229,7 @@ struct FrameData {
     render_semaphore: vk::Semaphore,
     fence: vk::Fence,
 
-    // TODO: can this be done without RefCell?
-    deletion_queue: RefCell<DeletionQueue>,
+    buffer_manager: RefCell<BufferManager>,
     descriptors: RefCell<DescriptorAllocatorGrowable>,
 }
 
@@ -252,7 +262,7 @@ impl FrameData {
             swapchain_semaphore: vk_util::create_semaphore(device),
             render_semaphore: vk_util::create_semaphore(device),
             fence: vk_util::create_fence(device, vk::FenceCreateFlags::SIGNALED),
-            deletion_queue: RefCell::new(DeletionQueue::default()),
+            buffer_manager: RefCell::new(BufferManager::new()),
             descriptors: RefCell::new(DescriptorAllocatorGrowable::new(device, 1024, ratios)),
         }
     }
@@ -265,7 +275,7 @@ impl FrameData {
             device.destroy_semaphore(self.swapchain_semaphore, None);
 
             self.descriptors.get_mut().destroy(device);
-            self.deletion_queue.get_mut().flush(device, allocator);
+            self.buffer_manager.get_mut().destroy(device, allocator);
         }
     }
 }
@@ -309,7 +319,7 @@ pub struct VulkanEngine {
     immediate_submit: ImmediateSubmit,
 
     // TODO: remove
-    mesh_assets: Vec<MeshIndex>,
+    _mesh_assets: Vec<MeshIndex>,
 
     scene_data: GPUSceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
@@ -320,6 +330,8 @@ pub struct VulkanEngine {
 
     default_sampler_nearest: vk::Sampler,
     default_sampler_linear: vk::Sampler,
+
+    buffer_manager: BufferManager,
 
     mesh_manager: MeshManager,
     master_material_manager: MasterMaterialManager,
@@ -484,11 +496,14 @@ impl VulkanEngine {
         let immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
 
+        let mut buffer_manager = BufferManager::new();
+
         let mut mesh_manager = MeshManager::new();
 
         let mesh_assets = Self::load_gltf_meshes(
             &device,
             &mut allocator,
+            &mut buffer_manager,
             &mut mesh_manager,
             &immediate_submit,
             std::path::PathBuf::from(gltf_name).as_path(),
@@ -536,7 +551,7 @@ impl VulkanEngine {
 
         let default_opaque_material_index = master_material_manager.add(default_opaque_material);
 
-        let material_constants_buffer = AllocatedBuffer::new(
+        let material_constants_buffer = Buffer::new(
             &device,
             &mut allocator,
             size_of::<MaterialConstants>() as u64,
@@ -566,8 +581,7 @@ impl VulkanEngine {
             data_buffer_offset: 0,
         };
 
-        // TODO: Buffer management, and also image, just Rc everywhere?
-        deletion_queue.push(DeletionType::AllocatedBuffer(material_constants_buffer));
+        buffer_manager.add(material_constants_buffer);
 
         let default_opaque_master_material =
             master_material_manager.get_mut(default_opaque_material_index);
@@ -653,7 +667,9 @@ impl VulkanEngine {
 
             immediate_submit,
 
-            mesh_assets: mesh_assets.unwrap(),
+            buffer_manager,
+
+            _mesh_assets: mesh_assets.unwrap(),
 
             scene_data: GPUSceneData::default(),
             gpu_scene_data_descriptor_layout,
@@ -691,12 +707,16 @@ impl VulkanEngine {
             frame_data.destroy(device, allocator);
         }
 
-        // TODO: Abstract in ResourceManager/specific managers
-        for mesh_asset in &self.mesh_assets {
-            let mesh = self.mesh_manager.get_mut(*mesh_asset);
-            mesh.destroy(device, allocator);
+        let subresources = self.mesh_manager.destroy(device, allocator);
+
+        for resouce in subresources {
+            self.buffer_manager
+                .remove(device, allocator, resouce.index_buffer_index);
+            self.buffer_manager
+                .remove(device, allocator, resouce.vertex_buffer_index);
         }
-        // ~TODO: Abstract in ResourceManager/specific managers
+
+        self.buffer_manager.destroy(device, allocator);
 
         self.master_material_manager.destroy(device, allocator);
 
@@ -706,7 +726,7 @@ impl VulkanEngine {
 
         self.immediate_submit.destroy(device);
 
-        self.deletion_queue.flush(device, allocator);
+        self.deletion_queue.flush(device);
 
         unsafe {
             device.destroy_query_pool(self.query_pool, None);
@@ -774,7 +794,7 @@ impl VulkanEngine {
         draw_extent: vk::Extent2D,
         gpu_stats: &mut GPUStats,
     ) {
-        let gpu_scene_data_buffer = AllocatedBuffer::new(
+        let gpu_scene_data_buffer = Buffer::new(
             &self.device,
             &mut self.allocator,
             size_of::<GPUSceneData>() as u64,
@@ -807,9 +827,9 @@ impl VulkanEngine {
         writer.update_set(&self.device, global_descriptor);
 
         self.get_current_frame()
-            .deletion_queue
+            .buffer_manager
             .borrow_mut()
-            .push(DeletionType::AllocatedBuffer(gpu_scene_data_buffer));
+            .add(gpu_scene_data_buffer);
 
         let clear_color = Some(vk::ClearValue {
             color: vk::ClearColorValue {
@@ -897,9 +917,11 @@ impl VulkanEngine {
                         &[],
                     );
 
+                    let index_buffer = self.buffer_manager.get(mesh.buffers.index_buffer_index);
+
                     self.device.cmd_bind_index_buffer(
                         cmd,
-                        mesh.buffers.index_buffer.buffer,
+                        index_buffer.buffer,
                         0,
                         vk::IndexType::UINT32,
                     );
@@ -957,17 +979,17 @@ impl VulkanEngine {
                     .get(self.frame_number as usize % FRAME_OVERLAP)
                     .unwrap();
 
-                let mut deletion_queue = current_frame.deletion_queue.borrow_mut();
+                let mut buffer_manager = current_frame.buffer_manager.borrow_mut();
                 let device = &self.device;
 
-                deletion_queue.flush(device, &mut self.allocator);
+                buffer_manager.destroy(device, &mut self.allocator);
 
                 current_frame.descriptors.borrow_mut().clear_pools(device);
             }
 
             // TODO: encapsulate, into swapchain?
             let swapchain_image_index = match self.swapchain_device.acquire_next_image(
-                self.swapchain.handle,
+                self.swapchain.swapchain,
                 1_000_000_000,
                 current_frame_swapchain_semaphore,
                 vk::Fence::null(),
@@ -1119,7 +1141,7 @@ impl VulkanEngine {
                 .queue_submit2(self.graphics_queue, &[submit_info], current_frame_fence)
                 .expect("Failed to queue submit");
 
-            let swapchains = [self.swapchain.handle];
+            let swapchains = [self.swapchain.swapchain];
             let wait_semaphores = [current_frame_render_semaphore];
             let image_indices = [swapchain_image_index];
 
@@ -1322,6 +1344,7 @@ impl VulkanEngine {
     fn upload_mesh(
         device: &Device,
         allocator: &mut Allocator,
+        buffer_manager: &mut BufferManager,
         immediate_submit: &ImmediateSubmit,
         indices: &[u32],
         vertices: &[Vertex],
@@ -1329,7 +1352,7 @@ impl VulkanEngine {
         let index_buffer_size = size_of_val(indices) as u64;
         let vertex_buffer_size = size_of_val(vertices) as u64;
 
-        let index_buffer = AllocatedBuffer::new(
+        let index_buffer = Buffer::new(
             device,
             allocator,
             index_buffer_size,
@@ -1338,7 +1361,7 @@ impl VulkanEngine {
             "index_buffer",
         );
 
-        let vertex_buffer = AllocatedBuffer::new(
+        let vertex_buffer = Buffer::new(
             device,
             allocator,
             vertex_buffer_size,
@@ -1354,7 +1377,7 @@ impl VulkanEngine {
 
         // TODO: Allocation separate?
 
-        let mut staging = AllocatedBuffer::new(
+        let mut staging = Buffer::new(
             device,
             allocator,
             index_buffer_size + vertex_buffer_size,
@@ -1388,9 +1411,12 @@ impl VulkanEngine {
 
         staging.destroy(device, allocator);
 
+        let index_buffer_index = buffer_manager.add(index_buffer);
+        let vertex_buffer_index = buffer_manager.add(vertex_buffer);
+
         GPUMeshBuffers {
-            index_buffer,
-            vertex_buffer,
+            index_buffer_index,
+            vertex_buffer_index,
             vertex_buffer_address,
         }
     }
@@ -1399,6 +1425,7 @@ impl VulkanEngine {
     fn load_gltf_meshes(
         device: &Device,
         allocator: &mut Allocator,
+        buffer_manager: &mut BufferManager,
         mesh_manager: &mut MeshManager,
         immediate_submit: &ImmediateSubmit,
         file_path: &std::path::Path,
@@ -1502,6 +1529,7 @@ impl VulkanEngine {
                 buffers: Self::upload_mesh(
                     device,
                     allocator,
+                    buffer_manager,
                     immediate_submit,
                     &indices,
                     &vertices,

@@ -1,7 +1,7 @@
 use ash::{Device, vk};
 use gpu_allocator::vulkan::Allocation;
 
-pub fn extent_2d_from_3d(extent: &vk::Extent3D) -> vk::Extent2D {
+pub fn _extent_2d_from_3d(extent: &vk::Extent3D) -> vk::Extent2D {
     vk::Extent2D::default()
         .width(extent.width)
         .height(extent.height)
