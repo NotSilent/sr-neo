@@ -7,8 +7,6 @@ use crate::allocations::AllocatedBuffer;
 pub enum DeletionType {
     AllocatedBuffer(AllocatedBuffer),
     DescriptorSetLayout(vk::DescriptorSetLayout),
-    Pipeline(vk::Pipeline),
-    PipelineLayout(vk::PipelineLayout),
 }
 
 #[derive(Default)]
@@ -29,12 +27,6 @@ impl DeletionQueue {
                 }
                 DeletionType::DescriptorSetLayout(descriptor_set_layout) => unsafe {
                     device.destroy_descriptor_set_layout(*descriptor_set_layout, None);
-                },
-                DeletionType::Pipeline(pipeline) => unsafe {
-                    device.destroy_pipeline(*pipeline, None);
-                },
-                DeletionType::PipelineLayout(pipeline_layout) => unsafe {
-                    device.destroy_pipeline_layout(*pipeline_layout, None);
                 },
             }
         }

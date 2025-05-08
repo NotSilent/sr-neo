@@ -4,7 +4,7 @@ use gpu_allocator::{
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
 };
 
-use crate::{vk_util, vulkan_engine::ImmediateSubmit};
+use crate::{immediate_submit::ImmediateSubmit, vk_util};
 
 pub struct AllocatedBuffer {
     pub buffer: vk::Buffer,

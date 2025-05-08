@@ -1,5 +1,4 @@
-use crate::vulkan_engine::ImmediateSubmit;
-use crate::{allocations::AllocatedImage, vk_util};
+use crate::{allocations::AllocatedImage, immediate_submit::ImmediateSubmit, vk_util};
 use ash::{Device, vk};
 use gpu_allocator::vulkan::Allocator;
 

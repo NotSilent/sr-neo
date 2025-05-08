@@ -28,194 +28,24 @@ use crate::{
     camera::{Camera, InputManager},
     default_resources,
     deletion_queue::{DeletionQueue, DeletionType},
+    descriptors::{
+        DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
+    },
+    immediate_submit::ImmediateSubmit,
+    materials::MaterialInstanceIndex,
+    materials::{MasterMaterial, MaterialConstants, MaterialPass, MaterialResources},
+    materials::{MasterMaterialManager, MaterialInstanceManager},
     resource_manager::{ResourceManager, VulkanResource},
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
+    vk_util,
 };
-use crate::{pipeline_builder::PipelineBuilder, vk_util};
 
 #[derive(Default)]
 pub struct GPUStats {
     pub draw_time: f64,
     pub draw_calls: u32,
     pub triangles: usize,
-}
-
-// New material stuff
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-struct MaterialInstanceIndex(u16);
-
-impl From<usize> for MaterialInstanceIndex {
-    fn from(val: usize) -> Self {
-        MaterialInstanceIndex(val as u16)
-    }
-}
-
-impl From<MaterialInstanceIndex> for usize {
-    fn from(val: MaterialInstanceIndex) -> Self {
-        val.0 as usize
-    }
-}
-
-type MaterialInstanceManager = ResourceManager<MaterialInstance, MaterialInstanceIndex>;
-
-struct MaterialInstance {
-    master_material_index: MasterMaterialIndex,
-    set: vk::DescriptorSet,
-}
-
-impl VulkanResource for MaterialInstance {
-    fn destroy(&mut self, _device: &Device, _allocator: &mut Allocator) {}
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-struct MasterMaterialIndex(u16);
-
-impl From<usize> for MasterMaterialIndex {
-    fn from(val: usize) -> Self {
-        MasterMaterialIndex(val as u16)
-    }
-}
-
-impl From<MasterMaterialIndex> for usize {
-    fn from(val: MasterMaterialIndex) -> Self {
-        val.0 as usize
-    }
-}
-
-type MasterMaterialManager = ResourceManager<MasterMaterial, MasterMaterialIndex>;
-
-struct MasterMaterial {
-    material_pass: MaterialPass,
-
-    // TODO: Split layout?
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-
-    material_layout: vk::DescriptorSetLayout,
-
-    writer: DescriptorWriter,
-}
-
-impl MasterMaterial {
-    fn new(
-        device: &Device,
-        shader_manager: &mut ShaderManager,
-        frame_layout: vk::DescriptorSetLayout,
-        draw_format: vk::Format,
-        depth_format: vk::Format,
-        material_pass: MaterialPass,
-    ) -> Self {
-        let shader = shader_manager.get_graphics_shader_combined(device, "mesh");
-
-        let matrix_range = [vk::PushConstantRange::default()
-            .offset(0)
-            .size(size_of::<GPUPushDrawConstant>() as u32)
-            .stage_flags(vk::ShaderStageFlags::VERTEX)];
-
-        let material_layout = DescriptorLayoutBuilder::default()
-            .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
-            .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .build(
-                device,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                vk::DescriptorSetLayoutCreateFlags::empty(),
-            );
-
-        let layouts = [frame_layout, material_layout];
-
-        let pipeline_layouts_create_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(&layouts)
-            .push_constant_ranges(&matrix_range);
-
-        let pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layouts_create_info, None)
-                .unwrap()
-        };
-
-        let pipeline_builder = PipelineBuilder::default()
-            .set_shaders(shader.vert, shader.frag)
-            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE) // TODO: Cull and CounterClockwise
-            .set_multisampling_none()
-            .disable_blending()
-            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
-            .set_color_attachment_formats(&[draw_format])
-            .set_depth_format(depth_format)
-            .set_pipeline_layout(pipeline_layout);
-
-        // TODO: Transparent material
-        // let transparent_pipeline_builder = pipeline_builder
-        //     .clone()
-        //     .enable_blending_additive()
-        //     .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
-
-        let pipeline = pipeline_builder.build_pipeline(device);
-
-        Self {
-            material_pass,
-            pipeline_layout,
-            pipeline,
-            material_layout,
-            writer: DescriptorWriter::default(),
-        }
-    }
-
-    fn create_instance(
-        // TODO: &self
-        &mut self,
-        device: &Device,
-        resources: &MaterialResources,
-        descriptor_allocator: &mut DescriptorAllocatorGrowable,
-        master_material_index: MasterMaterialIndex, // TODO: move allocation to MasterMaterialManager
-    ) -> MaterialInstance {
-        let set = descriptor_allocator.allocate(device, self.material_layout);
-
-        self.writer.write_buffer(
-            0,
-            resources.data_buffer,
-            size_of::<MaterialConstants>() as u64,
-            u64::from(resources.data_buffer_offset),
-            vk::DescriptorType::UNIFORM_BUFFER,
-        );
-
-        self.writer.write_image(
-            1,
-            resources.color_sampler,
-            resources.color_image.image_view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-
-        self.writer.write_image(
-            2,
-            resources.metal_rough_sampler,
-            resources.metal_rough_image.image_view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-
-        self.writer.update_set(device, set);
-
-        MaterialInstance {
-            master_material_index,
-            set,
-        }
-    }
-}
-
-impl VulkanResource for MasterMaterial {
-    fn destroy(&mut self, device: &Device, _allocator: &mut Allocator) {
-        unsafe {
-            device.destroy_descriptor_set_layout(self.material_layout, None);
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
-        }
-    }
 }
 
 // New mesh stuff
@@ -253,24 +83,6 @@ struct GeoSurface {
     start_index: u32,
     count: u32,
     material_instance_index: MaterialInstanceIndex,
-}
-
-// TODO: Check size at compile time, and maybe only pad when uploading
-#[repr(C)]
-struct MaterialConstants {
-    color_factors: Vector4<f32>,
-    metal_rough_factors: Vector4<f32>,
-    extra: [Vector4<f32>; 14], // padding
-}
-
-// TODO: Tracking?
-struct MaterialResources<'a> {
-    color_image: &'a AllocatedImage,
-    color_sampler: vk::Sampler,
-    metal_rough_image: &'a AllocatedImage,
-    metal_rough_sampler: vk::Sampler,
-    data_buffer: vk::Buffer,
-    data_buffer_offset: u32,
 }
 
 #[derive(Default)]
@@ -325,11 +137,6 @@ impl Renderable for MeshNode {
     }
 }
 
-enum MaterialPass {
-    MainColor,
-    Transparent,
-}
-
 struct RenderObject {
     mesh_index: MeshIndex,
 
@@ -357,295 +164,10 @@ impl GPUSceneData {
     }
 }
 
-struct DescriptorBufferInfo {
-    binding: u32,
-    descriptor_type: vk::DescriptorType,
-    buffer_info: vk::DescriptorBufferInfo,
-}
-
-struct DescriptorImageInfo {
-    binding: u32,
-    descriptor_type: vk::DescriptorType,
-    image_info: vk::DescriptorImageInfo,
-}
-
-#[derive(Default)]
-pub struct DescriptorWriter {
-    buffer_infos: Vec<DescriptorBufferInfo>,
-    image_infos: Vec<DescriptorImageInfo>,
-}
-
-impl DescriptorWriter {
-    pub fn write_buffer(
-        &mut self,
-        binding: u32,
-        buffer: vk::Buffer,
-        size: u64,
-        offset: u64,
-        descriptor_type: vk::DescriptorType,
-    ) {
-        let buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(buffer)
-            .offset(offset)
-            .range(size);
-
-        self.buffer_infos.push(DescriptorBufferInfo {
-            binding,
-            descriptor_type,
-            buffer_info,
-        });
-    }
-
-    pub fn write_image(
-        &mut self,
-        binding: u32,
-        sampler: vk::Sampler,
-        image_view: vk::ImageView,
-        image_layout: vk::ImageLayout,
-        descriptor_type: vk::DescriptorType,
-    ) {
-        let image_info = vk::DescriptorImageInfo::default()
-            .sampler(sampler)
-            .image_view(image_view)
-            .image_layout(image_layout);
-
-        self.image_infos.push(DescriptorImageInfo {
-            binding,
-            descriptor_type,
-            image_info,
-        });
-    }
-
-    // TODO: refactor to create_set, allocate and return the new set
-    pub fn update_set(&mut self, device: &Device, set: vk::DescriptorSet) {
-        let mut writes = vec![];
-
-        for buffer_info in &self.buffer_infos {
-            let mut write = vk::WriteDescriptorSet::default()
-                .dst_binding(buffer_info.binding)
-                .dst_set(set)
-                .descriptor_type(buffer_info.descriptor_type);
-
-            write.descriptor_count = 1;
-            // TODO: How is this safe?
-            write.p_buffer_info = &raw const buffer_info.buffer_info;
-
-            writes.push(write);
-        }
-
-        for image_info in &self.image_infos {
-            let mut write = vk::WriteDescriptorSet::default()
-                .dst_binding(image_info.binding)
-                .dst_set(set)
-                .descriptor_type(image_info.descriptor_type);
-
-            write.descriptor_count = 1;
-            write.p_image_info = &raw const image_info.image_info;
-
-            writes.push(write);
-        }
-
-        unsafe { device.update_descriptor_sets(&writes, &[]) };
-
-        self.buffer_infos.clear();
-        self.image_infos.clear();
-    }
-}
-
-// TODO: Better? idea
-// track fullness per descriptor type
-// one vec for full pools, only the biggest one is left after update
-pub struct DescriptorAllocatorGrowable {
-    ratios: Vec<PoolSizeRatio>,
-    full_pools: Vec<vk::DescriptorPool>,
-    ready_pools: Vec<vk::DescriptorPool>,
-    sets_per_pool: u32,
-}
-
-impl DescriptorAllocatorGrowable {
-    pub fn new(device: &Device, max_sets: u32, pool_ratios: Vec<PoolSizeRatio>) -> Self {
-        let new_pool = Self::create_pool(device, max_sets, &pool_ratios);
-
-        Self {
-            ratios: pool_ratios,
-            full_pools: vec![],
-            ready_pools: vec![new_pool],
-            sets_per_pool: max_sets * 2,
-        }
-    }
-
-    pub fn destroy(&self, device: &Device) {
-        for pool in &self.ready_pools {
-            unsafe {
-                device.destroy_descriptor_pool(*pool, None);
-            }
-        }
-
-        for pool in &self.full_pools {
-            unsafe {
-                device.destroy_descriptor_pool(*pool, None);
-            }
-        }
-    }
-
-    pub fn clear_pools(&mut self, device: &Device) {
-        for pool in &self.ready_pools {
-            unsafe {
-                device
-                    .reset_descriptor_pool(*pool, vk::DescriptorPoolResetFlags::empty())
-                    .unwrap();
-            }
-        }
-
-        for pool in &self.full_pools {
-            unsafe {
-                device
-                    .reset_descriptor_pool(*pool, vk::DescriptorPoolResetFlags::empty())
-                    .unwrap();
-            }
-
-            self.ready_pools.push(*pool);
-        }
-
-        self.full_pools.clear();
-    }
-
-    fn allocate(&mut self, device: &Device, layout: vk::DescriptorSetLayout) -> vk::DescriptorSet {
-        let pool = self.get_pool(device);
-
-        let layouts = [layout];
-        let mut alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(pool)
-            .set_layouts(&layouts);
-
-        let new_set = match unsafe { device.allocate_descriptor_sets(&alloc_info) } {
-            Ok(set) => *set.first().unwrap(),
-            Err(error) => {
-                if error == vk::Result::ERROR_OUT_OF_POOL_MEMORY
-                    || error == vk::Result::ERROR_FRAGMENTED_POOL
-                {
-                    self.full_pools.push(pool);
-
-                    let pool = self.get_pool(device);
-
-                    alloc_info.descriptor_pool = pool;
-
-                    unsafe {
-                        *device
-                            .allocate_descriptor_sets(&alloc_info)
-                            .unwrap()
-                            .first()
-                            .unwrap()
-                    }
-                } else {
-                    panic!();
-                }
-            }
-        };
-
-        self.ready_pools.push(pool);
-
-        new_set
-    }
-
-    fn get_pool(&mut self, device: &Device) -> vk::DescriptorPool {
-        if let Some(pool) = self.ready_pools.pop() {
-            return pool;
-        }
-
-        self.sets_per_pool = (self.sets_per_pool * 2).min(4092);
-
-        Self::create_pool(device, self.sets_per_pool, &self.ratios)
-    }
-
-    fn create_pool(
-        device: &Device,
-        set_count: u32,
-        pool_ratios: &[PoolSizeRatio],
-    ) -> vk::DescriptorPool {
-        let mut pool_sizes = vec![];
-        for pool_ratio in pool_ratios {
-            pool_sizes.push(
-                vk::DescriptorPoolSize::default()
-                    .ty(pool_ratio.descriptor_type)
-                    .descriptor_count(pool_ratio.ratio * set_count),
-            );
-        }
-
-        let create_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(set_count)
-            .pool_sizes(&pool_sizes);
-
-        unsafe { device.create_descriptor_pool(&create_info, None).unwrap() }
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum DrawError {
     #[error("{}", .0)]
     Swapchain(SwapchainError),
-}
-
-pub struct ImmediateSubmit {
-    graphics_queue: vk::Queue,
-    fence: vk::Fence,
-    pool: vk::CommandPool,
-    cmd: vk::CommandBuffer,
-}
-
-impl ImmediateSubmit {
-    pub fn new(
-        device: &Device,
-        graphics_queue: vk::Queue,
-        graphics_queue_family_index: u32,
-    ) -> Self {
-        let pool = vk_util::create_command_pool(device, graphics_queue_family_index);
-        Self {
-            graphics_queue,
-            fence: vk_util::create_fence(device, vk::FenceCreateFlags::SIGNALED),
-            pool,
-            cmd: vk_util::allocate_command_buffer(device, pool),
-        }
-    }
-
-    pub fn destroy(&self, device: &Device) {
-        unsafe {
-            device.destroy_fence(self.fence, None);
-            device.destroy_command_pool(self.pool, None);
-        }
-    }
-
-    pub fn submit<F: Fn(vk::CommandBuffer)>(&self, device: &Device, record: F) {
-        unsafe {
-            device.reset_fences(&[self.fence]).unwrap();
-            device
-                .reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty())
-                .unwrap();
-
-            let begin_info = vk::CommandBufferBeginInfo::default()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-            device.begin_command_buffer(self.cmd, &begin_info).unwrap();
-
-            record(self.cmd);
-
-            device.end_command_buffer(self.cmd).unwrap();
-
-            let cmd_infos = [vk::CommandBufferSubmitInfo::default()
-                .command_buffer(self.cmd)
-                .device_mask(0)];
-
-            let submit_infos = [vk::SubmitInfo2::default().command_buffer_infos(&cmd_infos)];
-
-            device
-                .queue_submit2(self.graphics_queue, &submit_infos, self.fence)
-                .unwrap();
-
-            device
-                .wait_for_fences(&[self.fence], true, 1_000_000_000)
-                .unwrap();
-        }
-    }
 }
 
 #[derive(Default, Clone)]
@@ -672,7 +194,7 @@ impl GPUMeshBuffers {
 }
 
 #[repr(C)]
-struct GPUPushDrawConstant {
+pub struct GPUPushDrawConstant {
     world_matrix: Matrix4<f32>,
     vertex_buffer: vk::DeviceAddress,
 }
@@ -686,51 +208,6 @@ impl GPUPushDrawConstant {
             )
         }
     }
-}
-
-#[derive(Default)]
-struct DescriptorLayoutBuilder<'a> {
-    bindings: Vec<vk::DescriptorSetLayoutBinding<'a>>,
-}
-
-impl DescriptorLayoutBuilder<'_> {
-    // TODO: Drop binding and increment?
-    fn add_binding(mut self, binding: u32, descriptor_type: vk::DescriptorType) -> Self {
-        self.bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(binding)
-                .descriptor_count(1)
-                .descriptor_type(descriptor_type),
-        );
-
-        self
-    }
-
-    fn build(
-        mut self,
-        device: &Device,
-        shader_stages: vk::ShaderStageFlags,
-        flags: vk::DescriptorSetLayoutCreateFlags, // TODO: Remove?
-    ) -> vk::DescriptorSetLayout {
-        for binding in &mut self.bindings {
-            binding.stage_flags |= shader_stages;
-        }
-
-        let create_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(&self.bindings)
-            .flags(flags);
-
-        unsafe {
-            device
-                .create_descriptor_set_layout(&create_info, None)
-                .unwrap()
-        }
-    }
-}
-
-pub struct PoolSizeRatio {
-    descriptor_type: vk::DescriptorType,
-    ratio: u32,
 }
 
 struct FrameData {
@@ -817,6 +294,7 @@ pub struct VulkanEngine {
 
     swapchain: Swapchain,
 
+    // TODO: Manager could help drop refcells
     frame_datas: [FrameData; FRAME_OVERLAP],
     deletion_queue: DeletionQueue,
     allocator: ManuallyDrop<Allocator>,
@@ -1003,50 +481,8 @@ impl VulkanEngine {
             single_image_descriptor_layout,
         ));
 
-        // ~init descriptors
-
         let immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
-
-        // ~mesh
-
-        let triangle_mesh_shader =
-            shader_manager.get_graphics_shader(&device, "colored_triangle_mesh", "tex_image");
-
-        let buffer_ranges = [vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .size(size_of::<GPUPushDrawConstant>() as u32)];
-
-        let single_image_descriptor_layouts = [single_image_descriptor_layout];
-        let triangle_mesh_pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
-            .push_constant_ranges(&buffer_ranges)
-            .set_layouts(&single_image_descriptor_layouts);
-
-        let triangle_mesh_pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&triangle_mesh_pipeline_layout_create_info, None)
-                .unwrap()
-        };
-
-        let mesh_pipeline_builder = PipelineBuilder::default()
-            .set_shaders(triangle_mesh_shader.vert, triangle_mesh_shader.frag)
-            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE) // TODO COUNTER_CLOCKWISE
-            .set_multisampling_none()
-            .set_pipeline_layout(triangle_mesh_pipeline_layout)
-            .disable_blending()
-            //.enable_blending_additive()
-            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
-            .set_color_attachment_formats(&[draw_image.format])
-            .set_depth_format(depth_image.format);
-
-        let triangle_mesh_pipeline = mesh_pipeline_builder.build_pipeline(&device);
-
-        // ~mesh
-
-        deletion_queue.push(DeletionType::Pipeline(triangle_mesh_pipeline));
-        deletion_queue.push(DeletionType::PipelineLayout(triangle_mesh_pipeline_layout));
 
         let mut mesh_manager = MeshManager::new();
 
@@ -1120,6 +556,7 @@ impl VulkanEngine {
             material_constants_buffer.allocation.as_ref().unwrap(),
         );
 
+        // TODO: Store in master material?
         let resources = MaterialResources {
             color_image: &image_white,
             color_sampler: default_sampler_linear,
@@ -1490,7 +927,6 @@ impl VulkanEngine {
         }
     }
 
-    #[allow(unused_assignments)] // Why? gpu_draw is written and returned?
     #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self, render_scale: f32) -> Result<GPUStats, DrawError> {
         let mut gpu_stats = GPUStats::default();
