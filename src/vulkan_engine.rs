@@ -705,71 +705,6 @@ impl VulkanEngine {
         }
     }
 
-    //TODO: drop
-    pub fn cleanup(&mut self) {
-        unsafe { self.device.queue_wait_idle(self.graphics_queue).unwrap() };
-
-        let device = &self.device;
-        let allocator = &mut self.allocator;
-
-        for frame_data in self.frame_datas.as_mut() {
-            frame_data.destroy(device, allocator);
-        }
-
-        let subresources = self.mesh_manager.destroy(device, allocator);
-
-        for resouce in subresources {
-            self.buffer_manager
-                .remove(device, allocator, resouce.index_buffer_index);
-            self.buffer_manager
-                .remove(device, allocator, resouce.vertex_buffer_index);
-        }
-
-        self.image_manager
-            .remove(device, allocator, self.draw_image_index);
-        self.image_manager
-            .remove(device, allocator, self.depth_image_index);
-        self.image_manager
-            .remove(device, allocator, self.image_white_index);
-        self.image_manager
-            .remove(device, allocator, self.image_black_index);
-
-        // TODO: Shouldn't be needed if all resources are removed properly
-        self.image_manager.destroy(device, allocator);
-
-        self.buffer_manager.destroy(device, allocator);
-
-        self.master_material_manager.destroy(device, allocator);
-        // ~Shouldn't be needed if all resources are removed properly
-
-        self.shader_manager.destroy(device);
-
-        self.descriptor_allocator.destroy(device);
-
-        self.immediate_submit.destroy(device);
-
-        self.deletion_queue.flush(device);
-
-        unsafe {
-            device.destroy_query_pool(self.query_pool, None);
-            device.destroy_sampler(self.default_sampler_nearest, None);
-            device.destroy_sampler(self.default_sampler_linear, None);
-        }
-
-        dbg!(allocator.generate_report());
-
-        unsafe { ManuallyDrop::drop(allocator) };
-
-        unsafe {
-            self.swapchain.destroy(&self.swapchain_device, device);
-            self.surface_instance.destroy_surface(self.surface, None);
-            device.destroy_device(None);
-            self.debug_utils
-                .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
-            self.instance.destroy_instance(None);
-        };
-    }
-
     // TODO: Shouldn't be part of renderer
     pub fn update(&mut self, input_manager: &InputManager) {
         self.main_camera.process_winit_events(input_manager);
@@ -1609,5 +1544,71 @@ impl VulkanEngine {
             self.surface,
             vk::Extent2D::default().width(width).height(height),
         );
+    }
+}
+
+impl Drop for VulkanEngine {
+    fn drop(&mut self) {
+        unsafe { self.device.queue_wait_idle(self.graphics_queue).unwrap() };
+
+        let device = &self.device;
+        let allocator = &mut self.allocator;
+
+        for frame_data in self.frame_datas.as_mut() {
+            frame_data.destroy(device, allocator);
+        }
+
+        let subresources = self.mesh_manager.destroy(device, allocator);
+
+        for resouce in subresources {
+            self.buffer_manager
+                .remove(device, allocator, resouce.index_buffer_index);
+            self.buffer_manager
+                .remove(device, allocator, resouce.vertex_buffer_index);
+        }
+
+        self.image_manager
+            .remove(device, allocator, self.draw_image_index);
+        self.image_manager
+            .remove(device, allocator, self.depth_image_index);
+        self.image_manager
+            .remove(device, allocator, self.image_white_index);
+        self.image_manager
+            .remove(device, allocator, self.image_black_index);
+
+        // TODO: Shouldn't be needed if all resources are removed properly
+        self.image_manager.destroy(device, allocator);
+
+        self.buffer_manager.destroy(device, allocator);
+
+        self.master_material_manager.destroy(device, allocator);
+        // ~Shouldn't be needed if all resources are removed properly
+
+        self.shader_manager.destroy(device);
+
+        self.descriptor_allocator.destroy(device);
+
+        self.immediate_submit.destroy(device);
+
+        self.deletion_queue.flush(device);
+
+        unsafe {
+            device.destroy_query_pool(self.query_pool, None);
+            device.destroy_sampler(self.default_sampler_nearest, None);
+            device.destroy_sampler(self.default_sampler_linear, None);
+        }
+
+        dbg!(allocator.generate_report());
+
+        unsafe { ManuallyDrop::drop(allocator) };
+
+        unsafe {
+            self.swapchain.destroy(&self.swapchain_device, device);
+            self.surface_instance.destroy_surface(self.surface, None);
+            device.destroy_device(None);
+            self.debug_utils
+                .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
+            self.instance.destroy_instance(None);
+        };
     }
 }

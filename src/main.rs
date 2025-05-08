@@ -117,9 +117,7 @@ impl ApplicationHandler for App<'_> {
             WindowEvent::CloseRequested => {
                 self.is_closing = true;
 
-                if let Some(vulkan_engine) = &mut self.vulkan_engine {
-                    vulkan_engine.cleanup();
-                }
+                self.vulkan_engine.take();
 
                 event_loop.exit();
             }
@@ -201,9 +199,7 @@ impl ApplicationHandler for App<'_> {
                     if key_code == KeyCode::Escape {
                         self.is_closing = true;
 
-                        if let Some(vulkan_engine) = &mut self.vulkan_engine {
-                            vulkan_engine.cleanup();
-                        }
+                        self.vulkan_engine.take();
 
                         event_loop.exit();
                     }
