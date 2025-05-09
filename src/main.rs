@@ -19,9 +19,11 @@ mod camera;
 mod default_resources;
 mod deletion_queue;
 mod descriptors;
+mod gltf_loader;
 mod images;
 mod immediate_submit;
 mod materials;
+mod meshes;
 mod pipeline_builder;
 mod resource_manager;
 mod shader_manager;
@@ -68,7 +70,7 @@ impl ApplicationHandler for App<'_> {
         .unwrap();
 
         window
-            .set_cursor_grab(winit::window::CursorGrabMode::None)
+            .set_cursor_grab(winit::window::CursorGrabMode::Confined)
             .unwrap_or(());
         window.set_cursor_visible(false);
 
@@ -182,7 +184,7 @@ impl ApplicationHandler for App<'_> {
                         let fps = 1000.0 / gpu_stats.draw_time;
 
                         self.window.as_mut().unwrap().set_title(&format!(
-                            "sr-neo: CPU: {:.2} GPU: {:.2} DrawCalls: {} Triangles: {} FPS: {:.2}",
+                            "sr-neo: CPU: {:.2} GPU: {:.2} DrawCalls: {} Triangles: {} FPS: {:.0}",
                             cpu_time,
                             gpu_stats.draw_time,
                             gpu_stats.draw_calls,
@@ -225,7 +227,9 @@ impl ApplicationHandler for App<'_> {
         event: winit::event::DeviceEvent,
     ) {
         if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            // TODO: For some reason only getting whole numbers
             self.input_manager.mouse_delta = vector![delta.0, delta.1];
+            // println!("{:.4}, {:.4}", delta.0, delta.1);
         }
     }
 }

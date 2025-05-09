@@ -87,7 +87,10 @@ where
 
         if !subresources.is_empty() {
             // TODO: This
-            // println!("This shouldn't actualy happen, all assets should remove their resources.");
+            // println!(
+            //     "{}, Something is wrong, all assets should release their resources.",
+            //     std::any::type_name::<ResourceManager<T, S, I>>()
+            // );
         }
 
         subresources

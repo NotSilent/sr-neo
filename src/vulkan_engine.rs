@@ -3,7 +3,6 @@ use std::{
     cell::RefCell,
     ffi::{self, c_char},
     mem::ManuallyDrop,
-    rc::{Rc, Weak},
 };
 
 use ash::{
@@ -13,13 +12,12 @@ use ash::{
     vk,
 };
 
-use egui_winit::egui::ahash::HashMap;
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocator, AllocatorCreateDesc},
 };
 
-use nalgebra::{Matrix4, Rotation3, Scale3, Translation3, Vector3, Vector4, vector};
+use nalgebra::{Matrix4, Rotation3, Vector3, Vector4, vector};
 use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
@@ -31,12 +29,14 @@ use crate::{
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
+    gltf_loader::GLTFLoader,
     images::{Image, ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
     materials::{
         MasterMaterial, MasterMaterialManager, MaterialConstants, MaterialInstanceIndex,
         MaterialInstanceManager, MaterialPass, MaterialResources,
     },
+    meshes::{MeshIndex, MeshManager},
     resource_manager::{ResourceManager, VulkanResource, VulkanSubresource},
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
@@ -50,113 +50,21 @@ pub struct GPUStats {
     pub triangles: usize,
 }
 
-// New mesh stuff
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-struct MeshIndex(u16);
-
-impl From<usize> for MeshIndex {
-    fn from(val: usize) -> Self {
-        MeshIndex(val as u16)
-    }
-}
-
-impl From<MeshIndex> for usize {
-    fn from(val: MeshIndex) -> Self {
-        val.0 as usize
-    }
-}
-
-// TODO: Should material alo be a part of this?
-// Probably yeah
-struct MeshSubresource {
-    index_buffer_index: BufferIndex,
-    vertex_buffer_index: BufferIndex,
-}
-
-impl VulkanSubresource for MeshSubresource {}
-
-type MeshManager = ResourceManager<Mesh, MeshSubresource, MeshIndex>;
-
-struct Mesh {
-    name: String,
-    surfaces: Vec<GeoSurface>,
-    buffers: GPUMeshBuffers,
-}
-
-impl VulkanResource for Mesh {
-    type Subresource = MeshSubresource;
-
-    fn destroy(&mut self, _device: &Device, _allocator: &mut Allocator) -> MeshSubresource {
-        MeshSubresource {
-            index_buffer_index: self.buffers.index_buffer_index,
-            vertex_buffer_index: self.buffers.vertex_buffer_index,
-        }
-    }
-}
-
-struct GeoSurface {
-    start_index: u32,
-    count: u32,
-    material_instance_index: MaterialInstanceIndex,
+pub struct GeoSurface {
+    pub start_index: u32,
+    pub count: u32,
+    pub material_instance_index: MaterialInstanceIndex,
 }
 
 #[derive(Default)]
-struct DrawContext {
-    opaque_surfaces: Vec<RenderObject>,
+pub struct DrawContext {
+    pub opaque_surfaces: Vec<RenderObject>,
 }
 
-trait Renderable {
-    fn draw(&self, top_matrix: &Matrix4<f32>, ctx: &mut DrawContext);
-}
+pub struct RenderObject {
+    pub mesh_index: MeshIndex,
 
-struct Node {
-    parent: Weak<Node>,
-    children: Vec<Rc<Node>>,
-
-    local_transform: Matrix4<f32>,
-    world_transform: Matrix4<f32>,
-}
-
-impl Node {
-    fn refresh_transform(&mut self, parent_matrix: &Matrix4<f32>) {
-        self.world_transform = parent_matrix * self.local_transform;
-    }
-}
-
-impl Renderable for Node {
-    #[allow(clippy::only_used_in_recursion)]
-    fn draw(&self, top_matrix: &Matrix4<f32>, ctx: &mut DrawContext) {
-        for child in &self.children {
-            child.draw(top_matrix, ctx);
-        }
-    }
-}
-
-struct MeshNode {
-    node: Node,
-    mesh_index: MeshIndex,
-}
-
-impl Renderable for MeshNode {
-    fn draw(&self, top_matrix: &Matrix4<f32>, ctx: &mut DrawContext) {
-        let node_matrix = top_matrix * self.node.local_transform;
-
-        let render_object = RenderObject {
-            mesh_index: self.mesh_index,
-            transform: node_matrix,
-        };
-
-        ctx.opaque_surfaces.push(render_object);
-
-        self.node.draw(top_matrix, ctx);
-    }
-}
-
-struct RenderObject {
-    mesh_index: MeshIndex,
-
-    transform: Matrix4<f32>,
+    pub transform: Matrix4<f32>,
 }
 
 #[derive(Default)]
@@ -188,19 +96,19 @@ pub enum DrawError {
 
 #[derive(Default, Clone)]
 #[repr(C)]
-struct Vertex {
-    position: Vector3<f32>,
-    uv_x: f32,
-    normal: Vector3<f32>,
-    uv_y: f32,
-    color: Vector4<f32>,
+pub struct Vertex {
+    pub position: Vector3<f32>,
+    pub uv_x: f32,
+    pub normal: Vector3<f32>,
+    pub uv_y: f32,
+    pub color: Vector4<f32>,
 }
 
 // TODO: Probably can be part of Mesh
-struct GPUMeshBuffers {
-    index_buffer_index: BufferIndex,
-    vertex_buffer_index: BufferIndex,
-    vertex_buffer_address: vk::DeviceAddress,
+pub struct GPUMeshBuffers {
+    pub index_buffer_index: BufferIndex,
+    pub vertex_buffer_index: BufferIndex,
+    pub vertex_buffer_address: vk::DeviceAddress,
 }
 
 #[repr(C)]
@@ -284,8 +192,6 @@ const FRAME_OVERLAP: usize = 2;
 
 pub struct VulkanEngine {
     frame_number: u64,
-    _stop_rendering: bool,
-    _window_extent: vk::Extent2D,
 
     _entry: Entry,
     instance: Instance,
@@ -317,9 +223,6 @@ pub struct VulkanEngine {
 
     immediate_submit: ImmediateSubmit,
 
-    // TODO: remove
-    _mesh_assets: Vec<MeshIndex>,
-
     scene_data: GPUSceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
@@ -340,11 +243,12 @@ pub struct VulkanEngine {
     _default_opaque_material_instance_index: MaterialInstanceIndex,
 
     main_draw_context: DrawContext,
-    loaded_nodes: HashMap<String, Rc<MeshNode>>, // TODO: virtual Node in tutorial, refactor
 
     main_camera: Camera, // TODO: Shouldn't be part of renderer
 
     query_pool: vk::QueryPool,
+
+    gltf_loader: GLTFLoader,
 }
 
 impl VulkanEngine {
@@ -487,21 +391,12 @@ impl VulkanEngine {
             gpu_scene_data_descriptor_layout,
         ));
 
-        let immediate_submit =
+        let mut immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
 
         let mut buffer_manager = BufferManager::new();
 
         let mut mesh_manager = MeshManager::new();
-
-        let mesh_assets = Self::load_gltf_meshes(
-            &device,
-            &mut allocator,
-            &mut buffer_manager,
-            &mut mesh_manager,
-            &immediate_submit,
-            std::path::PathBuf::from(gltf_name).as_path(),
-        );
 
         let image_white = default_resources::image_white(
             &device,
@@ -604,27 +499,6 @@ impl VulkanEngine {
         let default_opaque_material_instance_index =
             material_instance_manager.add(default_opaque_material_instance);
 
-        let mut loaded_nodes = HashMap::default();
-
-        for mesh_asset in mesh_assets.as_ref().unwrap() {
-            let mesh = mesh_manager.get_mut(*mesh_asset);
-            for surface in &mut mesh.surfaces {
-                surface.material_instance_index = default_opaque_material_instance_index;
-            }
-
-            let new_node = Rc::new(MeshNode {
-                node: Node {
-                    parent: Weak::new(),
-                    children: vec![],
-                    local_transform: Matrix4::identity(),
-                    world_transform: Matrix4::identity(),
-                },
-                mesh_index: *mesh_asset,
-            });
-
-            loaded_nodes.insert(mesh.name.clone(), new_node);
-        }
-
         let main_camera = Camera {
             position: vector![0.0, 0.0, 5.0],
             velocity: Vector3::from_element(0.0),
@@ -642,6 +516,16 @@ impl VulkanEngine {
                 .unwrap()
         };
 
+        let gltf_loader = GLTFLoader::new(
+            &device,
+            std::path::PathBuf::from(gltf_name).as_path(),
+            &mut allocator,
+            &mut immediate_submit,
+            &mut mesh_manager,
+            &mut buffer_manager,
+            &mut image_manager,
+        );
+
         let image_white_index = image_manager.add(image_white);
         let image_black_index = image_manager.add(image_black);
         let image_error_index = image_manager.add(image_error);
@@ -650,8 +534,6 @@ impl VulkanEngine {
 
         Self {
             frame_number: 0,
-            _stop_rendering: false,
-            _window_extent: vk::Extent2D { width, height },
 
             _entry: entry,
             instance,
@@ -682,8 +564,6 @@ impl VulkanEngine {
             buffer_manager,
             image_manager,
 
-            _mesh_assets: mesh_assets.unwrap(),
-
             scene_data: GPUSceneData::default(),
             gpu_scene_data_descriptor_layout,
 
@@ -701,11 +581,12 @@ impl VulkanEngine {
             _default_opaque_material_instance_index: default_opaque_material_instance_index,
 
             main_draw_context: DrawContext::default(),
-            loaded_nodes,
 
             main_camera,
 
             query_pool,
+
+            gltf_loader,
         }
     }
 
@@ -1321,210 +1202,6 @@ impl VulkanEngine {
             .unwrap()
     }
 
-    // TODO: Background thread, reuse staging
-    fn upload_mesh(
-        device: &Device,
-        allocator: &mut Allocator,
-        buffer_manager: &mut BufferManager,
-        immediate_submit: &ImmediateSubmit,
-        indices: &[u32],
-        vertices: &[Vertex],
-    ) -> GPUMeshBuffers {
-        let index_buffer_size = size_of_val(indices) as u64;
-        let vertex_buffer_size = size_of_val(vertices) as u64;
-
-        let index_buffer = Buffer::new(
-            device,
-            allocator,
-            index_buffer_size,
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            MemoryLocation::GpuOnly,
-            "index_buffer",
-        );
-
-        let vertex_buffer = Buffer::new(
-            device,
-            allocator,
-            vertex_buffer_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            MemoryLocation::GpuOnly,
-            "vertex_buffer",
-        );
-
-        let info = vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer.buffer);
-        let vertex_buffer_address = unsafe { device.get_buffer_device_address(&info) };
-
-        // TODO: Allocation separate?
-
-        let mut staging = Buffer::new(
-            device,
-            allocator,
-            index_buffer_size + vertex_buffer_size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            MemoryLocation::CpuToGpu,
-            "staging",
-        );
-
-        vk_util::copy_data_to_allocation(indices, staging.allocation.as_ref().unwrap());
-        vk_util::copy_data_to_allocation_with_byte_offset(
-            vertices,
-            staging.allocation.as_ref().unwrap(),
-            index_buffer_size as usize,
-        );
-
-        immediate_submit.submit(device, |cmd| {
-            let index_regions = [vk::BufferCopy::default().size(index_buffer_size)];
-
-            unsafe {
-                device.cmd_copy_buffer(cmd, staging.buffer, index_buffer.buffer, &index_regions);
-            };
-
-            let vertex_regions = [vk::BufferCopy::default()
-                .src_offset(index_buffer_size)
-                .size(vertex_buffer_size)];
-
-            unsafe {
-                device.cmd_copy_buffer(cmd, staging.buffer, vertex_buffer.buffer, &vertex_regions);
-            }
-        });
-
-        staging.destroy(device, allocator);
-
-        let index_buffer_index = buffer_manager.add(index_buffer);
-        let vertex_buffer_index = buffer_manager.add(vertex_buffer);
-
-        GPUMeshBuffers {
-            index_buffer_index,
-            vertex_buffer_index,
-            vertex_buffer_address,
-        }
-    }
-
-    #[allow(clippy::unnecessary_wraps)]
-    fn load_gltf_meshes(
-        device: &Device,
-        allocator: &mut Allocator,
-        buffer_manager: &mut BufferManager,
-        mesh_manager: &mut MeshManager,
-        immediate_submit: &ImmediateSubmit,
-        file_path: &std::path::Path,
-    ) -> Option<Vec<MeshIndex>> {
-        println!("Loading GLTF: {}", file_path.display());
-
-        let (gltf, buffers, _images) = gltf::import(file_path).unwrap();
-
-        let mut mesh_assets = vec![];
-        let mut indices: Vec<u32> = vec![];
-        let mut vertices: Vec<Vertex> = vec![];
-
-        for mesh in gltf.meshes() {
-            indices.clear();
-            vertices.clear();
-            let mut surfaces: Vec<GeoSurface> = vec![];
-
-            // TODO: Pack same vertexes
-            for primitive in mesh.primitives() {
-                let start_index = indices.len();
-                let count = primitive.indices().unwrap().count(); // ?
-
-                surfaces.push(GeoSurface {
-                    start_index: start_index as u32,
-                    count: count as u32,
-                    // TODO: Temporary to compile
-                    material_instance_index: MaterialInstanceIndex(0),
-                });
-
-                let initial_vtx = vertices.len();
-
-                // Load indexes
-
-                // TODO: Can this be cleaner?
-                let reader = primitive
-                    .reader(|buffer| buffers.get(buffer.index()).map(std::ops::Deref::deref));
-
-                indices.reserve(count);
-
-                reader.read_indices().unwrap().into_u32().for_each(|value| {
-                    indices.push(value + initial_vtx as u32);
-                });
-
-                // Load POSITION
-                vertices.reserve(count);
-
-                for position in reader.read_positions().unwrap() {
-                    let vertex = Vertex {
-                        position: position.into(),
-                        uv_x: 0.0,
-                        normal: vector![1.0, 0.0, 0.0],
-                        uv_y: 0.0,
-                        color: Vector4::from_element(1.0),
-                    };
-
-                    vertices.push(vertex);
-                }
-
-                // Load NORMAL
-                if let Some(normals) = reader.read_normals() {
-                    let vertices = &mut vertices[initial_vtx..];
-
-                    for (vertex, normal) in vertices.iter_mut().zip(normals.into_iter()) {
-                        vertex.normal = normal.into();
-                    }
-                }
-
-                // Load TEXCOORD_0
-                if let Some(tex_coords) = reader.read_tex_coords(0) {
-                    let vertices = &mut vertices[initial_vtx..];
-
-                    for (vertex, [x, y]) in vertices.iter_mut().zip(tex_coords.into_f32()) {
-                        vertex.uv_x = x;
-                        vertex.uv_y = y;
-                    }
-                }
-
-                // Load COLOR_0
-                if let Some(colors) = reader.read_colors(0) {
-                    let vertices = &mut vertices[initial_vtx..];
-
-                    for (vertex, color) in vertices.iter_mut().zip(colors.into_rgba_f32()) {
-                        vertex.color = color.into();
-                    }
-                }
-
-                {
-                    // TODO: Remove
-                    const OVERRIDE_COLORS: bool = false;
-                    if OVERRIDE_COLORS {
-                        for vertex in &mut vertices {
-                            vertex.color = vertex.normal.push(1.0);
-                        }
-                    }
-                }
-            }
-
-            let mesh = Mesh {
-                name: mesh.name().unwrap().into(),
-                surfaces,
-                buffers: Self::upload_mesh(
-                    device,
-                    allocator,
-                    buffer_manager,
-                    immediate_submit,
-                    &indices,
-                    &vertices,
-                ),
-            };
-
-            let mesh_index = mesh_manager.add(mesh);
-
-            mesh_assets.push(mesh_index);
-        }
-
-        Some(mesh_assets)
-    }
-
     fn update_scene(&mut self) {
         self.main_camera.update();
 
@@ -1534,17 +1211,10 @@ impl VulkanEngine {
 
         let aspect_ratio = draw_image.extent.height as f32 / draw_image.extent.width as f32;
         let fov = 90_f32.to_radians();
-        let near = 100.0;
+        let near = 1000.0;
         let far = 0.1;
 
-        self.loaded_nodes["Suzanne"].draw(&Matrix4::identity(), &mut self.main_draw_context);
-
-        for x in -3..3 {
-            let scale = Scale3::new(0.2, 0.2, 0.2).to_homogeneous();
-            let translation = Translation3::new(x as f32, 1.0, 0.0).to_homogeneous();
-
-            self.loaded_nodes["Cube"].draw(&(translation * scale), &mut self.main_draw_context);
-        }
+        self.gltf_loader.draw(&mut self.main_draw_context);
 
         self.scene_data.view = self.main_camera.get_view_matrix();
         self.scene_data.proj = Self::get_projection(aspect_ratio, fov, near, far);

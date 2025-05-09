@@ -72,7 +72,7 @@ pub struct MaterialResources<'a> {
 }
 
 pub struct MasterMaterial {
-    material_pass: MaterialPass,
+    _material_pass: MaterialPass,
 
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
@@ -153,7 +153,7 @@ impl MasterMaterial {
         let pipeline = pipeline_builder.build_pipeline(device);
 
         Self {
-            material_pass,
+            _material_pass: material_pass,
             pipeline_layout,
             pipeline,
             material_layout,
