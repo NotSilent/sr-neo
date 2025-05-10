@@ -5,13 +5,16 @@ use nalgebra::{Matrix4, Vector4, vector};
 
 use crate::{
     buffers::{Buffer, BufferManager},
+    descriptors::DescriptorAllocatorGrowable,
+    images::Image,
     immediate_submit::ImmediateSubmit,
-    materials::MaterialInstanceIndex,
+    materials::{MaterialConstants, MaterialResources},
     meshes::{Mesh, MeshIndex},
     resource_manager::VulkanResource,
     vk_util,
     vulkan_engine::{
-        DrawContext, GPUMeshBuffers, GeoSurface, ManagedResources, RenderObject, Vertex,
+        DefaultResources, DrawContext, GPUMeshBuffers, GeoSurface, ManagedResources, RenderObject,
+        Vertex,
     },
 };
 
@@ -41,64 +44,29 @@ impl GLTFLoader {
         device: &Device,
         file_path: &std::path::Path,
         allocator: &mut Allocator,
+        descriptor_allocator: &mut DescriptorAllocatorGrowable,
         managed_resources: &mut ManagedResources,
+        default_resources: &DefaultResources,
         immediate_submit: &mut ImmediateSubmit,
-        default_material: MaterialInstanceIndex,
     ) -> Self {
         println!("Loading: {}", file_path.display());
 
-        let mut gltf_nodes = vec![];
-
+        // TODO: Images may be loaded unnecessarily
+        #[allow(unused_variables)]
         let (gltf, buffers, images) = gltf::import(file_path).unwrap();
 
         let meshes = Self::load_gltf_meshes(
             device,
             allocator,
+            descriptor_allocator,
             managed_resources,
+            default_resources,
             immediate_submit,
-            default_material,
             &gltf,
             &buffers,
-            &images,
         );
 
-        for gltf_node in gltf.nodes() {
-            if let Some(mesh) = gltf_node.mesh() {
-                let children = gltf_node
-                    .children()
-                    .map(|child| child.index() as u32)
-                    .collect();
-
-                let node = Node {
-                    children,
-                    local_transform: Matrix4::from_column_slice(
-                        &gltf_node.transform().matrix().concat(),
-                    ),
-                };
-
-                // TODO: MeshIndex
-                let mesh_node = MeshNode {
-                    node,
-                    mesh_index: meshes[mesh.index()],
-                };
-
-                gltf_nodes.push(GLTFNode::Mesh(mesh_node));
-            } else {
-                let children = gltf_node
-                    .children()
-                    .map(|child| child.index() as u32)
-                    .collect();
-
-                let node = Node {
-                    children,
-                    local_transform: Matrix4::from_column_slice(
-                        &gltf_node.transform().matrix().concat(),
-                    ),
-                };
-
-                gltf_nodes.push(GLTFNode::Node(node));
-            }
-        }
+        let gltf_nodes = Self::load_gltf_nodes(&gltf, &meshes);
 
         Self {
             scenes: gltf
@@ -191,21 +159,158 @@ impl GLTFLoader {
         }
     }
 
+    // TODO: Transparent materials
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::too_many_lines)]
     fn load_gltf_meshes(
         device: &Device,
         allocator: &mut Allocator,
+        // TODO: Manage it better, what heppens if it's cleared
+        descriptor_allocator: &mut DescriptorAllocatorGrowable,
         managed_resources: &mut ManagedResources,
+        default_resources: &DefaultResources,
         immediate_submit: &ImmediateSubmit,
-        default_material: MaterialInstanceIndex,
         gltf: &Document,
-        buffers: &[gltf::buffer::Data],
-        _images: &[gltf::image::Data],
+        gltf_buffers: &[gltf::buffer::Data],
     ) -> Vec<MeshIndex> {
         let mut mesh_assets = vec![];
         let mut indices: Vec<u32> = vec![];
         let mut vertices: Vec<Vertex> = vec![];
+        let mut materials = Vec::with_capacity(gltf.materials().len());
+
+        let mut images = vec![];
+
+        let master_material = managed_resources
+            .master_materials
+            .get_mut(default_resources.opaque_material);
+
+        for image in gltf.images() {
+            let (extent, format, data) = match image.source() {
+                gltf::image::Source::View { view, mime_type } => {
+                    let buffer = &gltf_buffers[view.buffer().index()];
+                    let start = view.offset();
+                    let end = start + view.length();
+                    let data = &buffer[start..end];
+
+                    let img = image::load_from_memory_with_format(
+                        data,
+                        match mime_type {
+                            "image/png" => image::ImageFormat::Png,
+                            "image/jpeg" => image::ImageFormat::Jpeg,
+                            _ => panic!("Unsupported image format: {mime_type}"),
+                        },
+                    )
+                    .unwrap()
+                    .to_rgba8();
+
+                    let (width, height) = img.dimensions();
+                    let pixels = img.into_raw();
+
+                    let extent = vk::Extent3D::default().width(width).height(height).depth(1);
+                    (extent, vk::Format::R8G8B8A8_UNORM, pixels)
+                }
+                // TODO: untested
+                #[allow(unreachable_code)]
+                #[allow(unused_variables)]
+                gltf::image::Source::Uri { uri, mime_type: _ } => {
+                    panic!();
+
+                    let path = std::path::Path::new(uri);
+                    let img = image::open(path).unwrap().to_rgba8();
+                    let (width, height) = img.dimensions();
+                    let pixels = img.into_raw();
+
+                    let extent = vk::Extent3D::default().width(width).height(height).depth(1);
+
+                    (extent, vk::Format::R8G8B8A8_UNORM, pixels)
+                }
+            };
+
+            let new_image = Image::new_with_data(
+                device,
+                allocator,
+                immediate_submit,
+                extent,
+                format,
+                vk::ImageUsageFlags::SAMPLED,
+                vk::AccessFlags2::SHADER_READ,
+                false,
+                &data,
+                "GLTF_IMAGE_NAME_NONE",
+            );
+
+            let image_index = managed_resources.images.add(new_image);
+
+            images.push(image_index);
+        }
+
+        let image_white = managed_resources.images.get(default_resources.image_white);
+
+        for material in gltf.materials() {
+            let material_constants_buffer = Buffer::new(
+                device,
+                allocator,
+                size_of::<MaterialConstants>() as u64,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                MemoryLocation::CpuToGpu,
+                material.name().unwrap_or("GLTF_NAME_NONE"),
+            );
+
+            let pbr_metalic_roughness = material.pbr_metallic_roughness();
+
+            let base_color_factor = pbr_metalic_roughness.base_color_factor();
+
+            let material_constants = MaterialConstants {
+                color_factors: base_color_factor.into(),
+                metal_rough_factors: vector![
+                    pbr_metalic_roughness.metallic_factor(),
+                    pbr_metalic_roughness.roughness_factor(),
+                    0.0,
+                    0.0
+                ],
+            };
+
+            vk_util::copy_data_to_allocation(
+                &[material_constants],
+                material_constants_buffer.allocation.as_ref().unwrap(),
+            );
+
+            let color_image_index =
+                if let Some(color_tex) = pbr_metalic_roughness.base_color_texture() {
+                    // TODO: Load texture instead of image
+                    images[color_tex.texture().source().index()]
+                } else {
+                    default_resources.image_white
+                };
+
+            let color_image = managed_resources.images.get(color_image_index);
+
+            // TODO: Proper image
+            // TODO: Samplers (textures)
+            let resources = MaterialResources {
+                color_image,
+                color_sampler: default_resources.sampler_linear,
+                metal_rough_image: image_white,
+                metal_rough_sampler: default_resources.sampler_linear,
+                data_buffer: material_constants_buffer.buffer,
+                data_buffer_offset: 0,
+            };
+
+            managed_resources.buffers.add(material_constants_buffer);
+
+            let material_instance = master_material.create_instance(
+                device,
+                &resources,
+                descriptor_allocator,
+                default_resources.opaque_material,
+            );
+
+            let material_instance_index =
+                managed_resources.material_instances.add(material_instance);
+
+            materials.push(material_instance_index);
+        }
 
         for mesh in gltf.meshes() {
             indices.clear();
@@ -220,8 +325,11 @@ impl GLTFLoader {
                 surfaces.push(GeoSurface {
                     start_index: start_index as u32,
                     count: count as u32,
-                    // TODO: set actual texture
-                    material_instance_index: default_material,
+                    material_instance_index: if let Some(material) = primitive.material().index() {
+                        materials[material]
+                    } else {
+                        default_resources.opaque_material_instance
+                    },
                 });
 
                 let initial_vtx = vertices.len();
@@ -230,7 +338,7 @@ impl GLTFLoader {
 
                 // TODO: Can this be cleaner?
                 let reader = primitive
-                    .reader(|buffer| buffers.get(buffer.index()).map(std::ops::Deref::deref));
+                    .reader(|buffer| gltf_buffers.get(buffer.index()).map(std::ops::Deref::deref));
 
                 indices.reserve(count);
 
@@ -293,7 +401,7 @@ impl GLTFLoader {
             }
 
             let mesh = Mesh {
-                _name: mesh.name().unwrap().into(),
+                _name: mesh.name().unwrap_or("GLTF_NAME_NONE").into(),
                 surfaces,
                 buffers: Self::upload_mesh(
                     device,
@@ -345,5 +453,49 @@ impl GLTFLoader {
                 }
             }
         }
+    }
+
+    fn load_gltf_nodes(gltf: &Document, meshes: &[MeshIndex]) -> Vec<GLTFNode> {
+        let mut gltf_nodes = vec![];
+
+        for gltf_node in gltf.nodes() {
+            if let Some(mesh) = gltf_node.mesh() {
+                let children = gltf_node
+                    .children()
+                    .map(|child| child.index() as u32)
+                    .collect();
+
+                let node = Node {
+                    children,
+                    local_transform: Matrix4::from_column_slice(
+                        &gltf_node.transform().matrix().concat(),
+                    ),
+                };
+
+                // TODO: MeshIndex
+                let mesh_node = MeshNode {
+                    node,
+                    mesh_index: meshes[mesh.index()],
+                };
+
+                gltf_nodes.push(GLTFNode::Mesh(mesh_node));
+            } else {
+                let children = gltf_node
+                    .children()
+                    .map(|child| child.index() as u32)
+                    .collect();
+
+                let node = Node {
+                    children,
+                    local_transform: Matrix4::from_column_slice(
+                        &gltf_node.transform().matrix().concat(),
+                    ),
+                };
+
+                gltf_nodes.push(GLTFNode::Node(node));
+            }
+        }
+
+        gltf_nodes
     }
 }

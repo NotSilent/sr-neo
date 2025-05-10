@@ -168,8 +168,11 @@ impl DescriptorAllocatorGrowable {
             .descriptor_pool(pool)
             .set_layouts(&layouts);
 
-        let new_set = match unsafe { device.allocate_descriptor_sets(&alloc_info) } {
-            Ok(set) => *set.first().unwrap(),
+        match unsafe { device.allocate_descriptor_sets(&alloc_info) } {
+            Ok(set) => {
+                self.ready_pools.push(pool);
+                *set.first().unwrap()
+            }
             Err(error) => {
                 if error == vk::Result::ERROR_OUT_OF_POOL_MEMORY
                     || error == vk::Result::ERROR_FRAGMENTED_POOL
@@ -177,6 +180,7 @@ impl DescriptorAllocatorGrowable {
                     self.full_pools.push(pool);
 
                     let pool = self.get_pool(device);
+                    self.ready_pools.push(pool);
 
                     alloc_info.descriptor_pool = pool;
 
@@ -191,11 +195,7 @@ impl DescriptorAllocatorGrowable {
                     panic!();
                 }
             }
-        };
-
-        self.ready_pools.push(pool);
-
-        new_set
+        }
     }
 
     fn get_pool(&mut self, device: &Device) -> vk::DescriptorPool {

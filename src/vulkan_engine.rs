@@ -17,7 +17,7 @@ use gpu_allocator::{
     vulkan::{Allocator, AllocatorCreateDesc},
 };
 
-use nalgebra::{Matrix4, Rotation3, Vector3, Vector4, vector};
+use nalgebra::{Matrix4, Vector3, Vector4, vector};
 use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
@@ -25,7 +25,6 @@ use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
     camera::{Camera, InputManager},
     default_resources,
-    deletion_queue::{DeletionQueue, DeletionType},
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
@@ -33,8 +32,8 @@ use crate::{
     images::{Image, ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
     materials::{
-        MasterMaterial, MasterMaterialManager, MaterialConstants, MaterialInstanceIndex,
-        MaterialInstanceManager, MaterialPass, MaterialResources,
+        MasterMaterial, MasterMaterialIndex, MasterMaterialManager, MaterialConstants,
+        MaterialInstanceIndex, MaterialInstanceManager, MaterialPass, MaterialResources,
     },
     meshes::{MeshIndex, MeshManager},
     shader_manager::ShaderManager,
@@ -205,6 +204,22 @@ impl ManagedResources {
     // TODO: encapsulate access and properly manage removal
 }
 
+pub struct DefaultResources {
+    // TODO: Move to FrameData?
+    pub draw_image: ImageIndex,
+    pub depth_image: ImageIndex,
+
+    pub image_white: ImageIndex,
+    pub image_black: ImageIndex,
+    pub image_error: ImageIndex,
+
+    pub sampler_nearest: vk::Sampler,
+    pub sampler_linear: vk::Sampler,
+
+    pub opaque_material: MasterMaterialIndex,
+    pub opaque_material_instance: MaterialInstanceIndex,
+}
+
 pub struct VulkanEngine {
     frame_number: u64,
 
@@ -226,14 +241,12 @@ pub struct VulkanEngine {
 
     // TODO: Manager could help drop refcells
     frame_datas: [FrameData; FRAME_OVERLAP],
-    deletion_queue: DeletionQueue,
     allocator: ManuallyDrop<Allocator>,
-
-    draw_image_index: ImageIndex,
-    depth_image_index: ImageIndex,
 
     shader_manager: ShaderManager,
 
+    // TODO: PRIORITY: Leaking
+    // Can never be cleared
     descriptor_allocator: DescriptorAllocatorGrowable,
 
     immediate_submit: ImmediateSubmit,
@@ -241,16 +254,8 @@ pub struct VulkanEngine {
     scene_data: GPUSceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
-    image_white_index: ImageIndex,
-    image_black_index: ImageIndex,
-    _image_error_index: ImageIndex,
-
-    default_sampler_nearest: vk::Sampler,
-    default_sampler_linear: vk::Sampler,
-
     managed_resources: ManagedResources,
-
-    _default_opaque_material_instance_index: MaterialInstanceIndex,
+    default_resources: DefaultResources,
 
     main_draw_context: DrawContext,
 
@@ -344,8 +349,6 @@ impl VulkanEngine {
         let mut allocator =
             Self::create_allocator(instance.clone(), device.clone(), physical_device);
 
-        let mut deletion_queue = DeletionQueue::default();
-
         let draw_image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
         let mut image_manager = ImageManager::new();
@@ -395,10 +398,6 @@ impl VulkanEngine {
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 vk::DescriptorSetLayoutCreateFlags::empty(),
             );
-
-        deletion_queue.push(DeletionType::DescriptorSetLayout(
-            gpu_scene_data_descriptor_layout,
-        ));
 
         let mut immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
@@ -538,13 +537,26 @@ impl VulkanEngine {
             material_instances: material_instance_manager,
         };
 
+        let default_resources = DefaultResources {
+            draw_image: draw_image_index,
+            depth_image: depth_image_index,
+            image_white: image_white_index,
+            image_black: image_black_index,
+            image_error: image_error_index,
+            sampler_nearest: default_sampler_nearest,
+            sampler_linear: default_sampler_linear,
+            opaque_material: default_opaque_material_index,
+            opaque_material_instance: default_opaque_material_instance_index,
+        };
+
         let gltf_loader = GLTFLoader::new(
             &device,
             std::path::PathBuf::from(gltf_name).as_path(),
             &mut allocator,
+            &mut descriptor_allocator,
             &mut managed_resources,
+            &default_resources,
             &mut immediate_submit,
-            default_opaque_material_instance_index,
         );
 
         Self {
@@ -565,10 +577,7 @@ impl VulkanEngine {
             surface,
             swapchain,
             frame_datas: frames,
-            deletion_queue,
             allocator: ManuallyDrop::new(allocator),
-            draw_image_index,
-            depth_image_index,
 
             shader_manager,
 
@@ -579,15 +588,8 @@ impl VulkanEngine {
             scene_data: GPUSceneData::default(),
             gpu_scene_data_descriptor_layout,
 
-            image_white_index,
-            image_black_index,
-            _image_error_index: image_error_index,
-
-            default_sampler_nearest,
-            default_sampler_linear,
-
             managed_resources,
-            _default_opaque_material_instance_index: default_opaque_material_instance_index,
+            default_resources,
 
             main_draw_context: DrawContext::default(),
 
@@ -833,8 +835,14 @@ impl VulkanEngine {
                 }
             };
 
-            let draw_image = self.managed_resources.images.get(self.draw_image_index);
-            let depth_image = self.managed_resources.images.get(self.depth_image_index);
+            let draw_image = self
+                .managed_resources
+                .images
+                .get(self.default_resources.draw_image);
+            let depth_image = self
+                .managed_resources
+                .images
+                .get(self.default_resources.depth_image);
 
             let draw_width =
                 self.swapchain.extent.width.min(draw_image.extent.width) as f32 * render_scale;
@@ -902,7 +910,10 @@ impl VulkanEngine {
             );
 
             // TODO: That damn frame_data
-            let draw_image = self.managed_resources.images.get(self.draw_image_index);
+            let draw_image = self
+                .managed_resources
+                .images
+                .get(self.default_resources.draw_image);
 
             vk_util::transition_image(
                 &self.device,
@@ -1194,7 +1205,10 @@ impl VulkanEngine {
 
         self.main_draw_context.opaque_surfaces.clear();
 
-        let draw_image = self.managed_resources.images.get(self.draw_image_index);
+        let draw_image = self
+            .managed_resources
+            .images
+            .get(self.default_resources.draw_image);
 
         self.gltf_loader.draw(&mut self.main_draw_context);
 
@@ -1249,16 +1263,19 @@ impl Drop for VulkanEngine {
 
         self.managed_resources
             .images
-            .remove(device, allocator, self.draw_image_index);
+            .remove(device, allocator, self.default_resources.draw_image);
         self.managed_resources
             .images
-            .remove(device, allocator, self.depth_image_index);
+            .remove(device, allocator, self.default_resources.depth_image);
         self.managed_resources
             .images
-            .remove(device, allocator, self.image_white_index);
+            .remove(device, allocator, self.default_resources.image_white);
         self.managed_resources
             .images
-            .remove(device, allocator, self.image_black_index);
+            .remove(device, allocator, self.default_resources.image_black);
+        self.managed_resources
+            .images
+            .remove(device, allocator, self.default_resources.image_error);
 
         // TODO: Shouldn't be needed if all resources are removed properly
         self.managed_resources.images.destroy(device, allocator);
@@ -1276,12 +1293,14 @@ impl Drop for VulkanEngine {
 
         self.immediate_submit.destroy(device);
 
-        self.deletion_queue.flush(device);
+        unsafe {
+            device.destroy_descriptor_set_layout(self.gpu_scene_data_descriptor_layout, None);
+        };
 
         unsafe {
             device.destroy_query_pool(self.query_pool, None);
-            device.destroy_sampler(self.default_sampler_nearest, None);
-            device.destroy_sampler(self.default_sampler_linear, None);
+            device.destroy_sampler(self.default_resources.sampler_linear, None);
+            device.destroy_sampler(self.default_resources.sampler_nearest, None);
         }
 
         dbg!(allocator.generate_report());

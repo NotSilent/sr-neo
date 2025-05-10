@@ -63,8 +63,10 @@ pub struct MaterialConstants {
 
 // TODO: Tracking?
 pub struct MaterialResources<'a> {
+    // TODO: ImageView
     pub color_image: &'a Image,
     pub color_sampler: vk::Sampler,
+    // TODO: ImageView
     pub metal_rough_image: &'a Image,
     pub metal_rough_sampler: vk::Sampler,
     pub data_buffer: vk::Buffer,
@@ -74,6 +76,7 @@ pub struct MaterialResources<'a> {
 pub struct MasterMaterial {
     _material_pass: MaterialPass,
 
+    // Should be dependent on pass?
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
 

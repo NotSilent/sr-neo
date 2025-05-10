@@ -17,7 +17,6 @@ use winit::{
 mod buffers;
 mod camera;
 mod default_resources;
-mod deletion_queue;
 mod descriptors;
 mod gltf_loader;
 mod images;

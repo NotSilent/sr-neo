@@ -1,5 +1,4 @@
 use ash::{
-    Device,
     khr::{surface, swapchain},
     vk,
 };
@@ -12,8 +11,6 @@ pub enum SwapchainError {
     #[error("Swapchain out of date")]
     OutOfDate,
 }
-
-use crate::vk_util;
 
 #[allow(clippy::struct_field_names)]
 pub struct Swapchain {
@@ -87,26 +84,5 @@ impl Swapchain {
             .present_mode(vk::PresentModeKHR::FIFO)
             .clipped(true)
             .old_swapchain(vk::SwapchainKHR::null())
-    }
-
-    fn create_swapchain_image_views(
-        device: &Device,
-        format: vk::Format,
-        images: &[vk::Image],
-    ) -> Vec<vk::ImageView> {
-        let image_views: Vec<vk::ImageView> = images
-            .iter()
-            .map(|&image| {
-                let image_view_create_info =
-                    vk_util::image_view_create_info(format, image, vk::ImageAspectFlags::COLOR);
-
-                unsafe {
-                    device
-                        .create_image_view(&image_view_create_info, None)
-                        .unwrap()
-                }
-            })
-            .collect();
-        image_views
     }
 }
