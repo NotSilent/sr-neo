@@ -153,7 +153,7 @@ impl ApplicationHandler for App<'_> {
                         //     .egui_ctx()
                         //     .tessellate(full_output.shapes, full_output.pixels_per_point);
 
-                        let elapsed = std::time::Instant::now();
+                        let time_now = std::time::Instant::now();
 
                         let gpu_stats = if let Some(engine) = &mut self.vulkan_engine {
                             engine.update(&self.input_manager);
@@ -179,7 +179,7 @@ impl ApplicationHandler for App<'_> {
                         };
 
                         // TODO: Should count since last redraw
-                        let cpu_time = elapsed.elapsed().as_secs_f64() * 1000.0;
+                        let cpu_time = time_now.elapsed().as_secs_f64() * 1000.0;
                         let fps = 1000.0 / gpu_stats.draw_time;
 
                         self.window.as_mut().unwrap().set_title(&format!(

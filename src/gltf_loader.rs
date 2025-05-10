@@ -49,11 +49,19 @@ impl GLTFLoader {
         default_resources: &DefaultResources,
         immediate_submit: &mut ImmediateSubmit,
     ) -> Self {
-        println!("Loading: {}", file_path.display());
+        println!("Loading GLTF: {}", file_path.display());
+
+        let time_now = std::time::Instant::now();
 
         // TODO: Images may be loaded unnecessarily
         #[allow(unused_variables)]
         let (gltf, buffers, images) = gltf::import(file_path).unwrap();
+
+        println!(
+            "Loaded GLTF: {}: {}s",
+            file_path.display(),
+            time_now.elapsed().as_secs_f64()
+        );
 
         let meshes = Self::load_gltf_meshes(
             device,
@@ -185,6 +193,8 @@ impl GLTFLoader {
             .master_materials
             .get_mut(default_resources.opaque_material);
 
+        let time_now = std::time::Instant::now();
+
         for image in gltf.images() {
             let (extent, format, data) = match image.source() {
                 gltf::image::Source::View { view, mime_type } => {
@@ -227,7 +237,7 @@ impl GLTFLoader {
                 }
             };
 
-            let new_image = Image::new_with_data(
+            let new_image = Image::with_data(
                 device,
                 allocator,
                 immediate_submit,
@@ -244,6 +254,8 @@ impl GLTFLoader {
 
             images.push(image_index);
         }
+
+        println!("Loaded images: {}s", time_now.elapsed().as_secs_f64());
 
         let image_white = managed_resources.images.get(default_resources.image_white);
 
@@ -311,6 +323,10 @@ impl GLTFLoader {
 
             materials.push(material_instance_index);
         }
+
+        println!("Loaded materials: {}s", time_now.elapsed().as_secs_f64());
+
+        let time_now = std::time::Instant::now();
 
         for mesh in gltf.meshes() {
             indices.clear();
@@ -417,6 +433,8 @@ impl GLTFLoader {
 
             mesh_assets.push(mesh_index);
         }
+
+        println!("Loaded meshes: {}s", time_now.elapsed().as_secs_f64());
 
         mesh_assets
     }

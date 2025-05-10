@@ -10,7 +10,7 @@ pub fn image_white(
 ) -> Image {
     let white = vk_util::pack_u32(&[1.0, 1.0, 1.0, 1.0]);
 
-    Image::new_with_data(
+    Image::with_data(
         device,
         allocator,
         immediate_submit,
@@ -32,7 +32,7 @@ pub fn image_black(
 ) -> Image {
     let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
 
-    Image::new_with_data(
+    Image::with_data(
         device,
         allocator,
         immediate_submit,
@@ -68,7 +68,7 @@ pub fn image_error(
         })
         .collect::<Vec<u32>>();
 
-    Image::new_with_data(
+    Image::with_data(
         device,
         allocator,
         immediate_submit,

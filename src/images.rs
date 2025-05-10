@@ -99,7 +99,7 @@ impl Image {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_data<T>(
+    pub fn with_data<T>(
         device: &Device,
         allocator: &mut Allocator,
         immediate_submit: &ImmediateSubmit, // TODO: Allocations should come from ImageManager or sth
