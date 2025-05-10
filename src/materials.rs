@@ -31,7 +31,7 @@ impl From<MasterMaterialIndex> for usize {
 pub type MasterMaterialManager = ResourceManager<MasterMaterial, (), MasterMaterialIndex>;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct MaterialInstanceIndex(pub u16);
+pub struct MaterialInstanceIndex(u16);
 
 impl From<usize> for MaterialInstanceIndex {
     fn from(val: usize) -> Self {
@@ -55,10 +55,10 @@ pub enum MaterialPass {
 }
 // TODO: Check size at compile time, and maybe only pad when uploading
 #[repr(C)]
+#[repr(align(256))]
 pub struct MaterialConstants {
     pub color_factors: Vector4<f32>,
     pub metal_rough_factors: Vector4<f32>,
-    pub extra: [Vector4<f32>; 14], // padding
 }
 
 // TODO: Tracking?

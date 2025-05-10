@@ -21,14 +21,12 @@ pub struct Swapchain {
     pub extent: vk::Extent2D,
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
-    pub image_views: Vec<vk::ImageView>,
 }
 
 impl Swapchain {
     pub fn new(
         surface_instance: &surface::Instance,
         swapchain_device: &swapchain::Device,
-        device: &Device,
         physical_device: vk::PhysicalDevice,
         surface: vk::SurfaceKHR,
         extent: vk::Extent2D,
@@ -54,25 +52,16 @@ impl Swapchain {
         };
 
         let images = unsafe { swapchain_device.get_swapchain_images(swapchain).unwrap() };
-        let image_views =
-            Self::create_swapchain_image_views(device, surface_format.format, &images);
 
         Self {
             _format: surface_format.format,
             extent,
             swapchain,
             images,
-            image_views,
         }
     }
 
-    pub fn destroy(&mut self, swapchain_device: &swapchain::Device, device: &Device) {
-        for &image_view in &self.image_views {
-            unsafe { device.destroy_image_view(image_view, None) };
-        }
-
-        self.image_views.clear();
-
+    pub fn destroy(&mut self, swapchain_device: &swapchain::Device) {
         unsafe { swapchain_device.destroy_swapchain(self.swapchain, None) };
     }
 

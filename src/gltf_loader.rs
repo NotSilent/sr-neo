@@ -5,13 +5,14 @@ use nalgebra::{Matrix4, Vector4, vector};
 
 use crate::{
     buffers::{Buffer, BufferManager},
-    images::ImageManager,
     immediate_submit::ImmediateSubmit,
     materials::MaterialInstanceIndex,
-    meshes::{Mesh, MeshIndex, MeshManager},
+    meshes::{Mesh, MeshIndex},
     resource_manager::VulkanResource,
     vk_util,
-    vulkan_engine::{DrawContext, GPUMeshBuffers, GeoSurface, RenderObject, Vertex},
+    vulkan_engine::{
+        DrawContext, GPUMeshBuffers, GeoSurface, ManagedResources, RenderObject, Vertex,
+    },
 };
 
 pub struct Node {
@@ -40,10 +41,9 @@ impl GLTFLoader {
         device: &Device,
         file_path: &std::path::Path,
         allocator: &mut Allocator,
+        managed_resources: &mut ManagedResources,
         immediate_submit: &mut ImmediateSubmit,
-        mesh_manager: &mut MeshManager,
-        buffer_manager: &mut BufferManager,
-        _image_manager: &mut ImageManager,
+        default_material: MaterialInstanceIndex,
     ) -> Self {
         println!("Loading: {}", file_path.display());
 
@@ -54,9 +54,9 @@ impl GLTFLoader {
         let meshes = Self::load_gltf_meshes(
             device,
             allocator,
-            buffer_manager,
-            mesh_manager,
+            managed_resources,
             immediate_submit,
+            default_material,
             &gltf,
             &buffers,
             &images,
@@ -196,9 +196,9 @@ impl GLTFLoader {
     fn load_gltf_meshes(
         device: &Device,
         allocator: &mut Allocator,
-        buffer_manager: &mut BufferManager,
-        mesh_manager: &mut MeshManager,
+        managed_resources: &mut ManagedResources,
         immediate_submit: &ImmediateSubmit,
+        default_material: MaterialInstanceIndex,
         gltf: &Document,
         buffers: &[gltf::buffer::Data],
         _images: &[gltf::image::Data],
@@ -220,8 +220,8 @@ impl GLTFLoader {
                 surfaces.push(GeoSurface {
                     start_index: start_index as u32,
                     count: count as u32,
-                    // TODO: Temporary to compile
-                    material_instance_index: MaterialInstanceIndex(0),
+                    // TODO: set actual texture
+                    material_instance_index: default_material,
                 });
 
                 let initial_vtx = vertices.len();
@@ -298,14 +298,14 @@ impl GLTFLoader {
                 buffers: Self::upload_mesh(
                     device,
                     allocator,
-                    buffer_manager,
+                    &mut managed_resources.buffers,
                     immediate_submit,
                     &indices,
                     &vertices,
                 ),
             };
 
-            let mesh_index = mesh_manager.add(mesh);
+            let mesh_index = managed_resources.meshes.add(mesh);
 
             mesh_assets.push(mesh_index);
         }

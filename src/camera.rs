@@ -32,7 +32,7 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn get_view_matrix(&self) -> Matrix4<f32> {
+    pub fn get_view(&self) -> Matrix4<f32> {
         let camera_translation = Translation3::from(self.position).to_homogeneous();
         let camera_rotation = self.get_rotation_matrix();
 
@@ -81,5 +81,36 @@ impl Camera {
         let displacement: Vector4<f32> = camera_rotation * velocity;
         let displacement: Vector3<f32> = vector![displacement.x, displacement.y, displacement.z];
         self.position += displacement;
+    }
+
+    pub fn get_projection(aspect_ratio: f32) -> Matrix4<f32> {
+        let fov = 90_f32.to_radians();
+        let near = 1000.0;
+        let far = 0.01;
+
+        let projection = Matrix4::new(
+            aspect_ratio / (fov / 2.0).tan(),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0 / (fov / 2.0).tan(),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            far / (far - near),
+            1.0,
+            0.0,
+            0.0,
+            -(near * far) / (far - near),
+            0.0,
+        )
+        .transpose();
+
+        let view_to_clip =
+            Rotation3::from_axis_angle(&Vector3::x_axis(), 180.0_f32.to_radians()).to_homogeneous();
+
+        projection * view_to_clip
     }
 }

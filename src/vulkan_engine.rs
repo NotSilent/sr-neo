@@ -37,7 +37,6 @@ use crate::{
         MaterialInstanceManager, MaterialPass, MaterialResources,
     },
     meshes::{MeshIndex, MeshManager},
-    resource_manager::{ResourceManager, VulkanResource, VulkanSubresource},
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
     vk_util,
@@ -190,6 +189,22 @@ impl FrameData {
 // TODO: runtime?
 const FRAME_OVERLAP: usize = 2;
 
+// TODO: Should allocator be part of it? Would be nice
+// But some objects might want to manage their resources separately
+// eg. FrameData
+pub struct ManagedResources {
+    pub buffers: BufferManager,
+    pub images: ImageManager,
+
+    pub meshes: MeshManager,
+    pub master_materials: MasterMaterialManager,
+    pub material_instances: MaterialInstanceManager,
+}
+
+impl ManagedResources {
+    // TODO: encapsulate access and properly manage removal
+}
+
 pub struct VulkanEngine {
     frame_number: u64,
 
@@ -233,12 +248,7 @@ pub struct VulkanEngine {
     default_sampler_nearest: vk::Sampler,
     default_sampler_linear: vk::Sampler,
 
-    buffer_manager: BufferManager,
-    image_manager: ImageManager,
-
-    mesh_manager: MeshManager,
-    master_material_manager: MasterMaterialManager,
-    material_instance_manager: MaterialInstanceManager,
+    managed_resources: ManagedResources,
 
     _default_opaque_material_instance_index: MaterialInstanceIndex,
 
@@ -321,7 +331,6 @@ impl VulkanEngine {
         let swapchain = Swapchain::new(
             &surface_instance,
             &swapchain_device,
-            &device,
             physical_device,
             surface,
             vk::Extent2D::default().width(width).height(height),
@@ -396,7 +405,7 @@ impl VulkanEngine {
 
         let mut buffer_manager = BufferManager::new();
 
-        let mut mesh_manager = MeshManager::new();
+        let mesh_manager = MeshManager::new();
 
         let image_white = default_resources::image_white(
             &device,
@@ -464,7 +473,6 @@ impl VulkanEngine {
         let material_constants = MaterialConstants {
             color_factors: vector![1.0, 1.0, 1.0, 1.0],
             metal_rough_factors: vector![1.0, 0.5, 0.0, 0.0],
-            extra: [Vector4::default(); 14],
         };
 
         vk_util::copy_data_to_allocation(
@@ -516,21 +524,28 @@ impl VulkanEngine {
                 .unwrap()
         };
 
-        let gltf_loader = GLTFLoader::new(
-            &device,
-            std::path::PathBuf::from(gltf_name).as_path(),
-            &mut allocator,
-            &mut immediate_submit,
-            &mut mesh_manager,
-            &mut buffer_manager,
-            &mut image_manager,
-        );
-
         let image_white_index = image_manager.add(image_white);
         let image_black_index = image_manager.add(image_black);
         let image_error_index = image_manager.add(image_error);
         let draw_image_index = image_manager.add(draw_image);
         let depth_image_index = image_manager.add(depth_image);
+
+        let mut managed_resources = ManagedResources {
+            buffers: buffer_manager,
+            images: image_manager,
+            meshes: mesh_manager,
+            master_materials: master_material_manager,
+            material_instances: material_instance_manager,
+        };
+
+        let gltf_loader = GLTFLoader::new(
+            &device,
+            std::path::PathBuf::from(gltf_name).as_path(),
+            &mut allocator,
+            &mut managed_resources,
+            &mut immediate_submit,
+            default_opaque_material_instance_index,
+        );
 
         Self {
             frame_number: 0,
@@ -561,9 +576,6 @@ impl VulkanEngine {
 
             immediate_submit,
 
-            buffer_manager,
-            image_manager,
-
             scene_data: GPUSceneData::default(),
             gpu_scene_data_descriptor_layout,
 
@@ -574,10 +586,7 @@ impl VulkanEngine {
             default_sampler_nearest,
             default_sampler_linear,
 
-            //Managers
-            mesh_manager,
-            master_material_manager,
-            material_instance_manager,
+            managed_resources,
             _default_opaque_material_instance_index: default_opaque_material_instance_index,
 
             main_draw_context: DrawContext::default(),
@@ -593,33 +602,6 @@ impl VulkanEngine {
     // TODO: Shouldn't be part of renderer
     pub fn update(&mut self, input_manager: &InputManager) {
         self.main_camera.process_winit_events(input_manager);
-    }
-
-    fn get_projection(aspect_ratio: f32, fov: f32, near: f32, far: f32) -> Matrix4<f32> {
-        let projection = Matrix4::new(
-            aspect_ratio / (fov / 2.0).tan(),
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0 / (fov / 2.0).tan(),
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            far / (far - near),
-            1.0,
-            0.0,
-            0.0,
-            -(near * far) / (far - near),
-            0.0,
-        )
-        .transpose();
-
-        let view_to_clip =
-            Rotation3::from_axis_angle(&Vector3::x_axis(), 180.0_f32.to_radians()).to_homogeneous();
-
-        projection * view_to_clip
     }
 
     #[allow(clippy::too_many_lines)]
@@ -719,15 +701,17 @@ impl VulkanEngine {
     ) {
         for draw in &self.main_draw_context.opaque_surfaces {
             unsafe {
-                let mesh = self.mesh_manager.get(draw.mesh_index);
+                let mesh = self.managed_resources.meshes.get(draw.mesh_index);
 
                 for surface in &mesh.surfaces {
                     let material = self
-                        .material_instance_manager
+                        .managed_resources
+                        .material_instances
                         .get(surface.material_instance_index);
 
                     let master_material = self
-                        .master_material_manager
+                        .managed_resources
+                        .master_materials
                         .get(material.master_material_index);
 
                     self.device.cmd_bind_pipeline(
@@ -754,7 +738,10 @@ impl VulkanEngine {
                         &[],
                     );
 
-                    let index_buffer = self.buffer_manager.get(mesh.buffers.index_buffer_index);
+                    let index_buffer = self
+                        .managed_resources
+                        .buffers
+                        .get(mesh.buffers.index_buffer_index);
 
                     self.device.cmd_bind_index_buffer(
                         cmd,
@@ -846,8 +833,8 @@ impl VulkanEngine {
                 }
             };
 
-            let draw_image = self.image_manager.get(self.draw_image_index);
-            let depth_image = self.image_manager.get(self.depth_image_index);
+            let draw_image = self.managed_resources.images.get(self.draw_image_index);
+            let depth_image = self.managed_resources.images.get(self.depth_image_index);
 
             let draw_width =
                 self.swapchain.extent.width.min(draw_image.extent.width) as f32 * render_scale;
@@ -915,7 +902,7 @@ impl VulkanEngine {
             );
 
             // TODO: That damn frame_data
-            let draw_image = self.image_manager.get(self.draw_image_index);
+            let draw_image = self.managed_resources.images.get(self.draw_image_index);
 
             vk_util::transition_image(
                 &self.device,
@@ -1207,17 +1194,14 @@ impl VulkanEngine {
 
         self.main_draw_context.opaque_surfaces.clear();
 
-        let draw_image = self.image_manager.get(self.draw_image_index);
-
-        let aspect_ratio = draw_image.extent.height as f32 / draw_image.extent.width as f32;
-        let fov = 90_f32.to_radians();
-        let near = 1000.0;
-        let far = 0.1;
+        let draw_image = self.managed_resources.images.get(self.draw_image_index);
 
         self.gltf_loader.draw(&mut self.main_draw_context);
 
-        self.scene_data.view = self.main_camera.get_view_matrix();
-        self.scene_data.proj = Self::get_projection(aspect_ratio, fov, near, far);
+        self.scene_data.view = self.main_camera.get_view();
+        self.scene_data.proj = Camera::get_projection(
+            draw_image.extent.height as f32 / draw_image.extent.width as f32,
+        );
         self.scene_data.view_proj = self.scene_data.proj * self.scene_data.view;
 
         self.scene_data.ambient_color = Vector4::from_element(0.1);
@@ -1230,11 +1214,10 @@ impl VulkanEngine {
             self.device.device_wait_idle().unwrap();
         }
 
-        self.swapchain.destroy(&self.swapchain_device, &self.device);
+        self.swapchain.destroy(&self.swapchain_device);
         self.swapchain = Swapchain::new(
             &self.surface_instance,
             &self.swapchain_device,
-            &self.device,
             self.physical_device,
             self.surface,
             vk::Extent2D::default().width(width).height(height),
@@ -1253,30 +1236,38 @@ impl Drop for VulkanEngine {
             frame_data.destroy(device, allocator);
         }
 
-        let subresources = self.mesh_manager.destroy(device, allocator);
+        let subresources = self.managed_resources.meshes.destroy(device, allocator);
 
         for resouce in subresources {
-            self.buffer_manager
+            self.managed_resources
+                .buffers
                 .remove(device, allocator, resouce.index_buffer_index);
-            self.buffer_manager
+            self.managed_resources
+                .buffers
                 .remove(device, allocator, resouce.vertex_buffer_index);
         }
 
-        self.image_manager
+        self.managed_resources
+            .images
             .remove(device, allocator, self.draw_image_index);
-        self.image_manager
+        self.managed_resources
+            .images
             .remove(device, allocator, self.depth_image_index);
-        self.image_manager
+        self.managed_resources
+            .images
             .remove(device, allocator, self.image_white_index);
-        self.image_manager
+        self.managed_resources
+            .images
             .remove(device, allocator, self.image_black_index);
 
         // TODO: Shouldn't be needed if all resources are removed properly
-        self.image_manager.destroy(device, allocator);
+        self.managed_resources.images.destroy(device, allocator);
 
-        self.buffer_manager.destroy(device, allocator);
+        self.managed_resources.buffers.destroy(device, allocator);
 
-        self.master_material_manager.destroy(device, allocator);
+        self.managed_resources
+            .master_materials
+            .destroy(device, allocator);
         // ~Shouldn't be needed if all resources are removed properly
 
         self.shader_manager.destroy(device);
@@ -1298,7 +1289,7 @@ impl Drop for VulkanEngine {
         unsafe { ManuallyDrop::drop(allocator) };
 
         unsafe {
-            self.swapchain.destroy(&self.swapchain_device, device);
+            self.swapchain.destroy(&self.swapchain_device);
             self.surface_instance.destroy_surface(self.surface, None);
             device.destroy_device(None);
             self.debug_utils
