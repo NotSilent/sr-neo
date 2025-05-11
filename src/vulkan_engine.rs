@@ -41,6 +41,171 @@ use crate::{
     vk_util,
 };
 
+pub struct DrawCommand {
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    material_instance_set: vk::DescriptorSet,
+    index_buffer: vk::Buffer,
+    vertex_buffer_address: u64,
+    world_matrix: Matrix4<f32>,
+    surface_index_count: u32,
+    surface_first_index: u32,
+}
+
+// TODO: Move this somewhere
+impl DrawCommand {
+    pub fn cmd_record_draw_command(
+        device: &Device,
+        cmd: vk::CommandBuffer,
+        global_descriptor: vk::DescriptorSet,
+        draw_commands: &[DrawCommand],
+        draw_order: &[u32],
+        gpu_stats: &mut GPUStats,
+    ) {
+        let mut last_material_set = vk::DescriptorSet::null();
+        let mut last_pipeline = vk::Pipeline::null();
+        let mut last_index_buffer = vk::Buffer::null();
+
+        for index in draw_order {
+            let command = &draw_commands[*index as usize];
+            unsafe {
+                if last_material_set != command.material_instance_set {
+                    last_material_set = command.material_instance_set;
+
+                    if last_pipeline != command.pipeline {
+                        last_pipeline = command.pipeline;
+
+                        device.cmd_bind_pipeline(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            command.pipeline,
+                        );
+
+                        device.cmd_bind_descriptor_sets(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            command.pipeline_layout,
+                            0,
+                            &[global_descriptor],
+                            &[],
+                        );
+
+                        // TODO: Dynamic state
+                    }
+
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        command.pipeline_layout,
+                        1,
+                        &[command.material_instance_set],
+                        &[],
+                    );
+                }
+
+                if last_index_buffer != command.index_buffer {
+                    last_index_buffer = command.index_buffer;
+
+                    device.cmd_bind_index_buffer(
+                        cmd,
+                        command.index_buffer,
+                        0,
+                        vk::IndexType::UINT32,
+                    );
+                }
+
+                let push_constants = GPUPushDrawConstant {
+                    world_matrix: command.world_matrix,
+                    vertex_buffer: command.vertex_buffer_address,
+                };
+
+                device.cmd_push_constants(
+                    cmd,
+                    command.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    push_constants.as_bytes(),
+                );
+
+                device.cmd_draw_indexed(
+                    cmd,
+                    command.surface_index_count,
+                    1,
+                    command.surface_first_index,
+                    0,
+                    0,
+                );
+
+                gpu_stats.draw_calls += 1;
+                gpu_stats.triangles += command.surface_index_count as usize / 3;
+            }
+        }
+    }
+}
+
+struct DrawRecord {
+    opaque_commands: Vec<DrawCommand>,
+    transparent_commands: Vec<DrawCommand>,
+}
+
+impl DrawRecord {
+    fn record_draw_commands(
+        draw_context: &DrawContext,
+        managed_resources: &ManagedResources,
+    ) -> DrawRecord {
+        let mut opaque_commands = vec![];
+        let mut transparent_commands = vec![];
+
+        for draw in &draw_context.render_objects {
+            let mesh = managed_resources.meshes.get(draw.mesh_index);
+
+            for surface in &mesh.surfaces {
+                let material = managed_resources
+                    .material_instances
+                    .get(surface.material_instance_index);
+
+                let master_material = managed_resources
+                    .master_materials
+                    .get(material.master_material_index);
+
+                let pipeline_layout = master_material.pipeline_layout;
+                let pipeline = master_material.pipeline;
+                let material_instance_set = material.set;
+                let index_buffer = managed_resources
+                    .buffers
+                    .get(mesh.buffers.index_buffer_index)
+                    .buffer;
+                let vertex_buffer_address = mesh.buffers.vertex_buffer_address;
+                let world_matrix = draw.transform;
+                let surface_first_index = surface.start_index;
+                let surface_index_count = surface.count;
+
+                let draw_command = DrawCommand {
+                    pipeline_layout,
+                    pipeline,
+                    material_instance_set,
+                    index_buffer,
+                    vertex_buffer_address,
+                    world_matrix,
+                    surface_index_count,
+                    surface_first_index,
+                };
+
+                if master_material.material_pass == MaterialPass::Opaque {
+                    opaque_commands.push(draw_command);
+                } else {
+                    transparent_commands.push(draw_command);
+                }
+            }
+        }
+
+        Self {
+            opaque_commands,
+            transparent_commands,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct GPUStats {
     pub draw_time: f64,
@@ -56,7 +221,7 @@ pub struct GeoSurface {
 
 #[derive(Default)]
 pub struct DrawContext {
-    pub opaque_surfaces: Vec<RenderObject>,
+    pub render_objects: Vec<RenderObject>,
 }
 
 pub struct RenderObject {
@@ -217,7 +382,9 @@ pub struct DefaultResources {
     pub sampler_linear: vk::Sampler,
 
     pub opaque_material: MasterMaterialIndex,
-    pub opaque_material_instance: MaterialInstanceIndex,
+    pub transparent_material: MasterMaterialIndex,
+
+    pub default_material_instance: MaterialInstanceIndex,
 }
 
 pub struct VulkanEngine {
@@ -459,10 +626,23 @@ impl VulkanEngine {
             gpu_scene_data_descriptor_layout,
             &[draw_image.format],
             depth_image.format,
-            MaterialPass::MainColor,
+            MaterialPass::Opaque,
+        );
+
+        let default_transparent_material = MasterMaterial::new(
+            &device,
+            &mut shader_manager,
+            gpu_scene_data_descriptor_layout,
+            &[draw_image.format],
+            depth_image.format,
+            MaterialPass::Transparent,
         );
 
         let default_opaque_material_index = master_material_manager.add(default_opaque_material);
+        let default_transparent_material_index =
+            master_material_manager.add(default_transparent_material);
+
+        let mut material_instance_manager = MaterialInstanceManager::new();
 
         let material_constants_buffer = Buffer::new(
             &device,
@@ -483,7 +663,6 @@ impl VulkanEngine {
             material_constants_buffer.allocation.as_ref().unwrap(),
         );
 
-        // TODO: Store in master material?
         let resources = MaterialResources {
             color_image: &image_white,
             color_sampler: default_sampler_linear,
@@ -495,17 +674,15 @@ impl VulkanEngine {
 
         buffer_manager.add(material_constants_buffer);
 
-        let default_opaque_master_material =
+        let default_opaque_material =
             master_material_manager.get_mut(default_opaque_material_index);
 
-        let default_opaque_material_instance = default_opaque_master_material.create_instance(
+        let default_opaque_material_instance = default_opaque_material.create_instance(
             &device,
             &resources,
             &mut descriptor_allocator,
             default_opaque_material_index,
         );
-
-        let mut material_instance_manager = MaterialInstanceManager::new();
 
         let default_opaque_material_instance_index =
             material_instance_manager.add(default_opaque_material_instance);
@@ -550,7 +727,8 @@ impl VulkanEngine {
             sampler_nearest: default_sampler_nearest,
             sampler_linear: default_sampler_linear,
             opaque_material: default_opaque_material_index,
-            opaque_material_instance: default_opaque_material_instance_index,
+            transparent_material: default_transparent_material_index,
+            default_material_instance: default_opaque_material_instance_index,
         };
 
         let gltf_loader = GLTFLoader::new(
@@ -698,85 +876,70 @@ impl VulkanEngine {
         }
     }
 
-    // TODO: Move to RenderObject?
     fn draw_meshes(
         &mut self,
         cmd: vk::CommandBuffer,
         global_descriptor: vk::DescriptorSet,
         gpu_stats: &mut GPUStats,
     ) {
-        for draw in &self.main_draw_context.opaque_surfaces {
-            unsafe {
-                let mesh = self.managed_resources.meshes.get(draw.mesh_index);
+        let DrawRecord {
+            opaque_commands,
+            transparent_commands,
+        } = DrawRecord::record_draw_commands(&self.main_draw_context, &self.managed_resources);
 
-                for surface in &mesh.surfaces {
-                    let material = self
-                        .managed_resources
-                        .material_instances
-                        .get(surface.material_instance_index);
+        let mut opaque_order: Vec<u32> = (0..opaque_commands.len() as u32).collect();
 
-                    let master_material = self
-                        .managed_resources
-                        .master_materials
-                        .get(material.master_material_index);
+        opaque_order.sort_by(|lhs, rhs| {
+            let lhs = &opaque_commands[*lhs as usize];
+            let rhs = &opaque_commands[*rhs as usize];
 
-                    self.device.cmd_bind_pipeline(
-                        cmd,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        master_material.pipeline,
-                    );
+            // if lhs.material_instance_set < rhs.material_instance_set {
+            //     lhs.index_buffer < rhs.index_buffer
+            // } else {
+            //     lhs.material_instance_set < rhs.material_instance_set
+            // }
 
-                    self.device.cmd_bind_descriptor_sets(
-                        cmd,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        master_material.pipeline_layout,
-                        0,
-                        &[global_descriptor],
-                        &[],
-                    );
-
-                    self.device.cmd_bind_descriptor_sets(
-                        cmd,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        master_material.pipeline_layout,
-                        1,
-                        &[material.set],
-                        &[],
-                    );
-
-                    let index_buffer = self
-                        .managed_resources
-                        .buffers
-                        .get(mesh.buffers.index_buffer_index);
-
-                    self.device.cmd_bind_index_buffer(
-                        cmd,
-                        index_buffer.buffer,
-                        0,
-                        vk::IndexType::UINT32,
-                    );
-
-                    let push_constants = GPUPushDrawConstant {
-                        world_matrix: draw.transform,
-                        vertex_buffer: mesh.buffers.vertex_buffer_address,
-                    };
-
-                    self.device.cmd_push_constants(
-                        cmd,
-                        master_material.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        push_constants.as_bytes(),
-                    );
-
-                    self.device
-                        .cmd_draw_indexed(cmd, surface.count, 1, surface.start_index, 0, 0);
-
-                    gpu_stats.draw_calls += 1;
-                    gpu_stats.triangles += surface.count as usize / 3;
-                }
+            match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
+                std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
+                other => other,
             }
-        }
+        });
+
+        DrawCommand::cmd_record_draw_command(
+            &self.device,
+            cmd,
+            global_descriptor,
+            &opaque_commands,
+            &opaque_order,
+            gpu_stats,
+        );
+
+        let mut transparent_order: Vec<u32> = (0..transparent_commands.len() as u32).collect();
+
+        transparent_order.sort_by(|lhs, rhs| {
+            let lhs = &transparent_commands[*lhs as usize];
+            let rhs = &transparent_commands[*rhs as usize];
+
+            // if lhs.material_instance_set < rhs.material_instance_set {
+            //     lhs.index_buffer < rhs.index_buffer
+            // } else {
+            //     lhs.material_instance_set < rhs.material_instance_set
+            // }
+
+            match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
+                std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
+                other => other,
+            }
+        });
+
+        DrawCommand::cmd_record_draw_command(
+            &self.device,
+            cmd,
+            global_descriptor,
+            &transparent_commands,
+            &transparent_order,
+            gpu_stats,
+        );
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1207,7 +1370,7 @@ impl VulkanEngine {
     fn update_scene(&mut self) {
         self.main_camera.update();
 
-        self.main_draw_context.opaque_surfaces.clear();
+        self.main_draw_context.render_objects.clear();
 
         let draw_image = self
             .managed_resources

@@ -56,10 +56,10 @@ impl Camera {
         for key_event in &input_manager.key_events {
             match key_event.element_state {
                 ElementState::Pressed => match key_event.key_code {
-                    KeyCode::KeyA => self.velocity.x = -1.0 * speed,
+                    KeyCode::KeyA => self.velocity.x = -speed,
                     KeyCode::KeyD => self.velocity.x = 1.0 * speed,
                     KeyCode::KeyS => self.velocity.z = 1.0 * speed,
-                    KeyCode::KeyW => self.velocity.z = -1.0 * speed,
+                    KeyCode::KeyW => self.velocity.z = -speed,
                     _ => {}
                 },
                 ElementState::Released => match key_event.key_code {
