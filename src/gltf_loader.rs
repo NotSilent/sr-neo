@@ -193,10 +193,6 @@ impl GLTFLoader {
 
         let mut images = vec![];
 
-        let master_material = managed_resources
-            .master_materials
-            .get_mut(default_resources.opaque_material);
-
         let time_now = std::time::Instant::now();
 
         for image in gltf.images() {
@@ -315,11 +311,22 @@ impl GLTFLoader {
 
             managed_resources.buffers.add(material_constants_buffer);
 
+            let master_material_index = if material.alpha_mode() == gltf::material::AlphaMode::Blend
+            {
+                default_resources.transparent_material
+            } else {
+                default_resources.opaque_material
+            };
+
+            let master_material = managed_resources
+                .master_materials
+                .get_mut(master_material_index);
+
             let material_instance = master_material.create_instance(
                 device,
                 &resources,
                 descriptor_allocator,
-                default_resources.opaque_material,
+                master_material_index,
             );
 
             let material_instance_index =
@@ -348,7 +355,8 @@ impl GLTFLoader {
                     material_instance_index: if let Some(material) = primitive.material().index() {
                         materials[material]
                     } else {
-                        default_resources.opaque_material_instance
+                        // TODO: What exactly would gefault material be for GLTF
+                        default_resources.default_material_instance
                     },
                 });
 
@@ -468,7 +476,7 @@ impl GLTFLoader {
                     transform: node_matrix,
                 };
 
-                ctx.opaque_surfaces.push(render_object);
+                ctx.render_objects.push(render_object);
 
                 for child_index in &mesh_node.node.children {
                     self.draw_node(*child_index, mesh_node.node.local_transform, ctx);

@@ -49,8 +49,9 @@ pub type MaterialInstanceManager = ResourceManager<MaterialInstance, (), Materia
 
 // ~~Resource Managers
 
+#[derive(PartialEq)]
 pub enum MaterialPass {
-    MainColor,
+    Opaque,
     Transparent,
 }
 // TODO: Check size at compile time, and maybe only pad when uploading
@@ -74,9 +75,9 @@ pub struct MaterialResources<'a> {
 }
 
 pub struct MasterMaterial {
-    _material_pass: MaterialPass,
+    pub material_pass: MaterialPass,
 
-    // Should be dependent on pass?
+    // Created per Master Material, probably should be tied to MaterialPass
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
 
@@ -135,7 +136,7 @@ impl MasterMaterial {
                 .unwrap()
         };
 
-        let pipeline_builder = PipelineBuilder::default()
+        let mut pipeline_builder = PipelineBuilder::default()
             .set_shaders(shader.vert, shader.frag)
             .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .set_polygon_mode(vk::PolygonMode::FILL)
@@ -147,16 +148,17 @@ impl MasterMaterial {
             .set_depth_format(depth_format)
             .set_pipeline_layout(pipeline_layout);
 
-        // TODO: Transparent material
-        // let transparent_pipeline_builder = pipeline_builder
-        //     .clone()
-        //     .enable_blending_additive()
-        //     .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
+        // TODO: Better split
+        if material_pass == MaterialPass::Transparent {
+            pipeline_builder = pipeline_builder
+                .enable_blending_additive()
+                .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
+        }
 
         let pipeline = pipeline_builder.build_pipeline(device);
 
         Self {
-            _material_pass: material_pass,
+            material_pass,
             pipeline_layout,
             pipeline,
             material_layout,

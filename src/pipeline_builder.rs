@@ -122,7 +122,7 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
-    pub fn _enable_blending_additive(mut self) -> Self {
+    pub fn enable_blending_additive(mut self) -> Self {
         let Self {
             color_blend_attachment,
             ..
