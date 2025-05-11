@@ -12,7 +12,7 @@ pub struct PipelineBuilder<'a> {
     render_info: vk::PipelineRenderingCreateInfo<'a>,
 }
 
-impl PipelineBuilder<'_> {
+impl<'a> PipelineBuilder<'a> {
     pub fn build_pipeline(mut self, device: &Device) -> vk::Pipeline {
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
@@ -158,9 +158,8 @@ impl PipelineBuilder<'_> {
         self
     }
 
-    pub fn set_color_attachment_formats(mut self, formats: &[vk::Format]) -> Self {
-        self.render_info.color_attachment_count = formats.len() as u32;
-        self.render_info.p_color_attachment_formats = formats.as_ptr();
+    pub fn set_color_attachment_formats(mut self, formats: &'a [vk::Format]) -> Self {
+        self.render_info = self.render_info.color_attachment_formats(formats);
 
         self
     }

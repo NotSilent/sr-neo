@@ -52,6 +52,10 @@ impl GLTFLoader {
         println!("Loading GLTF: {}", file_path.display());
 
         let time_now = std::time::Instant::now();
+        // For future asset manager
+        // let base = file_path.parent().unwrap();
+        // let file = std::fs::File::open(file_path).unwrap();
+        // let reader = std::io::BufReader::new(file);
 
         // TODO: Images may be loaded unnecessarily
         #[allow(unused_variables)]

@@ -102,7 +102,7 @@ impl MasterMaterial {
         device: &Device,
         shader_manager: &mut ShaderManager,
         frame_layout: vk::DescriptorSetLayout,
-        draw_format: vk::Format,
+        color_attachment_formats: &[vk::Format],
         depth_format: vk::Format,
         material_pass: MaterialPass,
     ) -> Self {
@@ -143,7 +143,7 @@ impl MasterMaterial {
             .set_multisampling_none()
             .disable_blending()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
-            .set_color_attachment_formats(&[draw_format])
+            .set_color_attachment_formats(color_attachment_formats)
             .set_depth_format(depth_format)
             .set_pipeline_layout(pipeline_layout);
 

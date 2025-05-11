@@ -387,6 +387,10 @@ impl VulkanEngine {
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
                 ratio: 1,
             },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                ratio: 1,
+            },
         ];
 
         let mut descriptor_allocator = DescriptorAllocatorGrowable::new(&device, 10, pool_ratios);
@@ -453,7 +457,7 @@ impl VulkanEngine {
             &device,
             &mut shader_manager,
             gpu_scene_data_descriptor_layout,
-            draw_image.format,
+            &[draw_image.format],
             depth_image.format,
             MaterialPass::MainColor,
         );
