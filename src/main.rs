@@ -236,7 +236,7 @@ impl ApplicationHandler for App<'_> {
 fn main() {
     let env_args: Vec<String> = env::args().collect();
 
-    if let Some(gltf_name) = env_args.iter().find_map(|arg| arg.split('=').nth(1)) {
+    if let Some(gltf_name) = env_args.get(1) {
         let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 

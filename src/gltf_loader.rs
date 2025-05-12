@@ -52,36 +52,30 @@ impl GLTFLoader {
         println!("Loading GLTF: {}", file_path.display());
 
         let time_now = std::time::Instant::now();
-        // For future asset manager
-        // let base = file_path.parent().unwrap();
-        // let file = std::fs::File::open(file_path).unwrap();
-        // let reader = std::io::BufReader::new(file);
-
-        // TODO: Images may be loaded unnecessarily
-        #[allow(unused_variables)]
-        let (gltf, buffers, images) = gltf::import(file_path).unwrap();
+        let content = std::fs::read(file_path).unwrap();
+        let gltf_real = gltf::Gltf::from_slice(&content).unwrap();
 
         println!(
-            "Loaded GLTF: {}: {}s",
+            "Loaded GLTF: {}: {:.2}s",
             file_path.display(),
             time_now.elapsed().as_secs_f64()
         );
 
         let meshes = Self::load_gltf_meshes(
+            file_path,
             device,
             allocator,
             descriptor_allocator,
             managed_resources,
             default_resources,
             immediate_submit,
-            &gltf,
-            &buffers,
+            &gltf_real,
         );
 
-        let gltf_nodes = Self::load_gltf_nodes(&gltf, &meshes);
+        let gltf_nodes = Self::load_gltf_nodes(&gltf_real, &meshes);
 
         Self {
-            scenes: gltf
+            scenes: gltf_real
                 .scenes()
                 .map(|scene| scene.nodes().map(|node| node.index() as u32).collect())
                 .collect(),
@@ -175,6 +169,7 @@ impl GLTFLoader {
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::too_many_lines)]
     fn load_gltf_meshes(
+        file_path: &std::path::Path,
         device: &Device,
         allocator: &mut Allocator,
         // TODO: Manage it better, what happens if it's cleared
@@ -182,25 +177,25 @@ impl GLTFLoader {
         managed_resources: &mut ManagedResources,
         default_resources: &DefaultResources,
         immediate_submit: &ImmediateSubmit,
-        gltf: &Document,
-        gltf_buffers: &[gltf::buffer::Data],
+        gltf_real: &gltf::Gltf,
     ) -> Vec<MeshIndex> {
         let mut mesh_assets = vec![];
         let mut indices: Vec<u32> = vec![];
         let mut vertices: Vec<Vertex> = vec![];
-        let mut materials = Vec::with_capacity(gltf.materials().len());
+        let mut materials = Vec::with_capacity(gltf_real.materials().len());
 
         let mut images = vec![];
 
         let time_now = std::time::Instant::now();
 
-        for image in gltf.images() {
+        for image in gltf_real.images() {
             let (extent, format, data) = match image.source() {
                 gltf::image::Source::View { view, mime_type } => {
-                    let buffer = &gltf_buffers[view.buffer().index()];
+                    let blob_data = gltf_real.blob.as_ref().unwrap();
+
                     let start = view.offset();
                     let end = start + view.length();
-                    let data = &buffer[start..end];
+                    let data = &blob_data[start..end];
 
                     let img = image::load_from_memory_with_format(
                         data,
@@ -211,28 +206,22 @@ impl GLTFLoader {
                         },
                     )
                     .unwrap()
-                    .to_rgba8();
+                    .into_rgba8();
 
                     let (width, height) = img.dimensions();
-                    let pixels = img.into_raw();
 
                     let extent = vk::Extent3D::default().width(width).height(height).depth(1);
-                    (extent, vk::Format::R8G8B8A8_UNORM, pixels)
+                    (extent, vk::Format::R8G8B8A8_UNORM, img)
                 }
-                // TODO: untested
-                #[allow(unreachable_code)]
-                #[allow(unused_variables)]
                 gltf::image::Source::Uri { uri, mime_type: _ } => {
-                    panic!();
-
-                    let path = std::path::Path::new(uri);
-                    let img = image::open(path).unwrap().to_rgba8();
+                    let base_path = std::path::Path::new(file_path).parent().unwrap();
+                    let path = base_path.join(uri);
+                    let img = image::open(path).unwrap().into_rgba8();
                     let (width, height) = img.dimensions();
-                    let pixels = img.into_raw();
 
                     let extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
-                    (extent, vk::Format::R8G8B8A8_UNORM, pixels)
+                    (extent, vk::Format::R8G8B8A8_UNORM, img)
                 }
             };
 
@@ -254,13 +243,13 @@ impl GLTFLoader {
             images.push(image_index);
         }
 
-        println!("Loaded images: {}s", time_now.elapsed().as_secs_f64());
+        println!("Loaded images: {:.2}s", time_now.elapsed().as_secs_f64());
 
         let image_white = managed_resources.images.get(default_resources.image_white);
 
         let time_now = std::time::Instant::now();
 
-        for material in gltf.materials() {
+        for material in gltf_real.materials() {
             let material_constants_buffer = Buffer::new(
                 device,
                 allocator,
@@ -336,11 +325,11 @@ impl GLTFLoader {
             materials.push(material_instance_index);
         }
 
-        println!("Loaded materials: {}s", time_now.elapsed().as_secs_f64());
+        println!("Loaded materials: {:.2}s", time_now.elapsed().as_secs_f64());
 
         let time_now = std::time::Instant::now();
 
-        for mesh in gltf.meshes() {
+        for mesh in gltf_real.meshes() {
             indices.clear();
             vertices.clear();
             let mut surfaces: Vec<GeoSurface> = vec![];
@@ -363,24 +352,59 @@ impl GLTFLoader {
 
                 let initial_vtx = vertices.len();
 
+                let blob_data = gltf_real.blob.as_ref().unwrap();
+
                 // Load indexes
 
-                // TODO: Can this be cleaner?
-                let reader = primitive
-                    .reader(|buffer| gltf_buffers.get(buffer.index()).map(std::ops::Deref::deref));
+                let indices_accessor = primitive.indices().unwrap();
+                let indices_view = indices_accessor.view().unwrap();
 
-                indices.reserve(count);
+                let indices_start = indices_view.offset();
+                let indices_end = indices_start + indices_view.length();
+                let indices_data = &blob_data[indices_start..indices_end];
 
-                reader.read_indices().unwrap().into_u32().for_each(|value| {
-                    indices.push(value + initial_vtx as u32);
-                });
+                let indices_byte_size = indices_accessor.size();
+
+                indices.reserve(indices_view.length());
+
+                match indices_byte_size {
+                    1 => unsafe {
+                        let (_prefix, middle, _suffix) = indices_data.align_to::<u32>();
+
+                        for value in middle {
+                            indices.push(value + initial_vtx as u32);
+                        }
+                    },
+                    2 => unsafe {
+                        let (_prefix, middle, _suffix) = indices_data.align_to::<u16>();
+
+                        for value in middle {
+                            indices.push(u32::from(*value) + initial_vtx as u32);
+                        }
+                    },
+                    4 => indices_data
+                        .iter()
+                        .map(|val| u32::from(*val))
+                        .for_each(|val| indices.push(val + initial_vtx as u32)),
+                    _ => panic!(),
+                }
 
                 // Load POSITION
+
+                let vertices_accessor = primitive.get(&gltf::Semantic::Positions).unwrap();
+                let vertices_view = vertices_accessor.view().unwrap();
+
+                let vertices_start = vertices_view.offset();
+                let vertices_end = vertices_start + vertices_view.length();
+                let vertices_data = &blob_data[vertices_start..vertices_end];
+
                 vertices.reserve(count);
 
-                for position in reader.read_positions().unwrap() {
+                let (_prefix, middle, _suffix) = unsafe { vertices_data.align_to::<[f32; 3]>() };
+
+                for position in middle {
                     let vertex = Vertex {
-                        position: position.into(),
+                        position: (*position).into(),
                         uv_x: 0.0,
                         normal: vector![1.0, 0.0, 0.0],
                         uv_y: 0.0,
@@ -391,30 +415,70 @@ impl GLTFLoader {
                 }
 
                 // Load NORMAL
-                if let Some(normals) = reader.read_normals() {
+
+                if let Some(normals_accessor) = primitive.get(&gltf::Semantic::Normals) {
                     let vertices = &mut vertices[initial_vtx..];
 
-                    for (vertex, normal) in vertices.iter_mut().zip(normals.into_iter()) {
-                        vertex.normal = normal.into();
+                    let normals_view = normals_accessor.view().unwrap();
+
+                    let normals_start = normals_view.offset();
+                    let normals_end = normals_start + normals_view.length();
+                    let normals_data = &blob_data[normals_start..normals_end];
+
+                    let (_prefix, middle, _suffix) = unsafe { normals_data.align_to::<[f32; 3]>() };
+
+                    for (vertex, normal) in vertices.iter_mut().zip(middle.iter()) {
+                        vertex.normal = (*normal).into();
                     }
                 }
 
                 // Load TEXCOORD_0
-                if let Some(tex_coords) = reader.read_tex_coords(0) {
+                if let Some(tex_coords_accessor) = primitive.get(&gltf::Semantic::TexCoords(0)) {
                     let vertices = &mut vertices[initial_vtx..];
 
-                    for (vertex, [x, y]) in vertices.iter_mut().zip(tex_coords.into_f32()) {
-                        vertex.uv_x = x;
-                        vertex.uv_y = y;
+                    let tex_coords_view = tex_coords_accessor.view().unwrap();
+
+                    let tex_coords_start = tex_coords_view.offset();
+                    let tex_coords_end = tex_coords_start + tex_coords_view.length();
+                    let tex_coords_data = &blob_data[tex_coords_start..tex_coords_end];
+
+                    // TODO: Sizes
+                    assert!(
+                        tex_coords_accessor.size() == 8,
+                        "Size of gltf tex_coord component is: {}",
+                        tex_coords_accessor.size()
+                    );
+
+                    let (_prefix, middle, _suffix) =
+                        unsafe { tex_coords_data.align_to::<[f64; 2]>() };
+
+                    for (vertex, [x, y]) in vertices.iter_mut().zip(middle.iter()) {
+                        vertex.uv_x = *x as f32;
+                        vertex.uv_y = *y as f32;
                     }
                 }
 
                 // Load COLOR_0
-                if let Some(colors) = reader.read_colors(0) {
+                if let Some(colors_accessor) = primitive.get(&gltf::Semantic::Colors(0)) {
                     let vertices = &mut vertices[initial_vtx..];
 
-                    for (vertex, color) in vertices.iter_mut().zip(colors.into_rgba_f32()) {
-                        vertex.color = color.into();
+                    let colors_view = colors_accessor.view().unwrap();
+
+                    let colors_start = colors_view.offset();
+                    let colors_end = colors_start + colors_view.length();
+                    let colors_data = &blob_data[colors_start..colors_end];
+
+                    assert!(
+                        colors_accessor.data_type() != gltf::accessor::DataType::F32,
+                        "Colors type of not f32"
+                    );
+
+                    assert!(colors_accessor.count() != 4, "Colors components not 4");
+
+                    let (_prefix, middle, _suffix) = unsafe { colors_data.align_to::<[f32; 4]>() };
+
+                    for (vertex, color) in vertices.iter_mut().zip(middle.iter()) {
+                        vertex.color = (*color).into();
                     }
                 }
 
@@ -447,7 +511,7 @@ impl GLTFLoader {
             mesh_assets.push(mesh_index);
         }
 
-        println!("Loaded meshes: {}s", time_now.elapsed().as_secs_f64());
+        println!("Loaded meshes: {:.2}s", time_now.elapsed().as_secs_f64());
 
         mesh_assets
     }
