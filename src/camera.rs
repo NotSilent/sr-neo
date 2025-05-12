@@ -51,7 +51,7 @@ impl Camera {
     }
 
     pub fn process_winit_events(&mut self, input_manager: &InputManager) {
-        let speed = 0.5;
+        let speed = 0.1;
 
         for key_event in &input_manager.key_events {
             match key_event.element_state {

@@ -335,7 +335,7 @@ impl GLTFLoader {
             // TODO: Pack same vertexes
             for primitive in mesh.primitives() {
                 let start_index = indices.len();
-                let count = primitive.indices().unwrap().count(); // ?
+                let count = primitive.indices().unwrap().count();
 
                 surfaces.push(GeoSurface {
                     start_index: start_index as u32,
@@ -357,13 +357,14 @@ impl GLTFLoader {
                 let indices_accessor = primitive.indices().unwrap();
                 let indices_view = indices_accessor.view().unwrap();
 
-                let indices_start = indices_view.offset();
-                let indices_end = indices_start + indices_view.length();
+                let indices_start = indices_view.offset() + indices_accessor.offset();
+                let indices_end =
+                    indices_start + indices_accessor.count() * indices_accessor.size();
                 let indices_data = &blob_data[indices_start..indices_end];
 
                 let indices_byte_size = indices_accessor.size();
 
-                indices.reserve(indices_view.length());
+                indices.reserve(count);
 
                 match indices_byte_size {
                     1 => unsafe {
@@ -391,9 +392,9 @@ impl GLTFLoader {
 
                 let vertices_accessor = primitive.get(&gltf::Semantic::Positions).unwrap();
                 let vertices_view = vertices_accessor.view().unwrap();
-
-                let vertices_start = vertices_view.offset();
-                let vertices_end = vertices_start + vertices_view.length();
+                let vertices_start = vertices_view.offset() + vertices_accessor.offset();
+                let vertices_end =
+                    vertices_start + vertices_accessor.count() * vertices_accessor.size();
                 let vertices_data = &blob_data[vertices_start..vertices_end];
 
                 vertices.reserve(count);
@@ -418,9 +419,9 @@ impl GLTFLoader {
                     let vertices = &mut vertices[initial_vtx..];
 
                     let normals_view = normals_accessor.view().unwrap();
-
-                    let normals_start = normals_view.offset();
-                    let normals_end = normals_start + normals_view.length();
+                    let normals_start = normals_view.offset() + normals_accessor.offset();
+                    let normals_end =
+                        normals_start + normals_accessor.count() * normals_accessor.size();
                     let normals_data = &blob_data[normals_start..normals_end];
 
                     let (_prefix, middle, _suffix) = unsafe { normals_data.align_to::<[f32; 3]>() };
@@ -435,24 +436,25 @@ impl GLTFLoader {
                     let vertices = &mut vertices[initial_vtx..];
 
                     let tex_coords_view = tex_coords_accessor.view().unwrap();
-
-                    let tex_coords_start = tex_coords_view.offset();
-                    let tex_coords_end = tex_coords_start + tex_coords_view.length();
+                    let tex_coords_start = tex_coords_view.offset() + tex_coords_accessor.offset();
+                    let tex_coords_end =
+                        tex_coords_start + tex_coords_accessor.count() * tex_coords_accessor.size();
                     let tex_coords_data = &blob_data[tex_coords_start..tex_coords_end];
 
                     // TODO: Sizes
                     assert!(
+                        // 2 * f32 = 8
                         tex_coords_accessor.size() == 8,
                         "Size of gltf tex_coord component is: {}",
                         tex_coords_accessor.size()
                     );
 
                     let (_prefix, middle, _suffix) =
-                        unsafe { tex_coords_data.align_to::<[f64; 2]>() };
+                        unsafe { tex_coords_data.align_to::<[f32; 2]>() };
 
                     for (vertex, [x, y]) in vertices.iter_mut().zip(middle.iter()) {
-                        vertex.uv_x = *x as f32;
-                        vertex.uv_y = *y as f32;
+                        vertex.uv_x = *x;
+                        vertex.uv_y = *y;
                     }
                 }
 
@@ -461,9 +463,9 @@ impl GLTFLoader {
                     let vertices = &mut vertices[initial_vtx..];
 
                     let colors_view = colors_accessor.view().unwrap();
-
-                    let colors_start = colors_view.offset();
-                    let colors_end = colors_start + colors_view.length();
+                    let colors_start = colors_view.offset() + colors_accessor.offset();
+                    let colors_end =
+                        colors_start + colors_accessor.count() * colors_accessor.size();
                     let colors_data = &blob_data[colors_start..colors_end];
 
                     assert!(
