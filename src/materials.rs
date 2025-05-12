@@ -62,6 +62,7 @@ pub struct MaterialConstants {
     pub metal_rough_factors: Vector4<f32>,
 }
 
+// TODO: Normals
 pub struct MaterialResources {
     pub color_image_view: vk::ImageView,
     pub color_sampler: vk::Sampler,

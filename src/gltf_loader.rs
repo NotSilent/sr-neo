@@ -39,6 +39,14 @@ pub struct GLTFLoader {
     nodes: Vec<GLTFNode>,
 }
 
+#[derive(Clone)]
+#[repr(C)]
+pub struct CachedImage {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
 impl GLTFLoader {
     pub fn new(
         device: &Device,
@@ -209,17 +217,30 @@ impl GLTFLoader {
                     let (width, height) = img.dimensions();
 
                     let extent = vk::Extent3D::default().width(width).height(height).depth(1);
-                    (extent, vk::Format::R8G8B8A8_UNORM, img)
+                    (extent, vk::Format::R8G8B8A8_UNORM, img.into_raw())
                 }
                 gltf::image::Source::Uri { uri, mime_type: _ } => {
-                    let base_path = std::path::Path::new(file_path).parent().unwrap();
-                    let path = base_path.join(uri);
-                    let img = image::open(path).unwrap().into_rgba8();
-                    let (width, height) = img.dimensions();
+                    if let Some(img) = Self::try_load_rgba8_from_cache(uri) {
+                        let extent = vk::Extent3D::default()
+                            .width(img.width)
+                            .height(img.height)
+                            .depth(1);
 
-                    let extent = vk::Extent3D::default().width(width).height(height).depth(1);
+                        (extent, vk::Format::R8G8B8A8_UNORM, img.data)
+                    } else {
+                        let base_path = std::path::Path::new(file_path).parent().unwrap();
+                        let path = base_path.join(uri);
+                        let img = image::open(path).unwrap().into_rgba8();
+                        let (width, height) = img.dimensions();
 
-                    (extent, vk::Format::R8G8B8A8_UNORM, img)
+                        let extent = vk::Extent3D::default().width(width).height(height).depth(1);
+
+                        let data = img.into_raw();
+
+                        Self::save_rgba8_to_cache(uri, width, height, &data);
+
+                        (extent, vk::Format::R8G8B8A8_UNORM, data)
+                    }
                 }
             };
 
@@ -299,6 +320,7 @@ impl GLTFLoader {
 
             managed_resources.buffers.add(material_constants_buffer);
 
+            // TODO: Mask, sponza uses
             let master_material_index = if material.alpha_mode() == gltf::material::AlphaMode::Blend
             {
                 default_resources.transparent_material
@@ -591,5 +613,49 @@ impl GLTFLoader {
         }
 
         gltf_nodes
+    }
+
+    // TODO: Could be written nicer but it works for now
+    // TODO: same-named assets from different scenes
+    fn try_load_rgba8_from_cache(name: &str) -> Option<CachedImage> {
+        let file_path = std::path::Path::new(".cache").join(name.split('.').next().unwrap());
+        if let Ok(file) = std::fs::read(file_path) {
+            let width: [u8; 4] = file[0..4].try_into().unwrap();
+            let height: [u8; 4] = file[4..8].try_into().unwrap();
+            let width = u32::from_ne_bytes(width);
+            let height = u32::from_ne_bytes(height);
+            let data = &file[8..];
+
+            return Some(CachedImage {
+                width,
+                height,
+                data: data.to_vec(),
+            });
+        }
+
+        None
+    }
+
+    fn save_rgba8_to_cache(name: &str, width: u32, height: u32, data: &[u8]) {
+        let file_path = std::path::Path::new(".cache").join(name.split('.').next().unwrap());
+
+        let width: [u8; 4] = width.to_ne_bytes();
+        let height: [u8; 4] = height.to_ne_bytes();
+        let mut data_to_save: Vec<u8> = Vec::with_capacity(4 * 4 + data.len());
+        for byte in width {
+            data_to_save.push(byte);
+        }
+
+        for byte in height {
+            data_to_save.push(byte);
+        }
+
+        for byte in data {
+            data_to_save.push(*byte);
+        }
+
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        let mut file = std::fs::File::create(file_path).unwrap();
+        std::io::Write::write_all(&mut file, &data_to_save).unwrap();
     }
 }
