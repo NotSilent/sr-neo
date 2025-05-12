@@ -53,7 +53,14 @@ impl GLTFLoader {
 
         let time_now = std::time::Instant::now();
         let content = std::fs::read(file_path).unwrap();
-        let gltf_real = gltf::Gltf::from_slice(&content).unwrap();
+        let mut gltf_real = gltf::Gltf::from_slice(&content).unwrap();
+
+        // TODO: This is hack to load .bin for sponza
+        if gltf_real.blob.is_none() {
+            let path = file_path.to_str().unwrap().replace(".gltf", ".bin");
+            let file_path = std::path::Path::new(&path);
+            gltf_real.blob = Some(std::fs::read(file_path).unwrap());
+        }
 
         println!(
             "Loaded GLTF: {}: {:.2}s",
