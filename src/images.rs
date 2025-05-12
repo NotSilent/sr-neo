@@ -75,7 +75,6 @@ impl Image {
                 .unwrap();
         };
 
-        // TODO: Maybe param, or separate functions for depth?
         let aspect_flag = if format == vk::Format::D32_SFLOAT {
             vk::ImageAspectFlags::DEPTH
         } else {

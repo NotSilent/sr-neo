@@ -4,7 +4,6 @@ use nalgebra::Vector4;
 
 use crate::{
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter},
-    images::Image,
     pipeline_builder::PipelineBuilder,
     resource_manager::{ResourceManager, VulkanResource},
     shader_manager::ShaderManager,
@@ -54,7 +53,8 @@ pub enum MaterialPass {
     Opaque,
     Transparent,
 }
-// TODO: Check size at compile time, and maybe only pad when uploading
+
+// TODO: Verify if uniforms aligh to 256
 #[repr(C)]
 #[repr(align(256))]
 pub struct MaterialConstants {
@@ -62,13 +62,11 @@ pub struct MaterialConstants {
     pub metal_rough_factors: Vector4<f32>,
 }
 
-// TODO: Tracking?
-pub struct MaterialResources<'a> {
-    // TODO: ImageView
-    pub color_image: &'a Image,
+pub struct MaterialResources {
+    pub color_image_view: vk::ImageView,
     pub color_sampler: vk::Sampler,
-    // TODO: ImageView
-    pub metal_rough_image: &'a Image,
+    // TODO: load metal texture
+    pub metal_rough_image_view: vk::ImageView,
     pub metal_rough_sampler: vk::Sampler,
     pub data_buffer: vk::Buffer,
     pub data_buffer_offset: u32,
@@ -121,7 +119,6 @@ impl MasterMaterial {
             .build(
                 device,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                vk::DescriptorSetLayoutCreateFlags::empty(),
             );
 
         let layouts = [frame_layout, material_layout];
@@ -172,7 +169,7 @@ impl MasterMaterial {
         device: &Device,
         resources: &MaterialResources,
         descriptor_allocator: &mut DescriptorAllocatorGrowable,
-        master_material_index: MasterMaterialIndex, // TODO: move allocation to MasterMaterialManager
+        master_material_index: MasterMaterialIndex,
     ) -> MaterialInstance {
         let set = descriptor_allocator.allocate(device, self.material_layout);
 
@@ -187,7 +184,7 @@ impl MasterMaterial {
         self.writer.write_image(
             1,
             resources.color_sampler,
-            resources.color_image.image_view,
+            resources.color_image_view,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         );
@@ -195,7 +192,7 @@ impl MasterMaterial {
         self.writer.write_image(
             2,
             resources.metal_rough_sampler,
-            resources.metal_rough_image.image_view,
+            resources.metal_rough_image_view,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         );

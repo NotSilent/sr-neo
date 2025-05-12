@@ -353,9 +353,6 @@ impl FrameData {
 // TODO: runtime?
 const FRAME_OVERLAP: usize = 2;
 
-// TODO: Should allocator be part of it? Would be nice
-// But some objects might want to manage their resources separately
-// eg. FrameData
 pub struct ManagedResources {
     pub buffers: BufferManager,
     pub images: ImageManager,
@@ -567,7 +564,6 @@ impl VulkanEngine {
             .build(
                 &device,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                vk::DescriptorSetLayoutCreateFlags::empty(),
             );
 
         let mut immediate_submit =
@@ -664,9 +660,9 @@ impl VulkanEngine {
         );
 
         let resources = MaterialResources {
-            color_image: &image_white,
+            color_image_view: image_white.image_view,
             color_sampler: default_sampler_linear,
-            metal_rough_image: &image_white,
+            metal_rough_image_view: image_white.image_view,
             metal_rough_sampler: default_sampler_linear,
             data_buffer: material_constants_buffer.buffer,
             data_buffer_offset: 0,
@@ -1076,7 +1072,6 @@ impl VulkanEngine {
                 depth_image.image_view,
             );
 
-            // TODO: That damn frame_data
             let draw_image = self
                 .managed_resources
                 .images

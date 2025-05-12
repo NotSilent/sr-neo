@@ -252,15 +252,12 @@ impl DescriptorLayoutBuilder<'_> {
         mut self,
         device: &Device,
         shader_stages: vk::ShaderStageFlags,
-        flags: vk::DescriptorSetLayoutCreateFlags, // TODO: Remove?
     ) -> vk::DescriptorSetLayout {
         for binding in &mut self.bindings {
             binding.stage_flags |= shader_stages;
         }
 
-        let create_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(&self.bindings)
-            .flags(flags);
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&self.bindings);
 
         unsafe {
             device

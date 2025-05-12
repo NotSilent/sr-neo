@@ -13,7 +13,7 @@ pub trait VulkanResource {
 }
 
 // TODO: Probably better if resource manager allocates
-// TODO: For now, not allocating, since images would a pain with transfers
+// TODO: For now, not allocating, since images would be a pain with transfers
 // TODO: Ref counting
 pub struct ResourceManager<T, S, I>
 where

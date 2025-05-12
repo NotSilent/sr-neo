@@ -171,14 +171,13 @@ impl GLTFLoader {
         }
     }
 
-    // TODO: Transparent materials
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::too_many_lines)]
     fn load_gltf_meshes(
         device: &Device,
         allocator: &mut Allocator,
-        // TODO: Manage it better, what heppens if it's cleared
+        // TODO: Manage it better, what happens if it's cleared
         descriptor_allocator: &mut DescriptorAllocatorGrowable,
         managed_resources: &mut ManagedResources,
         default_resources: &DefaultResources,
@@ -259,6 +258,8 @@ impl GLTFLoader {
 
         let image_white = managed_resources.images.get(default_resources.image_white);
 
+        let time_now = std::time::Instant::now();
+
         for material in gltf.materials() {
             let material_constants_buffer = Buffer::new(
                 device,
@@ -301,9 +302,9 @@ impl GLTFLoader {
             // TODO: Proper image
             // TODO: Samplers (textures)
             let resources = MaterialResources {
-                color_image,
+                color_image_view: color_image.image_view,
                 color_sampler: default_resources.sampler_linear,
-                metal_rough_image: image_white,
+                metal_rough_image_view: image_white.image_view,
                 metal_rough_sampler: default_resources.sampler_linear,
                 data_buffer: material_constants_buffer.buffer,
                 data_buffer_offset: 0,
@@ -355,7 +356,7 @@ impl GLTFLoader {
                     material_instance_index: if let Some(material) = primitive.material().index() {
                         materials[material]
                     } else {
-                        // TODO: What exactly would gefault material be for GLTF
+                        // TODO: What exactly would default material be for GLTF?
                         default_resources.default_material_instance
                     },
                 });
@@ -502,7 +503,6 @@ impl GLTFLoader {
                     ),
                 };
 
-                // TODO: MeshIndex
                 let mesh_node = MeshNode {
                     node,
                     mesh_index: meshes[mesh.index()],

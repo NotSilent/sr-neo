@@ -72,8 +72,6 @@ pub fn transition_image(
         vk::ImageAspectFlags::COLOR
     };
 
-    // TODO: ALL_COMMANDS inefficent, make stage masks more accurate
-    // https://github.com/KhronosGroup/Vulkan-Docs/wiki/Synchronization-Examples
     let image_barrier = vk::ImageMemoryBarrier2::default()
         .src_stage_mask(src_stage_mask)
         .src_access_mask(src_access_mask)

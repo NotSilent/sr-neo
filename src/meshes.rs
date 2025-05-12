@@ -22,7 +22,7 @@ impl From<MeshIndex> for usize {
     }
 }
 
-// TODO: Should material alo be a part of this?
+// TODO: Should material also be a part of this?
 // Probably yeah
 pub struct MeshSubresource {
     pub index_buffer_index: BufferIndex,
