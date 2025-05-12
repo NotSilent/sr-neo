@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 build = "build.rs"
 
+[profile.dev.package.image]
+opt-level = 3
+
 [dependencies]
 ash = {version = "0.38.0", features = ["linked"]}
 ash-window = "0.13.0"

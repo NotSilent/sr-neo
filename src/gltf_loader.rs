@@ -190,23 +190,14 @@ impl GLTFLoader {
 
         for image in gltf_real.images() {
             let (extent, format, data) = match image.source() {
-                gltf::image::Source::View { view, mime_type } => {
+                gltf::image::Source::View { view, mime_type: _ } => {
                     let blob_data = gltf_real.blob.as_ref().unwrap();
 
                     let start = view.offset();
                     let end = start + view.length();
                     let data = &blob_data[start..end];
 
-                    let img = image::load_from_memory_with_format(
-                        data,
-                        match mime_type {
-                            "image/png" => image::ImageFormat::Png,
-                            "image/jpeg" => image::ImageFormat::Jpeg,
-                            _ => panic!("Unsupported image format: {mime_type}"),
-                        },
-                    )
-                    .unwrap()
-                    .into_rgba8();
+                    let img = image::load_from_memory(data).unwrap().into_rgba8();
 
                     let (width, height) = img.dimensions();
 
