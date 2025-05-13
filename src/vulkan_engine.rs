@@ -28,6 +28,7 @@ use crate::{
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
+    double_buffer::DoubleBuffer,
     gltf_loader::GLTFLoader,
     images::{Image, ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
@@ -44,6 +45,7 @@ use crate::{
 pub struct DrawCommand {
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    // TODO: Probably just index here and query + bind only when actualy before needed for drawing
     material_instance_set: vk::DescriptorSet,
     index_buffer: vk::Buffer,
     vertex_buffer_address: u64,
@@ -291,68 +293,6 @@ impl GPUPushDrawConstant {
     }
 }
 
-struct FrameData {
-    command_pool: vk::CommandPool,
-    command_buffer: vk::CommandBuffer,
-
-    swapchain_semaphore: vk::Semaphore,
-    render_semaphore: vk::Semaphore,
-    fence: vk::Fence,
-
-    buffer_manager: RefCell<BufferManager>,
-    descriptors: RefCell<DescriptorAllocatorGrowable>,
-}
-
-impl FrameData {
-    pub fn new(device: &Device, graphics_queue_family_index: u32) -> Self {
-        let command_pool = vk_util::create_command_pool(device, graphics_queue_family_index);
-
-        let ratios = vec![
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                ratio: 4,
-            },
-        ];
-
-        Self {
-            command_pool,
-            command_buffer: vk_util::allocate_command_buffer(device, command_pool),
-            swapchain_semaphore: vk_util::create_semaphore(device),
-            render_semaphore: vk_util::create_semaphore(device),
-            fence: vk_util::create_fence(device, vk::FenceCreateFlags::SIGNALED),
-            buffer_manager: RefCell::new(BufferManager::new()),
-            descriptors: RefCell::new(DescriptorAllocatorGrowable::new(device, 1024, ratios)),
-        }
-    }
-
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        unsafe {
-            device.destroy_command_pool(self.command_pool, None);
-            device.destroy_fence(self.fence, None);
-            device.destroy_semaphore(self.render_semaphore, None);
-            device.destroy_semaphore(self.swapchain_semaphore, None);
-
-            self.descriptors.get_mut().destroy(device);
-            self.buffer_manager.get_mut().destroy(device, allocator);
-        }
-    }
-}
-
-// TODO: runtime?
-const FRAME_OVERLAP: usize = 2;
-
 pub struct ManagedResources {
     pub buffers: BufferManager,
     pub images: ImageManager,
@@ -403,8 +343,8 @@ pub struct VulkanEngine {
 
     swapchain: Swapchain,
 
-    // TODO: Manager could help drop refcells
-    frame_datas: [FrameData; FRAME_OVERLAP],
+    double_buffer: DoubleBuffer,
+
     allocator: ManuallyDrop<Allocator>,
 
     shader_manager: ShaderManager,
@@ -505,10 +445,7 @@ impl VulkanEngine {
             vk::Extent2D::default().width(width).height(height),
         );
 
-        let frames: [FrameData; FRAME_OVERLAP] = [
-            FrameData::new(&device, graphics_queue_family_index),
-            FrameData::new(&device, graphics_queue_family_index),
-        ];
+        let double_buffer = DoubleBuffer::new(&device, graphics_queue_family_index);
 
         let mut allocator =
             Self::create_allocator(instance.clone(), device.clone(), physical_device);
@@ -754,7 +691,7 @@ impl VulkanEngine {
 
             surface,
             swapchain,
-            frame_datas: frames,
+            double_buffer,
             allocator: ManuallyDrop::new(allocator),
 
             shader_manager,
@@ -808,11 +745,10 @@ impl VulkanEngine {
             gpu_scene_data_buffer.allocation.as_ref().unwrap(),
         );
 
+        // Part of DoubleBuffer/FrameBuffer
         let global_descriptor = self
-            .get_current_frame()
-            .descriptors
-            .borrow_mut()
-            .allocate(&self.device, self.gpu_scene_data_descriptor_layout);
+            .double_buffer
+            .allocate_set(&self.device, self.gpu_scene_data_descriptor_layout);
 
         let mut writer = DescriptorWriter::default();
         writer.write_buffer(
@@ -825,10 +761,7 @@ impl VulkanEngine {
 
         writer.update_set(&self.device, global_descriptor);
 
-        self.get_current_frame()
-            .buffer_manager
-            .borrow_mut()
-            .add(gpu_scene_data_buffer);
+        self.double_buffer.add_buffer(gpu_scene_data_buffer);
 
         let clear_color = Some(vk::ClearValue {
             color: vk::ClearColorValue {
@@ -889,12 +822,6 @@ impl VulkanEngine {
             let lhs = &opaque_commands[*lhs as usize];
             let rhs = &opaque_commands[*rhs as usize];
 
-            // if lhs.material_instance_set < rhs.material_instance_set {
-            //     lhs.index_buffer < rhs.index_buffer
-            // } else {
-            //     lhs.material_instance_set < rhs.material_instance_set
-            // }
-
             match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
                 std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
                 other => other,
@@ -944,43 +871,32 @@ impl VulkanEngine {
 
         let render_scale = render_scale.clamp(0.25, 1.0);
 
-        let current_frame_fence = self.get_current_frame().fence;
-        let current_frame_command_buffer = self.get_current_frame().command_buffer;
-        let current_frame_swapchain_semaphore = self.get_current_frame().swapchain_semaphore;
-        let current_frame_render_semaphore = self.get_current_frame().render_semaphore;
+        let synchronization_resources = self.double_buffer.get_synchronization_resources();
+        let cmd = self.double_buffer.get_command_buffer();
 
         self.update_scene();
 
         unsafe {
             self.device
-                .wait_for_fences(&[current_frame_fence], true, 1_000_000_000)
+                .wait_for_fences(&[synchronization_resources.fence], true, 1_000_000_000)
                 .expect("Failed waiting for fences");
 
             // Clear frame resources
             // TODO: to FrameData with above
             {
                 self.device
-                    .reset_fences(&[current_frame_fence])
+                    .reset_fences(&[synchronization_resources.fence])
                     .expect("Failed to reset fences");
 
-                let current_frame = self
-                    .frame_datas
-                    .get(self.frame_number as usize % FRAME_OVERLAP)
-                    .unwrap();
-
-                let mut buffer_manager = current_frame.buffer_manager.borrow_mut();
-                let device = &self.device;
-
-                buffer_manager.destroy(device, &mut self.allocator);
-
-                current_frame.descriptors.borrow_mut().clear_pools(device);
+                self.double_buffer
+                    .swap_buffer(&self.device, &mut self.allocator);
             }
 
             // TODO: encapsulate, into swapchain?
             let swapchain_image_index = match self.swapchain_device.acquire_next_image(
                 self.swapchain.swapchain,
                 1_000_000_000,
-                current_frame_swapchain_semaphore,
+                synchronization_resources.swapchain_semaphore,
                 vk::Fence::null(),
             ) {
                 Ok((swapchain_image_index, is_suboptimal)) => {
@@ -1017,7 +933,6 @@ impl VulkanEngine {
                 .width(draw_width as u32)
                 .height(draw_height as u32);
 
-            let cmd = current_frame_command_buffer;
             self.device
                 .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
                 .expect("Failed to reset command buffer");
@@ -1143,13 +1058,13 @@ impl VulkanEngine {
                 .device_mask(0)];
 
             let wait_infos = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(current_frame_swapchain_semaphore)
+                .semaphore(synchronization_resources.swapchain_semaphore)
                 .stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
                 .device_index(0)
                 .value(1)];
 
             let signal_infos = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(current_frame_render_semaphore)
+                .semaphore(synchronization_resources.render_semaphore)
                 .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
                 .device_index(0)
                 .value(1)];
@@ -1160,11 +1075,15 @@ impl VulkanEngine {
                 .command_buffer_infos(&cmd_infos);
 
             self.device
-                .queue_submit2(self.graphics_queue, &[submit_info], current_frame_fence)
+                .queue_submit2(
+                    self.graphics_queue,
+                    &[submit_info],
+                    synchronization_resources.fence,
+                )
                 .expect("Failed to queue submit");
 
             let swapchains = [self.swapchain.swapchain];
-            let wait_semaphores = [current_frame_render_semaphore];
+            let wait_semaphores = [synchronization_resources.render_semaphore];
             let image_indices = [swapchain_image_index];
 
             let present_info = vk::PresentInfoKHR::default()
@@ -1356,12 +1275,6 @@ impl VulkanEngine {
         }
     }
 
-    fn get_current_frame(&self) -> &FrameData {
-        self.frame_datas
-            .get(self.frame_number as usize % FRAME_OVERLAP)
-            .unwrap()
-    }
-
     fn update_scene(&mut self) {
         self.main_camera.update();
 
@@ -1408,9 +1321,7 @@ impl Drop for VulkanEngine {
         let device = &self.device;
         let allocator = &mut self.allocator;
 
-        for frame_data in self.frame_datas.as_mut() {
-            frame_data.destroy(device, allocator);
-        }
+        self.double_buffer.destroy(device, allocator);
 
         let subresources = self.managed_resources.meshes.destroy(device, allocator);
 

@@ -18,6 +18,7 @@ mod buffers;
 mod camera;
 mod default_resources;
 mod descriptors;
+mod double_buffer;
 mod gltf_loader;
 mod images;
 mod immediate_submit;

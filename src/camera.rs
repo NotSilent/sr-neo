@@ -84,7 +84,7 @@ impl Camera {
     }
 
     pub fn get_projection(aspect_ratio: f32) -> Matrix4<f32> {
-        let fov = 90_f32.to_radians();
+        let fov = 70_f32.to_radians();
         let near = 1000.0;
         let far = 0.01;
 
