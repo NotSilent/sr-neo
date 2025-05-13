@@ -28,7 +28,7 @@ use crate::{
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
-    double_buffer::DoubleBuffer,
+    double_buffer::{self, DoubleBuffer},
     gltf_loader::GLTFLoader,
     images::{Image, ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
@@ -307,10 +307,6 @@ impl ManagedResources {
 }
 
 pub struct DefaultResources {
-    // TODO: Move to FrameData?
-    pub draw_image: ImageIndex,
-    pub depth_image: ImageIndex,
-
     pub image_white: ImageIndex,
     pub image_black: ImageIndex,
     pub image_error: ImageIndex,
@@ -445,36 +441,18 @@ impl VulkanEngine {
             vk::Extent2D::default().width(width).height(height),
         );
 
-        let double_buffer = DoubleBuffer::new(&device, graphics_queue_family_index);
-
         let mut allocator =
             Self::create_allocator(instance.clone(), device.clone(), physical_device);
 
-        let draw_image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
+        let double_buffer = DoubleBuffer::new(
+            &device,
+            &mut allocator,
+            graphics_queue_family_index,
+            width,
+            height,
+        );
 
         let mut image_manager = ImageManager::new();
-
-        let draw_image = Image::new(
-            &device,
-            &mut allocator,
-            draw_image_extent,
-            vk::Format::R16G16B16A16_SFLOAT,
-            vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            false,
-            "draw_image",
-        );
-
-        let depth_image = Image::new(
-            &device,
-            &mut allocator,
-            draw_image_extent,
-            vk::Format::D32_SFLOAT,
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-            false,
-            "depth_image",
-        );
 
         let mut shader_manager = ShaderManager::default();
 
@@ -557,8 +535,8 @@ impl VulkanEngine {
             &device,
             &mut shader_manager,
             gpu_scene_data_descriptor_layout,
-            &[draw_image.format],
-            depth_image.format,
+            &[double_buffer::DRAW_FORMAT],
+            double_buffer::DEPTH_FORMAT,
             MaterialPass::Opaque,
         );
 
@@ -566,8 +544,8 @@ impl VulkanEngine {
             &device,
             &mut shader_manager,
             gpu_scene_data_descriptor_layout,
-            &[draw_image.format],
-            depth_image.format,
+            &[double_buffer::DRAW_FORMAT],
+            double_buffer::DEPTH_FORMAT,
             MaterialPass::Transparent,
         );
 
@@ -640,8 +618,6 @@ impl VulkanEngine {
         let image_white_index = image_manager.add(image_white);
         let image_black_index = image_manager.add(image_black);
         let image_error_index = image_manager.add(image_error);
-        let draw_image_index = image_manager.add(draw_image);
-        let depth_image_index = image_manager.add(depth_image);
 
         let mut managed_resources = ManagedResources {
             buffers: buffer_manager,
@@ -652,8 +628,6 @@ impl VulkanEngine {
         };
 
         let default_resources = DefaultResources {
-            draw_image: draw_image_index,
-            depth_image: depth_image_index,
             image_white: image_white_index,
             image_black: image_black_index,
             image_error: image_error_index,
@@ -914,14 +888,8 @@ impl VulkanEngine {
                 }
             };
 
-            let draw_image = self
-                .managed_resources
-                .images
-                .get(self.default_resources.draw_image);
-            let depth_image = self
-                .managed_resources
-                .images
-                .get(self.default_resources.depth_image);
+            let draw_image = self.double_buffer.get_draw_image();
+            let depth_image = self.double_buffer.get_depth_image();
 
             let draw_width =
                 self.swapchain.extent.width.min(draw_image.extent.width) as f32 * render_scale;
@@ -987,10 +955,8 @@ impl VulkanEngine {
                 depth_image.image_view,
             );
 
-            let draw_image = self
-                .managed_resources
-                .images
-                .get(self.default_resources.draw_image);
+            // TODO: If possible don't get it again here, but draw_geometry is currently &mut self
+            let draw_image = self.double_buffer.get_draw_image();
 
             vk_util::transition_image(
                 &self.device,
@@ -1280,10 +1246,8 @@ impl VulkanEngine {
 
         self.main_draw_context.render_objects.clear();
 
-        let draw_image = self
-            .managed_resources
-            .images
-            .get(self.default_resources.draw_image);
+        // TODO: More global source of size/aspect ratio
+        let draw_image = self.double_buffer.get_draw_image();
 
         self.gltf_loader.draw(&mut self.main_draw_context);
 
@@ -1334,12 +1298,6 @@ impl Drop for VulkanEngine {
                 .remove(device, allocator, resouce.vertex_buffer_index);
         }
 
-        self.managed_resources
-            .images
-            .remove(device, allocator, self.default_resources.draw_image);
-        self.managed_resources
-            .images
-            .remove(device, allocator, self.default_resources.depth_image);
         self.managed_resources
             .images
             .remove(device, allocator, self.default_resources.image_white);

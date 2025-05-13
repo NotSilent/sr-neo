@@ -4,6 +4,8 @@ use gpu_allocator::vulkan::Allocator;
 use crate::{
     buffers::{Buffer, BufferManager},
     descriptors::{DescriptorAllocatorGrowable, PoolSizeRatio},
+    images::Image,
+    resource_manager::VulkanResource,
     vk_util,
 };
 
@@ -14,9 +16,16 @@ pub struct FrameBufferSynchronizationResources {
     pub fence: vk::Fence,
 }
 
+// Move somewhere else?
+pub const DRAW_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
+
 const BUFFER_SIZE: usize = 2;
 
 struct FrameBuffer {
+    draw_image: Image,
+    depth_image: Image,
+
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
 
@@ -27,7 +36,38 @@ struct FrameBuffer {
 }
 
 impl FrameBuffer {
-    fn new(device: &Device, graphics_queue_family_index: u32) -> Self {
+    fn new(
+        device: &Device,
+        allocator: &mut Allocator,
+        graphics_queue_family_index: u32,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let draw_image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
+
+        let draw_image = Image::new(
+            device,
+            allocator,
+            draw_image_extent,
+            // TODO: Smaller format
+            DRAW_FORMAT,
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            false,
+            "draw_image",
+        );
+
+        let depth_image = Image::new(
+            device,
+            allocator,
+            draw_image_extent,
+            DEPTH_FORMAT,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            false,
+            "depth_image",
+        );
+
         let command_pool = vk_util::create_command_pool(device, graphics_queue_family_index);
 
         let ratios = vec![
@@ -50,6 +90,8 @@ impl FrameBuffer {
         ];
 
         Self {
+            draw_image,
+            depth_image,
             command_pool,
             command_buffer: vk_util::allocate_command_buffer(device, command_pool),
             synchronization_resources: FrameBufferSynchronizationResources {
@@ -76,6 +118,9 @@ impl FrameBuffer {
 
             self.descriptors.destroy(device);
             self.buffer_manager.destroy(device, allocator);
+
+            self.draw_image.destroy(device, allocator);
+            self.depth_image.destroy(device, allocator);
         }
     }
 }
@@ -87,12 +132,30 @@ pub struct DoubleBuffer {
 }
 
 impl DoubleBuffer {
-    pub fn new(device: &Device, graphics_queue_family_index: u32) -> Self {
+    pub fn new(
+        device: &Device,
+        allocator: &mut Allocator,
+        graphics_queue_family_index: u32,
+        width: u32,
+        height: u32,
+    ) -> Self {
         Self {
             current_frame: 0,
             frame_buffers: [
-                FrameBuffer::new(device, graphics_queue_family_index),
-                FrameBuffer::new(device, graphics_queue_family_index),
+                FrameBuffer::new(
+                    device,
+                    allocator,
+                    graphics_queue_family_index,
+                    width,
+                    height,
+                ),
+                FrameBuffer::new(
+                    device,
+                    allocator,
+                    graphics_queue_family_index,
+                    width,
+                    height,
+                ),
             ],
         }
     }
@@ -134,5 +197,13 @@ impl DoubleBuffer {
         self.frame_buffers[self.current_frame]
             .buffer_manager
             .add(buffer);
+    }
+
+    pub fn get_draw_image(&self) -> &Image {
+        &self.frame_buffers[self.current_frame].draw_image
+    }
+
+    pub fn get_depth_image(&self) -> &Image {
+        &self.frame_buffers[self.current_frame].depth_image
     }
 }
