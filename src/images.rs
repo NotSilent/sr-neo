@@ -33,7 +33,7 @@ pub struct Image {
     pub image: vk::Image,
     pub image_view: vk::ImageView,
     pub extent: vk::Extent3D,
-    pub format: vk::Format,
+    _format: vk::Format,
     allocation: Option<Allocation>,
 }
 
@@ -92,7 +92,7 @@ impl Image {
             image,
             image_view,
             extent,
-            format,
+            _format: format,
             allocation: Some(allocation),
         }
     }

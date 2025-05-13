@@ -28,6 +28,7 @@ mod pipeline_builder;
 mod resource_manager;
 mod shader_manager;
 mod swapchain;
+mod vk_init;
 mod vk_util;
 mod vulkan_engine;
 
