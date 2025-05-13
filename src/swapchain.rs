@@ -50,13 +50,8 @@ impl Swapchain {
         }
         .unwrap();
 
-        let create_info = Self::swapchain_create_info(
-            surface,
-            &surface_format,
-            &surface_capabilities,
-            extent,
-            vk::SwapchainKHR::null(),
-        );
+        let create_info =
+            Self::swapchain_create_info(surface, &surface_format, &surface_capabilities, extent);
 
         let swapchain = unsafe {
             swapchain_device
@@ -95,6 +90,9 @@ impl Swapchain {
         unsafe {
             device.device_wait_idle().unwrap();
 
+            self.swapchain_device
+                .destroy_swapchain(self.swapchain, None);
+
             let surface_capabilities = self
                 .surface_instance
                 .get_physical_device_surface_capabilities(physical_device, self.surface)
@@ -102,14 +100,11 @@ impl Swapchain {
 
             self.extent = vk::Extent2D::default().width(width).height(height);
 
-            let old_swapchain = self.swapchain;
-
             let create_info = Self::swapchain_create_info(
                 self.surface,
                 &self.surface_format,
                 &surface_capabilities,
                 self.extent,
-                old_swapchain,
             );
 
             self.swapchain = self
@@ -121,8 +116,6 @@ impl Swapchain {
                 .swapchain_device
                 .get_swapchain_images(self.swapchain)
                 .unwrap();
-
-            self.swapchain_device.destroy_swapchain(old_swapchain, None);
         }
     }
 
@@ -198,7 +191,6 @@ impl Swapchain {
         surface_format: &'a vk::SurfaceFormatKHR,
         surface_capabilities: &'a vk::SurfaceCapabilitiesKHR,
         extent: vk::Extent2D,
-        old_swapchain: vk::SwapchainKHR,
     ) -> vk::SwapchainCreateInfoKHR<'a> {
         vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
@@ -215,6 +207,6 @@ impl Swapchain {
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(vk::PresentModeKHR::FIFO)
             .clipped(true)
-            .old_swapchain(old_swapchain)
+            .old_swapchain(vk::SwapchainKHR::null())
     }
 }
