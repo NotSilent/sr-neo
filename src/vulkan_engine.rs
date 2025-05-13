@@ -251,6 +251,12 @@ pub enum DrawError {
     Swapchain(SwapchainError),
 }
 
+impl From<SwapchainError> for DrawError {
+    fn from(value: SwapchainError) -> Self {
+        DrawError::Swapchain(value)
+    }
+}
+
 #[derive(Default, Clone)]
 #[repr(C)]
 pub struct Vertex {
@@ -324,11 +330,6 @@ pub struct VulkanEngine {
     _graphics_queue_family_index: u32,
     graphics_queue: vk::Queue,
 
-    surface_instance: surface::Instance,
-    swapchain_device: swapchain::Device,
-
-    surface: vk::SurfaceKHR,
-
     swapchain: Swapchain,
 
     double_buffer: DoubleBuffer,
@@ -395,8 +396,8 @@ impl VulkanEngine {
         let surface = vk_init::create_surface(&entry, &instance, display_handle, window_handle);
 
         let swapchain = Swapchain::new(
-            &surface_instance,
-            &swapchain_device,
+            surface_instance,
+            swapchain_device,
             physical_device,
             surface,
             vk::Extent2D::default().width(width).height(height),
@@ -621,10 +622,6 @@ impl VulkanEngine {
             _graphics_queue_family_index: graphics_queue_family_index,
             graphics_queue,
 
-            surface_instance,
-            swapchain_device,
-
-            surface,
             swapchain,
             double_buffer,
             allocator: ManuallyDrop::new(allocator),
@@ -812,42 +809,22 @@ impl VulkanEngine {
         self.update_scene();
 
         unsafe {
+            // TODO: in swap buffer
             self.device
                 .wait_for_fences(&[synchronization_resources.fence], true, 1_000_000_000)
                 .expect("Failed waiting for fences");
 
-            // Clear frame resources
-            // TODO: to FrameData with above
-            {
-                self.device
-                    .reset_fences(&[synchronization_resources.fence])
-                    .expect("Failed to reset fences");
+            self.device
+                .reset_fences(&[synchronization_resources.fence])
+                .expect("Failed to reset fences");
 
-                self.double_buffer
-                    .swap_buffer(&self.device, &mut self.allocator);
-            }
+            self.double_buffer
+                .swap_buffer(&self.device, &mut self.allocator);
 
             // TODO: encapsulate, into swapchain?
-            let swapchain_image_index = match self.swapchain_device.acquire_next_image(
-                self.swapchain.swapchain,
-                1_000_000_000,
-                synchronization_resources.swapchain_semaphore,
-                vk::Fence::null(),
-            ) {
-                Ok((swapchain_image_index, is_suboptimal)) => {
-                    if is_suboptimal {
-                        return Err(DrawError::Swapchain(SwapchainError::Suboptimal));
-                    }
-                    swapchain_image_index
-                }
-                Err(error) => {
-                    if error == vk::Result::ERROR_OUT_OF_DATE_KHR {
-                        return Err(DrawError::Swapchain(SwapchainError::OutOfDate));
-                    }
-
-                    panic!();
-                }
-            };
+            let swapchain_image = self
+                .swapchain
+                .acquire_next_image(synchronization_resources.swapchain_semaphore)?;
 
             let draw_image = self.double_buffer.get_draw_image();
             let depth_image = self.double_buffer.get_depth_image();
@@ -931,13 +908,10 @@ impl VulkanEngine {
                 vk::AccessFlags2::TRANSFER_READ,
             );
 
-            // TODO: Encapsulate, into swapchain?
-            let swapchain_image = self.swapchain.images[swapchain_image_index as usize];
-
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                swapchain_image,
+                swapchain_image.image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags2::TOP_OF_PIPE,
@@ -950,7 +924,7 @@ impl VulkanEngine {
                 &self.device,
                 cmd,
                 draw_image.image,
-                swapchain_image,
+                swapchain_image.image,
                 draw_extent,
                 self.swapchain.extent,
             );
@@ -958,7 +932,7 @@ impl VulkanEngine {
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                swapchain_image,
+                swapchain_image.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
                 vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
@@ -1009,31 +983,11 @@ impl VulkanEngine {
                 )
                 .expect("Failed to queue submit");
 
-            let swapchains = [self.swapchain.swapchain];
-            let wait_semaphores = [synchronization_resources.render_semaphore];
-            let image_indices = [swapchain_image_index];
-
-            let present_info = vk::PresentInfoKHR::default()
-                .swapchains(&swapchains)
-                .wait_semaphores(&wait_semaphores)
-                .image_indices(&image_indices);
-
-            match self
-                .swapchain_device
-                .queue_present(self.graphics_queue, &present_info)
-            {
-                Ok(is_suboptimal) => {
-                    if is_suboptimal {
-                        return Err(DrawError::Swapchain(SwapchainError::Suboptimal));
-                    }
-                }
-                Err(error) => {
-                    if error == vk::Result::ERROR_OUT_OF_DATE_KHR {
-                        return Err(DrawError::Swapchain(SwapchainError::OutOfDate));
-                    }
-                    panic!();
-                }
-            }
+            self.swapchain.queue_present(
+                swapchain_image.index,
+                self.graphics_queue,
+                synchronization_resources.render_semaphore,
+            )?;
 
             self.device.device_wait_idle().unwrap();
 
@@ -1084,18 +1038,8 @@ impl VulkanEngine {
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
-        unsafe {
-            self.device.device_wait_idle().unwrap();
-        }
-
-        self.swapchain.destroy(&self.swapchain_device);
-        self.swapchain = Swapchain::new(
-            &self.surface_instance,
-            &self.swapchain_device,
-            self.physical_device,
-            self.surface,
-            vk::Extent2D::default().width(width).height(height),
-        );
+        self.swapchain
+            .recreate_swapchain(&self.device, self.physical_device, width, height);
     }
 }
 
@@ -1160,8 +1104,7 @@ impl Drop for VulkanEngine {
         unsafe { ManuallyDrop::drop(allocator) };
 
         unsafe {
-            self.swapchain.destroy(&self.swapchain_device);
-            self.surface_instance.destroy_surface(self.surface, None);
+            self.swapchain.destroy();
             device.destroy_device(None);
             self.debug_utils
                 .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
