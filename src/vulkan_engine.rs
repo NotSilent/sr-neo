@@ -803,23 +803,14 @@ impl VulkanEngine {
 
         let render_scale = render_scale.clamp(0.25, 1.0);
 
-        let synchronization_resources = self.double_buffer.get_synchronization_resources();
-        let cmd = self.double_buffer.get_command_buffer();
-
         self.update_scene();
 
         unsafe {
-            // TODO: in swap buffer
-            self.device
-                .wait_for_fences(&[synchronization_resources.fence], true, 1_000_000_000)
-                .expect("Failed waiting for fences");
-
-            self.device
-                .reset_fences(&[synchronization_resources.fence])
-                .expect("Failed to reset fences");
-
             self.double_buffer
                 .swap_buffer(&self.device, &mut self.allocator);
+
+            let synchronization_resources = self.double_buffer.get_synchronization_resources();
+            let cmd = self.double_buffer.get_command_buffer();
 
             // TODO: encapsulate, into swapchain?
             let swapchain_image = self

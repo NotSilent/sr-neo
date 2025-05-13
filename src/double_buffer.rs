@@ -171,6 +171,24 @@ impl DoubleBuffer {
 
         let current_buffer = &mut self.frame_buffers[self.current_frame];
         current_buffer.reset(device, allocator);
+
+        unsafe {
+            device
+                .wait_for_fences(
+                    &[self.frame_buffers[self.current_frame]
+                        .synchronization_resources
+                        .fence],
+                    true,
+                    1_000_000_000,
+                )
+                .expect("Failed waiting for fences");
+
+            device
+                .reset_fences(&[self.frame_buffers[self.current_frame]
+                    .synchronization_resources
+                    .fence])
+                .expect("Failed to reset fences");
+        };
     }
 
     pub fn get_synchronization_resources(&self) -> FrameBufferSynchronizationResources {
