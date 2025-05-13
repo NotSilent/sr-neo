@@ -354,8 +354,6 @@ pub struct VulkanEngine {
 
     main_camera: Camera, // TODO: Shouldn't be part of renderer
 
-    query_pool: vk::QueryPool,
-
     gltf_loader: GLTFLoader,
 }
 
@@ -407,12 +405,15 @@ impl VulkanEngine {
         let mut allocator =
             vk_init::create_allocator(instance.clone(), device.clone(), physical_device);
 
+        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+
         let double_buffer = DoubleBuffer::new(
             &device,
             &mut allocator,
             graphics_queue_family_index,
             width,
             height,
+            properties.limits.timestamp_period,
         );
 
         let mut image_manager = ImageManager::new();
@@ -568,16 +569,6 @@ impl VulkanEngine {
             yaw: 0.0,
         };
 
-        let query_pool_create_info = vk::QueryPoolCreateInfo::default()
-            .query_type(vk::QueryType::TIMESTAMP)
-            .query_count(2);
-
-        let query_pool = unsafe {
-            device
-                .create_query_pool(&query_pool_create_info, None)
-                .unwrap()
-        };
-
         let image_white_index = image_manager.add(image_white);
         let image_black_index = image_manager.add(image_black);
         let image_error_index = image_manager.add(image_error);
@@ -642,8 +633,6 @@ impl VulkanEngine {
             main_draw_context: DrawContext::default(),
 
             main_camera,
-
-            query_pool,
 
             gltf_loader,
         }
@@ -807,10 +796,14 @@ impl VulkanEngine {
         self.update_scene();
 
         unsafe {
-            self.double_buffer
+            let query_results = self
+                .double_buffer
                 .swap_buffer(&self.device, &mut self.allocator);
 
+            gpu_stats.draw_time = query_results.draw_time;
+
             let synchronization_resources = self.double_buffer.get_synchronization_resources();
+            let query_pool = self.double_buffer.get_query_pool();
             let cmd = self.double_buffer.get_command_buffer();
 
             // TODO: encapsulate, into swapchain?
@@ -844,11 +837,10 @@ impl VulkanEngine {
                 .begin_command_buffer(cmd, &cmd_begin_info)
                 .expect("Failed to begin command buffer");
 
-            self.device.reset_query_pool(self.query_pool, 0, 2);
             self.device.cmd_write_timestamp(
                 cmd,
                 vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.query_pool,
+                query_pool,
                 0,
             );
 
@@ -936,7 +928,7 @@ impl VulkanEngine {
             self.device.cmd_write_timestamp(
                 cmd,
                 vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.query_pool,
+                query_pool,
                 1,
             );
 
@@ -980,25 +972,6 @@ impl VulkanEngine {
                 self.graphics_queue,
                 acquired_swapchain.semaphore,
             )?;
-
-            // let mut query_results: [u64; 2] = [0, 0];
-
-            // self.device
-            //     .get_query_pool_results(
-            //         self.query_pool,
-            //         0,
-            //         &mut query_results,
-            //         vk::QueryResultFlags::TYPE_64,
-            //     )
-            //     .unwrap();
-
-            // let properties = self
-            //     .instance
-            //     .get_physical_device_properties(self.physical_device);
-
-            // gpu_stats.draw_time = (query_results[1] as f64 - query_results[0] as f64)
-            //     * f64::from(properties.limits.timestamp_period)
-            //     / 1_000_000.0f64;
 
             self.frame_number += 1;
         };
@@ -1084,7 +1057,6 @@ impl Drop for VulkanEngine {
         };
 
         unsafe {
-            device.destroy_query_pool(self.query_pool, None);
             device.destroy_sampler(self.default_resources.sampler_linear, None);
             device.destroy_sampler(self.default_resources.sampler_nearest, None);
         }

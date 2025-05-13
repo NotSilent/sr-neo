@@ -32,7 +32,6 @@ mod vk_init;
 mod vk_util;
 mod vulkan_engine;
 
-#[derive(Default)]
 struct App<'a> {
     state: Option<State>,
     window: Option<Window>,
@@ -44,6 +43,24 @@ struct App<'a> {
     gltf_name: Option<&'a str>,
 
     input_manager: InputManager,
+
+    cpu_time: std::time::Instant,
+}
+
+impl Default for App<'_> {
+    fn default() -> Self {
+        Self {
+            state: None,
+            window: None,
+            viewport_info: None,
+            vulkan_engine: None,
+            is_minimized: false,
+            is_closing: false,
+            gltf_name: None,
+            input_manager: InputManager::default(),
+            cpu_time: std::time::Instant::now(),
+        }
+    }
 }
 
 impl<'a> App<'a> {
@@ -180,13 +197,19 @@ impl ApplicationHandler for App<'_> {
                             panic!();
                         };
 
-                        // TODO: Should count since last redraw
-                        let cpu_time = time_now.elapsed().as_secs_f64() * 1000.0;
+                        let cpu_time = self.cpu_time.elapsed().as_secs_f64() * 1000.0;
+                        self.cpu_time = std::time::Instant::now();
+
+                        let cpu_record_time = time_now.elapsed().as_secs_f64() * 1000.0;
+
+                        // Result from previous frame
                         let fps = 1000.0 / gpu_stats.draw_time;
 
                         self.window.as_mut().unwrap().set_title(&format!(
-                            "sr-neo: CPU: {:.2} GPU: {:.2} DrawCalls: {} Triangles: {} FPS: {:.0}",
+                            "sr-neo: CPU: {:.2} Record: {:.2} GPU: {:.2} DrawCalls: {} Triangles: {} FPS: {:.0}",
                             cpu_time,
+                            // TODO: Technicaly includes input manager update time
+                            cpu_record_time,
                             gpu_stats.draw_time,
                             gpu_stats.draw_calls,
                             gpu_stats.triangles,

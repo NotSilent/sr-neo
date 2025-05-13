@@ -9,6 +9,11 @@ use crate::{
     vk_util,
 };
 
+// TODO?: This is frame late now
+pub struct QueryResults {
+    pub draw_time: f64,
+}
+
 #[derive(Clone)]
 pub struct FrameBufferSynchronizationResources {
     pub swapchain_semaphore: vk::Semaphore,
@@ -32,6 +37,10 @@ struct FrameBuffer {
 
     buffer_manager: BufferManager,
     descriptors: DescriptorAllocatorGrowable,
+
+    // TODO: Abstract
+    query_pool: vk::QueryPool,
+    timestamp_period: f32,
 }
 
 impl FrameBuffer {
@@ -41,6 +50,7 @@ impl FrameBuffer {
         graphics_queue_family_index: u32,
         width: u32,
         height: u32,
+        timestamp_period: f32,
     ) -> Self {
         let draw_image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
@@ -88,6 +98,18 @@ impl FrameBuffer {
             },
         ];
 
+        let query_pool_create_info = vk::QueryPoolCreateInfo::default()
+            .query_type(vk::QueryType::TIMESTAMP)
+            .query_count(2);
+
+        let query_pool = unsafe {
+            device
+                .create_query_pool(&query_pool_create_info, None)
+                .unwrap()
+        };
+
+        unsafe { device.reset_query_pool(query_pool, 0, 2) };
+
         Self {
             draw_image,
             depth_image,
@@ -99,12 +121,35 @@ impl FrameBuffer {
             },
             buffer_manager: BufferManager::new(),
             descriptors: DescriptorAllocatorGrowable::new(device, 1024, ratios),
+            query_pool,
+            timestamp_period,
         }
     }
 
-    fn reset(&mut self, device: &Device, allocator: &mut Allocator) {
+    fn reset(&mut self, device: &Device, allocator: &mut Allocator) -> QueryResults {
         self.buffer_manager.destroy(device, allocator);
         self.descriptors.clear_pools(device);
+
+        let mut query_results: [u64; 2] = [0; 2];
+
+        unsafe {
+            device
+                .get_query_pool_results(
+                    self.query_pool,
+                    0,
+                    &mut query_results,
+                    vk::QueryResultFlags::TYPE_64,
+                )
+                .unwrap_or(());
+        };
+
+        let draw_time = (query_results[1] as f64 - query_results[0] as f64)
+            * f64::from(self.timestamp_period)
+            / 1_000_000.0f64;
+
+        unsafe { device.reset_query_pool(self.query_pool, 0, 2) };
+
+        QueryResults { draw_time }
     }
 
     fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
@@ -112,6 +157,8 @@ impl FrameBuffer {
             device.destroy_command_pool(self.command_pool, None);
             device.destroy_fence(self.synchronization_resources.fence, None);
             device.destroy_semaphore(self.synchronization_resources.swapchain_semaphore, None);
+
+            device.destroy_query_pool(self.query_pool, None);
 
             self.descriptors.destroy(device);
             self.buffer_manager.destroy(device, allocator);
@@ -135,6 +182,7 @@ impl DoubleBuffer {
         graphics_queue_family_index: u32,
         width: u32,
         height: u32,
+        timestamp_period: f32,
     ) -> Self {
         Self {
             current_frame: 0,
@@ -145,6 +193,7 @@ impl DoubleBuffer {
                     graphics_queue_family_index,
                     width,
                     height,
+                    timestamp_period,
                 ),
                 FrameBuffer::new(
                     device,
@@ -152,6 +201,7 @@ impl DoubleBuffer {
                     graphics_queue_family_index,
                     width,
                     height,
+                    timestamp_period,
                 ),
             ],
         }
@@ -163,7 +213,7 @@ impl DoubleBuffer {
         }
     }
 
-    pub fn swap_buffer(&mut self, device: &Device, allocator: &mut Allocator) {
+    pub fn swap_buffer(&mut self, device: &Device, allocator: &mut Allocator) -> QueryResults {
         self.current_frame = (self.current_frame + 1) % BUFFER_SIZE;
 
         unsafe {
@@ -185,13 +235,17 @@ impl DoubleBuffer {
         };
 
         let current_buffer = &mut self.frame_buffers[self.current_frame];
-        current_buffer.reset(device, allocator);
+        current_buffer.reset(device, allocator)
     }
 
     pub fn get_synchronization_resources(&self) -> FrameBufferSynchronizationResources {
         self.frame_buffers[self.current_frame]
             .synchronization_resources
             .clone()
+    }
+
+    pub fn get_query_pool(&self) -> vk::QueryPool {
+        self.frame_buffers[self.current_frame].query_pool
     }
 
     pub fn get_command_buffer(&self) -> vk::CommandBuffer {
