@@ -143,6 +143,7 @@ struct DrawRecord {
 }
 
 impl DrawRecord {
+    // TODO: Own thread?
     fn record_draw_commands(
         draw_context: &DrawContext,
         managed_resources: &ManagedResources,
@@ -997,7 +998,7 @@ impl VulkanEngine {
 
         self.scene_data.ambient_color = Vector4::from_element(0.1);
         self.scene_data.sunlight_color = Vector4::from_element(1.0);
-        self.scene_data.sunlight_direction = vector![0.0, 1.0, 0.5, 1.0];
+        self.scene_data.sunlight_direction = vector![0.0, 1.0, 0.5].normalize().insert_row(3, 1.0);
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {

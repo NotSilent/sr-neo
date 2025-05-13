@@ -221,7 +221,7 @@ impl Swapchain {
             // .queue_family_indices(queue_family_indices)
             .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::IMMEDIATE)
+            .present_mode(vk::PresentModeKHR::FIFO)
             .clipped(true)
             .old_swapchain(vk::SwapchainKHR::null())
     }
