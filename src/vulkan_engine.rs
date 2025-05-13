@@ -399,6 +399,7 @@ impl VulkanEngine {
             surface_instance,
             swapchain_device,
             physical_device,
+            &device,
             surface,
             vk::Extent2D::default().width(width).height(height),
         );
@@ -813,7 +814,7 @@ impl VulkanEngine {
             let cmd = self.double_buffer.get_command_buffer();
 
             // TODO: encapsulate, into swapchain?
-            let swapchain_image = self
+            let acquired_swapchain = self
                 .swapchain
                 .acquire_next_image(synchronization_resources.swapchain_semaphore)?;
 
@@ -902,7 +903,7 @@ impl VulkanEngine {
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                swapchain_image.image,
+                acquired_swapchain.image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags2::TOP_OF_PIPE,
@@ -915,7 +916,7 @@ impl VulkanEngine {
                 &self.device,
                 cmd,
                 draw_image.image,
-                swapchain_image.image,
+                acquired_swapchain.image,
                 draw_extent,
                 self.swapchain.extent,
             );
@@ -923,7 +924,7 @@ impl VulkanEngine {
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                swapchain_image.image,
+                acquired_swapchain.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
                 vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
@@ -956,7 +957,7 @@ impl VulkanEngine {
                 .value(1)];
 
             let signal_infos = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(synchronization_resources.render_semaphore)
+                .semaphore(acquired_swapchain.semaphore)
                 .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
                 .device_index(0)
                 .value(1)];
@@ -975,31 +976,29 @@ impl VulkanEngine {
                 .expect("Failed to queue submit");
 
             self.swapchain.queue_present(
-                swapchain_image.index,
+                acquired_swapchain.index,
                 self.graphics_queue,
-                synchronization_resources.render_semaphore,
+                acquired_swapchain.semaphore,
             )?;
 
-            self.device.device_wait_idle().unwrap();
+            // let mut query_results: [u64; 2] = [0, 0];
 
-            let mut query_results: [u64; 2] = [0, 0];
+            // self.device
+            //     .get_query_pool_results(
+            //         self.query_pool,
+            //         0,
+            //         &mut query_results,
+            //         vk::QueryResultFlags::TYPE_64,
+            //     )
+            //     .unwrap();
 
-            self.device
-                .get_query_pool_results(
-                    self.query_pool,
-                    0,
-                    &mut query_results,
-                    vk::QueryResultFlags::TYPE_64,
-                )
-                .unwrap();
+            // let properties = self
+            //     .instance
+            //     .get_physical_device_properties(self.physical_device);
 
-            let properties = self
-                .instance
-                .get_physical_device_properties(self.physical_device);
-
-            gpu_stats.draw_time = (query_results[1] as f64 - query_results[0] as f64)
-                * f64::from(properties.limits.timestamp_period)
-                / 1_000_000.0f64;
+            // gpu_stats.draw_time = (query_results[1] as f64 - query_results[0] as f64)
+            //     * f64::from(properties.limits.timestamp_period)
+            //     / 1_000_000.0f64;
 
             self.frame_number += 1;
         };
@@ -1095,7 +1094,7 @@ impl Drop for VulkanEngine {
         unsafe { ManuallyDrop::drop(allocator) };
 
         unsafe {
-            self.swapchain.destroy();
+            self.swapchain.destroy(device);
             device.destroy_device(None);
             self.debug_utils
                 .destroy_debug_utils_messenger(self.debug_utils_messenger, None);

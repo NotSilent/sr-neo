@@ -12,7 +12,6 @@ use crate::{
 #[derive(Clone)]
 pub struct FrameBufferSynchronizationResources {
     pub swapchain_semaphore: vk::Semaphore,
-    pub render_semaphore: vk::Semaphore,
     pub fence: vk::Fence,
 }
 
@@ -96,7 +95,6 @@ impl FrameBuffer {
             command_buffer: vk_util::allocate_command_buffer(device, command_pool),
             synchronization_resources: FrameBufferSynchronizationResources {
                 swapchain_semaphore: vk_util::create_semaphore(device),
-                render_semaphore: vk_util::create_semaphore(device),
                 fence: vk_util::create_fence(device, vk::FenceCreateFlags::SIGNALED),
             },
             buffer_manager: BufferManager::new(),
@@ -113,7 +111,6 @@ impl FrameBuffer {
         unsafe {
             device.destroy_command_pool(self.command_pool, None);
             device.destroy_fence(self.synchronization_resources.fence, None);
-            device.destroy_semaphore(self.synchronization_resources.render_semaphore, None);
             device.destroy_semaphore(self.synchronization_resources.swapchain_semaphore, None);
 
             self.descriptors.destroy(device);
@@ -169,9 +166,6 @@ impl DoubleBuffer {
     pub fn swap_buffer(&mut self, device: &Device, allocator: &mut Allocator) {
         self.current_frame = (self.current_frame + 1) % BUFFER_SIZE;
 
-        let current_buffer = &mut self.frame_buffers[self.current_frame];
-        current_buffer.reset(device, allocator);
-
         unsafe {
             device
                 .wait_for_fences(
@@ -189,6 +183,9 @@ impl DoubleBuffer {
                     .fence])
                 .expect("Failed to reset fences");
         };
+
+        let current_buffer = &mut self.frame_buffers[self.current_frame];
+        current_buffer.reset(device, allocator);
     }
 
     pub fn get_synchronization_resources(&self) -> FrameBufferSynchronizationResources {

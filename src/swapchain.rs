@@ -5,6 +5,8 @@ use ash::{
 };
 use thiserror::Error;
 
+use crate::vk_util;
+
 #[derive(Error, Debug)]
 pub enum SwapchainError {
     #[error("Swapchain suboptimal")]
@@ -13,9 +15,10 @@ pub enum SwapchainError {
     OutOfDate,
 }
 
-pub struct SwapchainImage {
+pub struct AcquiredSwapchain {
     pub index: u32,
     pub image: vk::Image,
+    pub semaphore: vk::Semaphore,
 }
 
 #[allow(clippy::struct_field_names)]
@@ -28,6 +31,7 @@ pub struct Swapchain {
     surface: vk::SurfaceKHR,
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
+    pub semaphores: Vec<vk::Semaphore>,
 }
 
 // TODO: Part of DoubleBuffer?
@@ -36,6 +40,7 @@ impl Swapchain {
         surface_instance: surface::Instance,
         swapchain_device: swapchain::Device,
         physical_device: vk::PhysicalDevice,
+        device: &Device,
         surface: vk::SurfaceKHR,
         extent: vk::Extent2D,
     ) -> Self {
@@ -61,6 +66,11 @@ impl Swapchain {
 
         let images = unsafe { swapchain_device.get_swapchain_images(swapchain).unwrap() };
 
+        let mut semaphores = vec![];
+        for _index in 0..images.len() {
+            semaphores.push(vk_util::create_semaphore(device));
+        }
+
         Self {
             surface_instance,
             swapchain_device,
@@ -69,11 +79,16 @@ impl Swapchain {
             surface,
             swapchain,
             images,
+            semaphores,
         }
     }
 
-    pub fn destroy(&mut self) {
+    pub fn destroy(&mut self, device: &Device) {
         unsafe {
+            for semaphore in &self.semaphores {
+                device.destroy_semaphore(*semaphore, None);
+            }
+
             self.swapchain_device
                 .destroy_swapchain(self.swapchain, None);
             self.surface_instance.destroy_surface(self.surface, None);
@@ -122,7 +137,7 @@ impl Swapchain {
     pub fn acquire_next_image(
         &self,
         semaphore: vk::Semaphore,
-    ) -> Result<SwapchainImage, SwapchainError> {
+    ) -> Result<AcquiredSwapchain, SwapchainError> {
         let index = match unsafe {
             self.swapchain_device.acquire_next_image(
                 self.swapchain,
@@ -146,9 +161,10 @@ impl Swapchain {
             }
         };
 
-        Ok(SwapchainImage {
+        Ok(AcquiredSwapchain {
             index,
             image: self.images[index as usize],
+            semaphore: self.semaphores[index as usize],
         })
     }
 
