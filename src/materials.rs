@@ -66,6 +66,8 @@ pub struct MaterialConstants {
 pub struct MaterialResources {
     pub color_image_view: vk::ImageView,
     pub color_sampler: vk::Sampler,
+    pub normal_image_view: vk::ImageView,
+    pub normal_sampler: vk::Sampler,
     // TODO: load metal texture
     pub metal_rough_image_view: vk::ImageView,
     pub metal_rough_sampler: vk::Sampler,
@@ -192,8 +194,8 @@ impl MasterMaterial {
 
         self.writer.write_image(
             2,
-            resources.metal_rough_sampler,
-            resources.metal_rough_image_view,
+            resources.normal_sampler,
+            resources.normal_image_view,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         );

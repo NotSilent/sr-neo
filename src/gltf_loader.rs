@@ -307,11 +307,22 @@ impl GLTFLoader {
 
             let color_image = managed_resources.images.get(color_image_index);
 
+            let normal_image_index = if let Some(normal_tex) = material.normal_texture() {
+                // TODO: Load texture instead of image
+                images[normal_tex.texture().source().index()]
+            } else {
+                default_resources.image_white
+            };
+
+            let normal_image = managed_resources.images.get(normal_image_index);
+
             // TODO: Proper image
             // TODO: Samplers (textures)
             let resources = MaterialResources {
                 color_image_view: color_image.image_view,
                 color_sampler: default_resources.sampler_linear,
+                normal_image_view: normal_image.image_view,
+                normal_sampler: default_resources.sampler_linear,
                 metal_rough_image_view: image_white.image_view,
                 metal_rough_sampler: default_resources.sampler_linear,
                 data_buffer: material_constants_buffer.buffer,
@@ -427,9 +438,10 @@ impl GLTFLoader {
                     let vertex = Vertex {
                         position: (*position).into(),
                         uv_x: 0.0,
-                        normal: vector![1.0, 0.0, 0.0],
+                        normal: vector![1.0, 0.0, 1.0],
                         uv_y: 0.0,
                         color: Vector4::from_element(1.0),
+                        tangent: vector![1.0, 0.0, 0.0, 1.0],
                     };
 
                     vertices.push(vertex);
@@ -504,13 +516,21 @@ impl GLTFLoader {
                     }
                 }
 
-                {
-                    // TODO: Remove
-                    const OVERRIDE_COLORS: bool = false;
-                    if OVERRIDE_COLORS {
-                        for vertex in &mut vertices {
-                            vertex.color = vertex.normal.push(1.0);
-                        }
+                // Load Tangents
+                if let Some(tangents_accessor) = primitive.get(&gltf::Semantic::Tangents) {
+                    let vertices = &mut vertices[initial_vtx..];
+
+                    let tangents_view = tangents_accessor.view().unwrap();
+                    let tangents_start = tangents_view.offset() + tangents_accessor.offset();
+                    let tangents_end =
+                        tangents_start + tangents_accessor.count() * tangents_accessor.size();
+                    let tangents_data = &blob_data[tangents_start..tangents_end];
+
+                    let (_prefix, middle, _suffix) =
+                        unsafe { tangents_data.align_to::<[f32; 4]>() };
+
+                    for (vertex, tangent) in vertices.iter_mut().zip(middle.iter()) {
+                        vertex.tangent = (*tangent).into();
                     }
                 }
             }

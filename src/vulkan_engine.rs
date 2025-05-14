@@ -258,6 +258,7 @@ impl From<SwapchainError> for DrawError {
     }
 }
 
+// TODO: Formats
 #[derive(Default, Clone)]
 #[repr(C)]
 pub struct Vertex {
@@ -266,6 +267,7 @@ pub struct Vertex {
     pub normal: Vector3<f32>,
     pub uv_y: f32,
     pub color: Vector4<f32>,
+    pub tangent: Vector4<f32>,
 }
 
 // TODO: Probably can be part of Mesh
@@ -542,6 +544,8 @@ impl VulkanEngine {
         let resources = MaterialResources {
             color_image_view: image_white.image_view,
             color_sampler: default_sampler_linear,
+            normal_image_view: image_white.image_view,
+            normal_sampler: default_sampler_linear,
             metal_rough_image_view: image_white.image_view,
             metal_rough_sampler: default_sampler_linear,
             data_buffer: material_constants_buffer.buffer,
@@ -998,7 +1002,7 @@ impl VulkanEngine {
 
         self.scene_data.ambient_color = Vector4::from_element(0.1);
         self.scene_data.sunlight_color = Vector4::from_element(1.0);
-        self.scene_data.sunlight_direction = vector![0.0, 1.0, 0.5].normalize().insert_row(3, 1.0);
+        self.scene_data.sunlight_direction = vector![1.0, 0.0, 0.0].normalize().insert_row(3, 1.0);
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
