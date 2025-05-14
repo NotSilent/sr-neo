@@ -233,6 +233,7 @@ struct GPUSceneData {
     ambient_color: Vector4<f32>,
     sunlight_direction: Vector4<f32>, // w for sun power
     sunlight_color: Vector4<f32>,
+    view_position: Vector3<f32>,
 }
 
 impl GPUSceneData {
@@ -313,6 +314,8 @@ pub struct DefaultResources {
     pub image_white: ImageIndex,
     pub image_black: ImageIndex,
     pub image_error: ImageIndex,
+
+    pub image_normal: ImageIndex,
 
     pub sampler_nearest: vk::Sampler,
     pub sampler_linear: vk::Sampler,
@@ -478,6 +481,13 @@ impl VulkanEngine {
             vk::AccessFlags2::SHADER_READ,
         );
 
+        let image_normal = default_resources::image_normal(
+            &device,
+            &mut allocator,
+            &immediate_submit,
+            vk::AccessFlags2::SHADER_READ,
+        );
+
         let sampler_nearest_create_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::NEAREST)
             .min_filter(vk::Filter::NEAREST);
@@ -579,6 +589,7 @@ impl VulkanEngine {
         let image_white_index = image_manager.add(image_white);
         let image_black_index = image_manager.add(image_black);
         let image_error_index = image_manager.add(image_error);
+        let image_normal_index = image_manager.add(image_normal);
 
         let mut managed_resources = ManagedResources {
             buffers: buffer_manager,
@@ -592,6 +603,7 @@ impl VulkanEngine {
             image_white: image_white_index,
             image_black: image_black_index,
             image_error: image_error_index,
+            image_normal: image_normal_index,
             sampler_nearest: default_sampler_nearest,
             sampler_linear: default_sampler_linear,
             opaque_material: default_opaque_material_index,
@@ -1004,7 +1016,9 @@ impl VulkanEngine {
 
         self.scene_data.ambient_color = Vector4::from_element(0.1);
         self.scene_data.sunlight_color = Vector4::from_element(1.0);
-        self.scene_data.sunlight_direction = vector![1.0, 1.0, 1.0].normalize().insert_row(3, 1.0);
+        let abs = f32::abs(f32::sin(self.frame_number as f32 / 200.0));
+        self.scene_data.sunlight_direction = vector![1.0, abs, 0.0].normalize().insert_row(3, 1.0);
+        self.scene_data.view_position = self.main_camera.get_position();
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {

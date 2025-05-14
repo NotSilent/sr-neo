@@ -309,7 +309,7 @@ impl GLTFLoader {
                 // TODO: Load texture instead of image
                 images[normal_tex.texture().source().index()]
             } else {
-                default_resources.image_white
+                default_resources.image_normal
             };
 
             let normal_image = managed_resources.images.get(normal_image_index);

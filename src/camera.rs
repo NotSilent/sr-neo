@@ -113,4 +113,8 @@ impl Camera {
 
         projection * view_to_clip
     }
+
+    pub fn get_position(&self) -> Vector3<f32> {
+        self.position
+    }
 }

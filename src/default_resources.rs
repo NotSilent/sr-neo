@@ -81,3 +81,25 @@ pub fn image_error(
         "image_error",
     )
 }
+
+pub fn image_normal(
+    device: &Device,
+    allocator: &mut Allocator,
+    immediate_submit: &ImmediateSubmit,
+    access_mask: vk::AccessFlags2,
+) -> Image {
+    let normal = vk_util::pack_u32(&[0.5, 0.5, 1.0, 1.0]);
+
+    Image::with_data(
+        device,
+        allocator,
+        immediate_submit,
+        vk::Extent3D::default().width(1).height(1).depth(1),
+        vk::Format::R8G8B8A8_UNORM,
+        vk::ImageUsageFlags::SAMPLED,
+        access_mask,
+        false,
+        &[normal],
+        "image_black",
+    )
+}
