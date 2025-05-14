@@ -1016,8 +1016,12 @@ impl VulkanEngine {
 
         self.scene_data.ambient_color = Vector4::from_element(0.1);
         self.scene_data.sunlight_color = Vector4::from_element(1.0);
-        let abs = f32::abs(f32::sin(self.frame_number as f32 / 200.0));
-        self.scene_data.sunlight_direction = vector![1.0, abs, 0.0].normalize().insert_row(3, 1.0);
+
+        let sin_x = f32::sin(self.frame_number as f32 / 200.0);
+        let cos_z = f32::cos(self.frame_number as f32 / 200.0);
+        self.scene_data.sunlight_direction =
+            vector![sin_x, 1.0, cos_z].normalize().insert_row(3, 1.0);
+
         self.scene_data.view_position = self.main_camera.get_position();
     }
 

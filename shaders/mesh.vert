@@ -7,7 +7,7 @@
 
 layout (location = 0) out vec3 out_color;
 layout (location = 1) out vec2 out_uv;
-layout (location = 2) out vec3 out_position_tbn;
+layout (location = 2) out vec3 out_frag_position_tbn;
 layout (location = 3) out vec3 out_light_direction_tbn;
 layout (location = 4) out float out_light_power;
 layout (location = 5) out vec3 out_view_position_tbn;
@@ -42,7 +42,7 @@ void main()
 	vec4 position = vec4(v.position, 1.0f);
 
 
-	out_color = v.color.xyz * materialData.color_factors.xyz;	
+	out_color = v.color.xyz * material_data.color_factors.xyz;	
 	out_uv.x = v.uv_x;
 	out_uv.y = v.uv_y;
 
@@ -57,7 +57,7 @@ void main()
 	mat3 TBN = inverse(mat3(T, B, N));
 
 	// Transform world-space LightDirection to TBN space
-	out_position_tbn = TBN * mat3(PushConstants.render_matrix) * position.xyz;
+	out_frag_position_tbn = TBN * mat3(PushConstants.render_matrix) * position.xyz;
 	out_light_direction_tbn = TBN * sceneData.sunlight_direction.xyz;//, 1.0;
 	out_light_power = sceneData.sunlight_direction.w;
 	out_view_position_tbn = TBN * sceneData.view_position;
