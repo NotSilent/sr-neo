@@ -1002,7 +1002,7 @@ impl VulkanEngine {
 
         self.scene_data.ambient_color = Vector4::from_element(0.1);
         self.scene_data.sunlight_color = Vector4::from_element(1.0);
-        self.scene_data.sunlight_direction = vector![1.0, 0.0, 0.0].normalize().insert_row(3, 1.0);
+        self.scene_data.sunlight_direction = vector![1.0, 1.0, 1.0].normalize().insert_row(3, 1.0);
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
