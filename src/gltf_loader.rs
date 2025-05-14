@@ -264,8 +264,6 @@ impl GLTFLoader {
 
         println!("Loaded images: {:.2}s", time_now.elapsed().as_secs_f64());
 
-        let image_white = managed_resources.images.get(default_resources.image_white);
-
         let time_now = std::time::Instant::now();
 
         for material in gltf_real.materials() {
@@ -316,6 +314,18 @@ impl GLTFLoader {
 
             let normal_image = managed_resources.images.get(normal_image_index);
 
+            let metal_rough_image_index = if let Some(metal_rough_tex) = material
+                .pbr_metallic_roughness()
+                .metallic_roughness_texture()
+            {
+                // TODO: Load texture instead of image
+                images[metal_rough_tex.texture().source().index()]
+            } else {
+                default_resources.image_white
+            };
+
+            let metal_rough_image = managed_resources.images.get(metal_rough_image_index);
+
             // TODO: Proper image
             // TODO: Samplers (textures)
             let resources = MaterialResources {
@@ -323,7 +333,7 @@ impl GLTFLoader {
                 color_sampler: default_resources.sampler_linear,
                 normal_image_view: normal_image.image_view,
                 normal_sampler: default_resources.sampler_linear,
-                metal_rough_image_view: image_white.image_view,
+                metal_rough_image_view: metal_rough_image.image_view,
                 metal_rough_sampler: default_resources.sampler_linear,
                 data_buffer: material_constants_buffer.buffer,
                 data_buffer_offset: 0,
@@ -442,6 +452,8 @@ impl GLTFLoader {
                         uv_y: 0.0,
                         color: Vector4::from_element(1.0),
                         tangent: vector![1.0, 0.0, 0.0, 1.0],
+                        metal_rough: vector![0.0, 1.0],
+                        padding: vector![0.0, 0.0],
                     };
 
                     vertices.push(vertex);

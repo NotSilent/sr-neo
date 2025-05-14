@@ -119,6 +119,7 @@ impl MasterMaterial {
             .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
             .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .build(
                 device,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -196,6 +197,14 @@ impl MasterMaterial {
             2,
             resources.normal_sampler,
             resources.normal_image_view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+
+        self.writer.write_image(
+            3,
+            resources.metal_rough_sampler,
+            resources.metal_rough_image_view,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         );
