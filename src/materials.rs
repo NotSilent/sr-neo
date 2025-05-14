@@ -152,7 +152,7 @@ impl MasterMaterial {
         // TODO: Better split
         if material_pass == MaterialPass::Transparent {
             pipeline_builder = pipeline_builder
-                .enable_blending_additive()
+                .enable_blending_alphablend()
                 .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
         }
 

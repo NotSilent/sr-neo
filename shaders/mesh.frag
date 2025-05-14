@@ -18,7 +18,7 @@ layout (location = 0) out vec4 out_frag_color;
 // Modified to be in TBH space
 void main()
 {
-	vec4 color = texture(color_tex,in_uv);
+	vec4 color = texture(color_tex,in_uv) * material_data.color_factors;
 
 	//TODO: This is temp for master material, should be different shader for masked
 	if (color.w < 0.5) {
@@ -89,5 +89,5 @@ void main()
     // gamma correct
     final_color = pow(final_color, vec3(1.0/2.2)); 
 
-    out_frag_color = vec4(final_color, 1.0);
+    out_frag_color = vec4(final_color, color.a);
 }
