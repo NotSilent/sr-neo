@@ -174,6 +174,19 @@ impl DrawCommand {
                             &[],
                         );
 
+                        let push_constants = GPUPushDrawConstant {
+                            uniform_buffer: uniform_buffer_address,
+                            vertex_buffer: command.vertex_buffer_address,
+                        };
+
+                        device.cmd_push_constants(
+                            cmd,
+                            command.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            push_constants.as_bytes(),
+                        );
+
                         // TODO: Dynamic state
                     }
 
@@ -197,19 +210,6 @@ impl DrawCommand {
                         vk::IndexType::UINT32,
                     );
                 }
-
-                let push_constants = GPUPushDrawConstant {
-                    uniform_buffer: uniform_buffer_address,
-                    vertex_buffer: command.vertex_buffer_address,
-                };
-
-                device.cmd_push_constants(
-                    cmd,
-                    command.pipeline_layout,
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    push_constants.as_bytes(),
-                );
 
                 let index = total_draw_count + u64::from(current_batch_count);
 
