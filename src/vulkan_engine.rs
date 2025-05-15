@@ -29,6 +29,7 @@ use crate::{
         MaterialInstanceIndex, MaterialInstanceManager, MaterialPass, MaterialResources,
     },
     meshes::{MeshIndex, MeshManager},
+    resource_manager::VulkanResource,
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
     vk_init, vk_util,
@@ -56,6 +57,7 @@ impl DrawCommand {
         cmd: vk::CommandBuffer,
         global_descriptor: vk::DescriptorSet,
         double_buffer: &mut DoubleBuffer,
+        immediate_submit: &mut ImmediateSubmit,
         draw_commands: &[DrawCommand],
         draw_order: &[u32],
         gpu_stats: &mut GPUStats,
@@ -64,19 +66,30 @@ impl DrawCommand {
         let mut last_pipeline = vk::Pipeline::null();
         let mut last_index_buffer = vk::Buffer::null();
 
-        let mut uniform_buffer = Buffer::new(
+        let mut uniform_buffer_staging = Buffer::new(
             device,
             allocator,
             (size_of::<Matrix4<f32>>() * draw_order.len()) as vk::DeviceSize,
-            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
-            "uniform_data",
+            "uniform_buffer_staging",
+        );
+
+        let uniform_buffer = Buffer::new(
+            device,
+            allocator,
+            (size_of::<Matrix4<f32>>() * draw_order.len()) as vk::DeviceSize,
+            vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::UNIFORM_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+            "uniform_buffer",
         );
 
         let info = vk::BufferDeviceAddressInfo::default().buffer(uniform_buffer.buffer);
         let uniform_buffer_address = unsafe { device.get_buffer_device_address(&info) };
 
-        let memory = uniform_buffer
+        let memory = uniform_buffer_staging
             .allocation
             .as_mut()
             .unwrap()
@@ -86,16 +99,25 @@ impl DrawCommand {
         // TODO: Struct
         let (_, uniforms, _) = unsafe { memory.align_to_mut::<Matrix4<f32>>() };
 
-        let mut draw_indexed_indirect_buffer = Buffer::new(
+        let mut draw_indexed_indirect_buffer_staging = Buffer::new(
             device,
             allocator,
             (size_of::<vk::DrawIndexedIndirectCommand>() * draw_order.len()) as vk::DeviceSize,
-            vk::BufferUsageFlags::INDIRECT_BUFFER,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            MemoryLocation::CpuToGpu,
+            "draw_indirect_buffer_staging",
+        );
+
+        let draw_indexed_indirect_buffer = Buffer::new(
+            device,
+            allocator,
+            (size_of::<vk::DrawIndexedIndirectCommand>() * draw_order.len()) as vk::DeviceSize,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDIRECT_BUFFER,
             MemoryLocation::CpuToGpu,
             "draw_indirect_buffer",
         );
 
-        let memory = draw_indexed_indirect_buffer
+        let memory = draw_indexed_indirect_buffer_staging
             .allocation
             .as_mut()
             .unwrap()
@@ -219,6 +241,37 @@ impl DrawCommand {
                 size_of::<vk::DrawIndexedIndirectCommand>() as u32,
             );
         };
+
+        immediate_submit.submit(device, |cmd| {
+            let uniform_regions = [vk::BufferCopy::default()
+                .src_offset(0)
+                .size((size_of::<Matrix4<f32>>() * draw_order.len()) as vk::DeviceSize)];
+
+            unsafe {
+                device.cmd_copy_buffer(
+                    cmd,
+                    uniform_buffer_staging.buffer,
+                    uniform_buffer.buffer,
+                    &uniform_regions,
+                );
+            }
+
+            let draw_regions = [vk::BufferCopy::default().src_offset(0).size(
+                (size_of::<vk::DrawIndexedIndirectCommand>() * draw_order.len()) as vk::DeviceSize,
+            )];
+
+            unsafe {
+                device.cmd_copy_buffer(
+                    cmd,
+                    draw_indexed_indirect_buffer_staging.buffer,
+                    draw_indexed_indirect_buffer.buffer,
+                    &draw_regions,
+                );
+            }
+        });
+
+        uniform_buffer_staging.destroy(device, allocator);
+        draw_indexed_indirect_buffer_staging.destroy(device, allocator);
 
         double_buffer.add_buffer(uniform_buffer);
         double_buffer.add_buffer(draw_indexed_indirect_buffer);
@@ -864,6 +917,7 @@ impl VulkanEngine {
                 cmd,
                 global_descriptor,
                 &mut self.double_buffer,
+                &mut self.immediate_submit,
                 &opaque_commands,
                 &opaque_order,
                 gpu_stats,
@@ -889,6 +943,7 @@ impl VulkanEngine {
                 cmd,
                 global_descriptor,
                 &mut self.double_buffer,
+                &mut self.immediate_submit,
                 &transparent_commands,
                 &transparent_order,
                 gpu_stats,
