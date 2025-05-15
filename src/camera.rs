@@ -114,6 +114,40 @@ impl Camera {
         projection * view_to_clip
     }
 
+    pub fn get_orthographic(
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        near: f32,
+        far: f32,
+    ) -> Matrix4<f32> {
+        let projection = Matrix4::new(
+            2.0 / (right - left),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            2.0 / (top - bottom),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -1.0 / (far - near),
+            0.0,
+            -(right + left) / (right - left),
+            -(top + bottom) / (top - bottom),
+            far / (far - near),
+            1.0,
+        )
+        .transpose();
+
+        let view_to_clip =
+            Rotation3::from_axis_angle(&Vector3::x_axis(), 180.0_f32.to_radians()).to_homogeneous();
+
+        projection * view_to_clip
+    }
+
     pub fn get_position(&self) -> Vector3<f32> {
         self.position
     }

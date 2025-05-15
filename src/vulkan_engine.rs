@@ -130,6 +130,8 @@ impl DrawCommand {
                     0,
                 );
 
+                vk::DrawIndexedIndirectCommand::default();
+
                 gpu_stats.draw_calls += 1;
                 gpu_stats.triangles += command.surface_index_count as usize / 3;
             }
@@ -1012,6 +1014,7 @@ impl VulkanEngine {
         self.scene_data.proj = Camera::get_projection(
             draw_image.extent.height as f32 / draw_image.extent.width as f32,
         );
+        // self.scene_data.proj = Camera::get_orthographic(-10.0, 10.0, -10.0, 10.0, 0.01, 1000.0);
         self.scene_data.view_proj = self.scene_data.proj * self.scene_data.view;
 
         self.scene_data.ambient_color = Vector4::from_element(0.1);
