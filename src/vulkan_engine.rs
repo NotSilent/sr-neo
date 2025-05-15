@@ -207,6 +207,19 @@ impl DrawCommand {
             }
         }
 
+        // TODO: Compute earlier so it won't have to be duplicated
+        // This is needed because draw is performed at the beginning of the loop
+        // and the last one has no chance to be recorded
+        unsafe {
+            device.cmd_draw_indexed_indirect(
+                cmd,
+                draw_indexed_indirect_buffer.buffer,
+                total_draw_count * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
+                current_batch_count,
+                size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+            );
+        };
+
         double_buffer.add_buffer(uniform_buffer);
         double_buffer.add_buffer(draw_indexed_indirect_buffer);
     }
