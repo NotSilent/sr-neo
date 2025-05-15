@@ -129,6 +129,11 @@ pub fn create_device(
         .queue_family_index(graphics_queue_family_index)
         .queue_priorities(&[1.0_f32]);
 
+    let physical_device_features = vk::PhysicalDeviceFeatures::default().multi_draw_indirect(true);
+
+    let mut vulkan_11_features =
+        vk::PhysicalDeviceVulkan11Features::default().shader_draw_parameters(true);
+
     let mut vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default()
         .buffer_device_address(true)
         .descriptor_indexing(true)
@@ -142,10 +147,12 @@ pub fn create_device(
 
     let var_name = [device_queue_create_info];
     let device_create_info = vk::DeviceCreateInfo::default()
+        .push_next(&mut vulkan_11_features)
         .push_next(&mut vulkan_12_features)
         .push_next(&mut vulkan_13_features)
         .queue_create_infos(&var_name)
-        .enabled_extension_names(&device_extension_names_raw);
+        .enabled_extension_names(&device_extension_names_raw)
+        .enabled_features(&physical_device_features);
 
     unsafe {
         instance

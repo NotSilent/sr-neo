@@ -114,7 +114,7 @@ impl Camera {
         projection * view_to_clip
     }
 
-    pub fn get_orthographic(
+    pub fn _get_orthographic(
         left: f32,
         right: f32,
         bottom: f32,

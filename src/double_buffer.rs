@@ -2,7 +2,7 @@ use ash::{Device, vk};
 use gpu_allocator::vulkan::Allocator;
 
 use crate::{
-    buffers::{Buffer, BufferManager},
+    buffers::{Buffer, BufferIndex, BufferManager},
     descriptors::{DescriptorAllocatorGrowable, PoolSizeRatio},
     images::Image,
     resource_manager::VulkanResource,
@@ -262,10 +262,22 @@ impl DoubleBuffer {
             .allocate(device, layout)
     }
 
-    pub fn add_buffer(&mut self, buffer: Buffer) {
+    pub fn add_buffer(&mut self, buffer: Buffer) -> BufferIndex {
         self.frame_buffers[self.current_frame]
             .buffer_manager
-            .add(buffer);
+            .add(buffer)
+    }
+
+    pub fn _get_buffer(&mut self, buffer_index: BufferIndex) -> &Buffer {
+        self.frame_buffers[self.current_frame]
+            .buffer_manager
+            .get(buffer_index)
+    }
+
+    pub fn _get_buffer_mut(&mut self, buffer_index: BufferIndex) -> &mut Buffer {
+        self.frame_buffers[self.current_frame]
+            .buffer_manager
+            .get_mut(buffer_index)
     }
 
     pub fn get_draw_image(&self) -> &Image {

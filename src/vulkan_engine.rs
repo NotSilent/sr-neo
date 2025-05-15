@@ -48,10 +48,14 @@ pub struct DrawCommand {
 
 // TODO: Move this somewhere
 impl DrawCommand {
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     pub fn cmd_record_draw_command(
         device: &Device,
+        allocator: &mut Allocator,
         cmd: vk::CommandBuffer,
         global_descriptor: vk::DescriptorSet,
+        double_buffer: &mut DoubleBuffer,
         draw_commands: &[DrawCommand],
         draw_order: &[u32],
         gpu_stats: &mut GPUStats,
@@ -60,9 +64,73 @@ impl DrawCommand {
         let mut last_pipeline = vk::Pipeline::null();
         let mut last_index_buffer = vk::Buffer::null();
 
+        let mut uniform_buffer = Buffer::new(
+            device,
+            allocator,
+            (size_of::<Matrix4<f32>>() * draw_order.len()) as vk::DeviceSize,
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+            "uniform_data",
+        );
+
+        let info = vk::BufferDeviceAddressInfo::default().buffer(uniform_buffer.buffer);
+        let uniform_buffer_address = unsafe { device.get_buffer_device_address(&info) };
+
+        let memory = uniform_buffer
+            .allocation
+            .as_mut()
+            .unwrap()
+            .mapped_slice_mut()
+            .unwrap();
+
+        // TODO: Struct
+        let (_, uniforms, _) = unsafe { memory.align_to_mut::<Matrix4<f32>>() };
+
+        let mut draw_indexed_indirect_buffer = Buffer::new(
+            device,
+            allocator,
+            (size_of::<vk::DrawIndexedIndirectCommand>() * draw_order.len()) as vk::DeviceSize,
+            vk::BufferUsageFlags::INDIRECT_BUFFER,
+            MemoryLocation::CpuToGpu,
+            "draw_indirect_buffer",
+        );
+
+        let memory = draw_indexed_indirect_buffer
+            .allocation
+            .as_mut()
+            .unwrap()
+            .mapped_slice_mut()
+            .unwrap();
+
+        let (_, draws, _) = unsafe { memory.align_to_mut::<vk::DrawIndexedIndirectCommand>() };
+
+        let mut total_draw_count = 0_u64;
+        let mut current_batch_count = 0;
+
         for index in draw_order {
             let command = &draw_commands[*index as usize];
             unsafe {
+                {
+                    // TODO: Compute earlier so it can be put at the end?
+
+                    let any_state_changed = current_batch_count != 0
+                        && (last_material_set != command.material_instance_set
+                            || last_index_buffer != command.index_buffer);
+
+                    if any_state_changed {
+                        device.cmd_draw_indexed_indirect(
+                            cmd,
+                            draw_indexed_indirect_buffer.buffer,
+                            total_draw_count * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
+                            current_batch_count,
+                            size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                        );
+
+                        total_draw_count += u64::from(current_batch_count);
+                        current_batch_count = 0;
+                    }
+                }
+
                 if last_material_set != command.material_instance_set {
                     last_material_set = command.material_instance_set;
 
@@ -109,7 +177,7 @@ impl DrawCommand {
                 }
 
                 let push_constants = GPUPushDrawConstant {
-                    world_matrix: command.world_matrix,
+                    uniform_buffer: uniform_buffer_address,
                     vertex_buffer: command.vertex_buffer_address,
                 };
 
@@ -121,21 +189,26 @@ impl DrawCommand {
                     push_constants.as_bytes(),
                 );
 
-                device.cmd_draw_indexed(
-                    cmd,
-                    command.surface_index_count,
-                    1,
-                    command.surface_first_index,
-                    0,
-                    0,
-                );
+                let index = total_draw_count + u64::from(current_batch_count);
 
-                vk::DrawIndexedIndirectCommand::default();
+                uniforms[index as usize] = command.world_matrix;
+
+                draws[index as usize] = vk::DrawIndexedIndirectCommand::default()
+                    .index_count(command.surface_index_count)
+                    .instance_count(1)
+                    .first_index(command.surface_first_index)
+                    .vertex_offset(0)
+                    .first_instance(0);
+
+                current_batch_count += 1;
 
                 gpu_stats.draw_calls += 1;
                 gpu_stats.triangles += command.surface_index_count as usize / 3;
             }
         }
+
+        double_buffer.add_buffer(uniform_buffer);
+        double_buffer.add_buffer(draw_indexed_indirect_buffer);
     }
 }
 
@@ -284,7 +357,7 @@ pub struct GPUMeshBuffers {
 
 #[repr(C)]
 pub struct GPUPushDrawConstant {
-    world_matrix: Matrix4<f32>,
+    uniform_buffer: vk::DeviceAddress,
     vertex_buffer: vk::DeviceAddress,
 }
 
@@ -759,53 +832,55 @@ impl VulkanEngine {
             transparent_commands,
         } = DrawRecord::record_draw_commands(&self.main_draw_context, &self.managed_resources);
 
-        let mut opaque_order: Vec<u32> = (0..opaque_commands.len() as u32).collect();
+        if !opaque_commands.is_empty() {
+            let mut opaque_order: Vec<u32> = (0..opaque_commands.len() as u32).collect();
 
-        opaque_order.sort_by(|lhs, rhs| {
-            let lhs = &opaque_commands[*lhs as usize];
-            let rhs = &opaque_commands[*rhs as usize];
+            opaque_order.sort_by(|lhs, rhs| {
+                let lhs = &opaque_commands[*lhs as usize];
+                let rhs = &opaque_commands[*rhs as usize];
 
-            match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
-                std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
-                other => other,
-            }
-        });
+                match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
+                    std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
+                    other => other,
+                }
+            });
 
-        DrawCommand::cmd_record_draw_command(
-            &self.device,
-            cmd,
-            global_descriptor,
-            &opaque_commands,
-            &opaque_order,
-            gpu_stats,
-        );
+            DrawCommand::cmd_record_draw_command(
+                &self.device,
+                &mut self.allocator,
+                cmd,
+                global_descriptor,
+                &mut self.double_buffer,
+                &opaque_commands,
+                &opaque_order,
+                gpu_stats,
+            );
+        }
 
-        let mut transparent_order: Vec<u32> = (0..transparent_commands.len() as u32).collect();
+        if !transparent_commands.is_empty() {
+            let mut transparent_order: Vec<u32> = (0..transparent_commands.len() as u32).collect();
 
-        transparent_order.sort_by(|lhs, rhs| {
-            let lhs = &transparent_commands[*lhs as usize];
-            let rhs = &transparent_commands[*rhs as usize];
+            transparent_order.sort_by(|lhs, rhs| {
+                let lhs = &transparent_commands[*lhs as usize];
+                let rhs = &transparent_commands[*rhs as usize];
 
-            // if lhs.material_instance_set < rhs.material_instance_set {
-            //     lhs.index_buffer < rhs.index_buffer
-            // } else {
-            //     lhs.material_instance_set < rhs.material_instance_set
-            // }
+                match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
+                    std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
+                    other => other,
+                }
+            });
 
-            match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
-                std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
-                other => other,
-            }
-        });
-
-        DrawCommand::cmd_record_draw_command(
-            &self.device,
-            cmd,
-            global_descriptor,
-            &transparent_commands,
-            &transparent_order,
-            gpu_stats,
-        );
+            DrawCommand::cmd_record_draw_command(
+                &self.device,
+                &mut self.allocator,
+                cmd,
+                global_descriptor,
+                &mut self.double_buffer,
+                &transparent_commands,
+                &transparent_order,
+                gpu_stats,
+            );
+        }
     }
 
     #[allow(clippy::too_many_lines)]

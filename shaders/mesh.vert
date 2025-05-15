@@ -24,19 +24,29 @@ struct Vertex
 	vec2 padding;
 }; 
 
-layout(buffer_reference, std430) readonly buffer VertexBuffer{ 
+struct UniformData
+{
+	mat4 world_matrix;
+};
+
+layout(buffer_reference, std430) readonly buffer UniformBuffer{
+	UniformData uniforms[];
+};
+
+layout(buffer_reference, std430) readonly buffer VertexBuffer{
 	Vertex vertices[];
 };
 
 //push constants block
 layout( push_constant ) uniform constants
 {
-	mat4 render_matrix;
+	UniformBuffer uniform_buffer;
 	VertexBuffer vertexBuffer;
 } PushConstants;
 
 void main() 
 {
+	UniformData uniform_data = PushConstants.uniform_buffer.uniforms[gl_DrawID];
 	Vertex v = PushConstants.vertexBuffer.vertices[gl_VertexIndex];
 	
 	vec4 position = vec4(v.position, 1.0f);
@@ -46,8 +56,8 @@ void main()
 	out_uv.x = v.uv_x;
 	out_uv.y = v.uv_y;
 
-	vec3 T = normalize(mat3(PushConstants.render_matrix) * v.tangent.xyz);
-	vec3 N = normalize(mat3(PushConstants.render_matrix) * v.normal);
+	vec3 T = normalize(mat3(uniform_data.world_matrix) * v.tangent.xyz);
+	vec3 N = normalize(mat3(uniform_data.world_matrix) * v.normal);
 	// re-orthogonalize T with respect to N
 	T = normalize(T - dot(T, N) * N);
 	// then retrieve perpendicular vector B with the cross product of T and N
@@ -57,10 +67,10 @@ void main()
 	mat3 TBN = inverse(mat3(T, B, N));
 
 	// Transform world-space LightDirection to TBN space
-	out_frag_position_tbn = TBN * mat3(PushConstants.render_matrix) * position.xyz;
+	out_frag_position_tbn = TBN * mat3(uniform_data.world_matrix) * position.xyz;
 	out_light_direction_tbn = TBN * sceneData.sunlight_direction.xyz;//, 1.0;
 	out_light_power = sceneData.sunlight_direction.w;
 	out_view_position_tbn = TBN * sceneData.view_position;
 
-	gl_Position =  sceneData.view_proj * PushConstants.render_matrix * position;
+	gl_Position =  sceneData.view_proj * uniform_data.world_matrix * position;
 }
