@@ -174,19 +174,6 @@ impl DrawCommand {
                             &[],
                         );
 
-                        let push_constants = GPUPushDrawConstant {
-                            uniform_buffer: uniform_buffer_address,
-                            vertex_buffer: command.vertex_buffer_address,
-                        };
-
-                        device.cmd_push_constants(
-                            cmd,
-                            command.pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            push_constants.as_bytes(),
-                        );
-
                         // TODO: Dynamic state
                     }
 
@@ -202,6 +189,20 @@ impl DrawCommand {
 
                 if last_index_buffer != command.index_buffer {
                     last_index_buffer = command.index_buffer;
+
+                    let push_constants = GPUPushDrawConstant {
+                        uniform_buffer: uniform_buffer_address,
+                        vertex_buffer: command.vertex_buffer_address,
+                        index: total_draw_count as u32,
+                    };
+
+                    device.cmd_push_constants(
+                        cmd,
+                        command.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        push_constants.as_bytes(),
+                    );
 
                     device.cmd_bind_index_buffer(
                         cmd,
@@ -423,6 +424,7 @@ pub struct GPUMeshBuffers {
 pub struct GPUPushDrawConstant {
     uniform_buffer: vk::DeviceAddress,
     vertex_buffer: vk::DeviceAddress,
+    index: u32,
 }
 
 impl GPUPushDrawConstant {

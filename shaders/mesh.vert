@@ -40,11 +40,12 @@ layout( push_constant ) uniform constants
 {
 	UniformBuffer uniform_buffer;
 	VertexBuffer vertexBuffer;
+	uint index;
 } PushConstants;
 
 void main() 
 {
-	UniformData uniform_data = PushConstants.uniform_buffer.uniforms[gl_DrawID];
+	UniformData uniform_data = PushConstants.uniform_buffer.uniforms[PushConstants.index+ gl_DrawID];
 	Vertex v = PushConstants.vertexBuffer.vertices[gl_VertexIndex];
 	
 	vec4 position = vec4(v.position, 1.0f);
