@@ -26,7 +26,7 @@ void main()
 	}
 
 	vec3 normal = texture(normal_tex,in_uv).xyz * 2.0 - 1.0;
-	vec3 albedo = pow(color.rgb * material_data.color_factors.rgb, vec3(2.2));
+	vec3 albedo = pow(color.rgb, vec3(2.2)) * in_color;
 	vec4 metal_rough = texture(metal_rough_tex,in_uv);
 
 	float metallic = metal_rough.b * material_data.metal_rough_factors.x;
@@ -38,7 +38,7 @@ void main()
     // calculate reflectance at normal incidence; if dia-electric (like plastic) use F0 
     // of 0.04 and if it's a metal, use the albedo color as F0 (metallic workflow)    
     vec3 F0 = vec3(0.04); 
-    F0 = mix(F0, color.rgb, metallic);
+    F0 = mix(F0, albedo, metallic);
 
     // reflectance equation
     vec3 Lo = vec3(0.0);

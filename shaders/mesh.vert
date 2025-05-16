@@ -20,8 +20,6 @@ struct Vertex
 	float uv_y;
 	vec4 color;
 	vec4 tangent;
-	vec2 metal_rough;
-	vec2 padding;
 }; 
 
 struct UniformData

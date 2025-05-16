@@ -452,8 +452,6 @@ impl GLTFLoader {
                         uv_y: 0.0,
                         color: Vector4::from_element(1.0),
                         tangent: vector![1.0, 0.0, 0.0, 1.0],
-                        metal_rough: vector![0.0, 1.0],
-                        padding: vector![0.0, 0.0],
                     };
 
                     vertices.push(vertex);

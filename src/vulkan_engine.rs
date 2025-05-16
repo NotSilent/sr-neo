@@ -410,8 +410,6 @@ pub struct Vertex {
     pub uv_y: f32,
     pub color: Vector4<f32>,
     pub tangent: Vector4<f32>,
-    pub metal_rough: Vector2<f32>,
-    pub padding: Vector2<f32>,
 }
 
 // TODO: Probably can be part of Mesh
