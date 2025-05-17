@@ -3,9 +3,10 @@ use gpu_allocator::vulkan::Allocator;
 
 use crate::{
     double_buffer::DoubleBuffer,
+    draw::{DrawCommand, DrawCommands},
     immediate_submit::ImmediateSubmit,
     vk_util,
-    vulkan_engine::{DrawCommand, GPUStats},
+    vulkan_engine::GPUStats,
 };
 
 pub struct PassImageState {
@@ -26,10 +27,8 @@ pub fn record(
     draw_src: &PassImageState,
     depth_src: &PassImageState,
     global_descriptor: vk::DescriptorSet,
-    opaque_order: &[u32],
-    opaque_commands: &[DrawCommand],
-    transparent_order: &[u32],
-    transparent_commands: &[DrawCommand],
+    opaque_commands: &DrawCommands,
+    transparent_commands: &DrawCommands,
     double_buffer: &mut DoubleBuffer,
     immediate_submit: &mut ImmediateSubmit,
     gpu_stats: &mut GPUStats,
@@ -66,9 +65,7 @@ pub fn record(
         allocator,
         cmd,
         global_descriptor,
-        opaque_order,
         opaque_commands,
-        transparent_order,
         transparent_commands,
         double_buffer,
         immediate_submit,
@@ -154,41 +151,33 @@ fn draw(
     allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
-    opaque_order: &[u32],
-    opaque_commands: &[DrawCommand],
-    transparent_order: &[u32],
-    transparent_commands: &[DrawCommand],
+    opaque_commands: &DrawCommands,
+    transparent_commands: &DrawCommands,
     double_buffer: &mut DoubleBuffer,
     immediate_submit: &mut ImmediateSubmit,
     gpu_stats: &mut GPUStats,
 ) {
-    if !opaque_commands.is_empty() {
-        DrawCommand::cmd_record_draw_commands(
-            device,
-            allocator,
-            cmd,
-            global_descriptor,
-            double_buffer,
-            immediate_submit,
-            opaque_commands,
-            opaque_order,
-            gpu_stats,
-        );
-    }
+    DrawCommand::cmd_record_draw_commands(
+        device,
+        allocator,
+        cmd,
+        global_descriptor,
+        double_buffer,
+        immediate_submit,
+        opaque_commands,
+        gpu_stats,
+    );
 
-    if !transparent_commands.is_empty() {
-        DrawCommand::cmd_record_draw_commands(
-            device,
-            allocator,
-            cmd,
-            global_descriptor,
-            double_buffer,
-            immediate_submit,
-            transparent_commands,
-            transparent_order,
-            gpu_stats,
-        );
-    }
+    DrawCommand::cmd_record_draw_commands(
+        device,
+        allocator,
+        cmd,
+        global_descriptor,
+        double_buffer,
+        immediate_submit,
+        transparent_commands,
+        gpu_stats,
+    );
 }
 
 fn end(device: &Device, cmd: vk::CommandBuffer) {

@@ -20,6 +20,7 @@ mod default_pass;
 mod default_resources;
 mod descriptors;
 mod double_buffer;
+mod draw;
 mod gltf_loader;
 mod images;
 mod immediate_submit;

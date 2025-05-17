@@ -6,16 +6,14 @@ use nalgebra::{Matrix4, Vector4, vector};
 use crate::{
     buffers::{Buffer, BufferManager},
     descriptors::DescriptorAllocatorGrowable,
+    draw::{DrawContext, RenderObject},
     images::Image,
     immediate_submit::ImmediateSubmit,
     materials::{MaterialConstants, MaterialResources},
     meshes::{Mesh, MeshIndex},
     resource_manager::VulkanResource,
     vk_util,
-    vulkan_engine::{
-        DefaultResources, DrawContext, GPUMeshBuffers, GeoSurface, ManagedResources, RenderObject,
-        Vertex,
-    },
+    vulkan_engine::{DefaultResources, GPUMeshBuffers, GeoSurface, ManagedResources, Vertex},
 };
 
 pub struct Node {

@@ -4,10 +4,10 @@ use nalgebra::Vector4;
 
 use crate::{
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter},
+    draw::GPUPushDrawConstant,
     pipeline_builder::PipelineBuilder,
     resource_manager::{ResourceManager, VulkanResource},
     shader_manager::ShaderManager,
-    vulkan_engine::GPUPushDrawConstant,
 };
 
 // Resource Managers
