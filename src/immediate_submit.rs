@@ -31,6 +31,8 @@ impl ImmediateSubmit {
         }
     }
 
+    // TODO: PRIORITY: It's getting annoying to pass it everywhere and keep track of when uploads should be made
+    // Instead keep track of which buffers/images should be copied with src + dst and upload at once before frame begins
     pub fn submit<F: Fn(vk::CommandBuffer)>(&self, device: &Device, record: F) {
         unsafe {
             device.reset_fences(&[self.fence]).unwrap();

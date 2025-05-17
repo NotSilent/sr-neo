@@ -59,14 +59,14 @@ pub fn transition_image(
     device: &Device,
     cmd: vk::CommandBuffer,
     image: vk::Image,
-    current_layout: vk::ImageLayout,
-    new_layout: vk::ImageLayout,
+    src_layout: vk::ImageLayout,
     src_stage_mask: vk::PipelineStageFlags2,
     src_access_mask: vk::AccessFlags2,
+    dst_layout: vk::ImageLayout,
     dst_stage_mask: vk::PipelineStageFlags2,
     dst_access_mask: vk::AccessFlags2,
 ) {
-    let aspect_mask = if new_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL {
+    let aspect_mask = if dst_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL {
         vk::ImageAspectFlags::DEPTH
     } else {
         vk::ImageAspectFlags::COLOR
@@ -77,8 +77,8 @@ pub fn transition_image(
         .src_access_mask(src_access_mask)
         .dst_stage_mask(dst_stage_mask)
         .dst_access_mask(dst_access_mask)
-        .old_layout(current_layout)
-        .new_layout(new_layout)
+        .old_layout(src_layout)
+        .new_layout(dst_layout)
         // Used for barriers between queues?
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -215,12 +215,12 @@ pub fn depth_attachment_info(
 }
 
 pub fn rendering_info<'a>(
-    render_extent: vk::Extent2D,
+    render_area: vk::Rect2D,
     color_attachments: &'a [vk::RenderingAttachmentInfo],
     depth_attachment: &'a vk::RenderingAttachmentInfo,
 ) -> vk::RenderingInfo<'a> {
     vk::RenderingInfo::default()
-        .render_area(vk::Rect2D::default().extent(render_extent))
+        .render_area(render_area)
         .layer_count(1)
         .color_attachments(color_attachments)
         .depth_attachment(depth_attachment)

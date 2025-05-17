@@ -9,13 +9,14 @@ use ash::{
 
 use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 
-use nalgebra::{Matrix4, Vector2, Vector3, Vector4, vector};
+use nalgebra::{Matrix4, Vector3, Vector4, vector};
 use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
     camera::{Camera, InputManager},
+    default_pass::{self, PassImageState},
     default_resources,
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
@@ -36,30 +37,33 @@ use crate::{
 };
 
 pub struct DrawCommand {
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
+    pub pipeline_layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
     // TODO: Probably just index here and query + bind only when actualy before needed for drawing
-    material_instance_set: vk::DescriptorSet,
-    index_buffer: vk::Buffer,
-    vertex_buffer_address: u64,
-    world_matrix: Matrix4<f32>,
-    surface_index_count: u32,
-    surface_first_index: u32,
+    pub material_instance_set: vk::DescriptorSet,
+    pub index_buffer: vk::Buffer,
+    pub vertex_buffer_address: u64,
+    pub world_matrix: Matrix4<f32>,
+    pub surface_index_count: u32,
+    pub surface_first_index: u32,
 }
 
 // TODO: Move this somewhere
 impl DrawCommand {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
-    pub fn cmd_record_draw_command(
+    pub fn cmd_record_draw_commands(
         device: &Device,
         allocator: &mut Allocator,
         cmd: vk::CommandBuffer,
         global_descriptor: vk::DescriptorSet,
+        // TODO: pass in buffers?
         double_buffer: &mut DoubleBuffer,
         immediate_submit: &mut ImmediateSubmit,
+        // TODO: struct
         draw_commands: &[DrawCommand],
         draw_order: &[u32],
+        // TODO: Return instead and add in caller?
         gpu_stats: &mut GPUStats,
     ) {
         let mut last_material_set = vk::DescriptorSet::null();
@@ -279,14 +283,16 @@ impl DrawCommand {
     }
 }
 
-struct DrawRecord {
-    opaque_commands: Vec<DrawCommand>,
-    transparent_commands: Vec<DrawCommand>,
+pub struct DrawRecord {
+    pub opaque_commands: Vec<DrawCommand>,
+    pub transparent_commands: Vec<DrawCommand>,
 }
 
 impl DrawRecord {
     // TODO: Own thread?
-    fn record_draw_commands(
+    // TODO: Add sorting and rename to sort_draw_commands
+    // TODO: Sort into struct containing DrawCommands and their draw order
+    pub fn record_draw_commands(
         draw_context: &DrawContext,
         managed_resources: &ManagedResources,
     ) -> DrawRecord {
@@ -804,154 +810,6 @@ impl VulkanEngine {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn draw_geometry(
-        &mut self,
-        cmd: vk::CommandBuffer,
-        draw_extent: vk::Extent2D,
-        gpu_stats: &mut GPUStats,
-        draw_image_view: vk::ImageView,
-        depth_image_view: vk::ImageView,
-    ) {
-        let gpu_scene_data_buffer = Buffer::new(
-            &self.device,
-            &mut self.allocator,
-            size_of::<GPUSceneData>() as u64,
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
-            MemoryLocation::CpuToGpu,
-            "draw_geometry",
-        );
-
-        // TODO: part of allocated buffer?
-        vk_util::copy_data_to_allocation(
-            self.scene_data.as_bytes(),
-            gpu_scene_data_buffer.allocation.as_ref().unwrap(),
-        );
-
-        // Part of DoubleBuffer/FrameBuffer
-        let global_descriptor = self
-            .double_buffer
-            .allocate_set(&self.device, self.gpu_scene_data_descriptor_layout);
-
-        let mut writer = DescriptorWriter::default();
-        writer.write_buffer(
-            0,
-            gpu_scene_data_buffer.buffer,
-            size_of::<GPUSceneData>() as u64,
-            0,
-            vk::DescriptorType::UNIFORM_BUFFER,
-        );
-
-        writer.update_set(&self.device, global_descriptor);
-
-        self.double_buffer.add_buffer(gpu_scene_data_buffer);
-
-        let clear_color = Some(vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [1.0, 0.0, 1.0, 1.0],
-            },
-        });
-
-        let color_attachment = [vk_util::attachment_info(
-            draw_image_view,
-            clear_color,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        )];
-
-        let depth_attachment = vk_util::depth_attachment_info(
-            depth_image_view,
-            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-        );
-
-        let rendering_info =
-            vk_util::rendering_info(draw_extent, &color_attachment, &depth_attachment);
-
-        let viewports = [vk::Viewport::default()
-            .width(draw_extent.width as f32)
-            .height(draw_extent.height as f32)
-            .min_depth(0.0)
-            .max_depth(1.0)];
-
-        let scissors = [vk::Rect2D::default().extent(draw_extent)];
-
-        unsafe {
-            self.device.cmd_begin_rendering(cmd, &rendering_info);
-
-            self.device.cmd_set_viewport(cmd, 0, &viewports);
-            self.device.cmd_set_scissor(cmd, 0, &scissors);
-
-            self.draw_meshes(cmd, global_descriptor, gpu_stats);
-        };
-
-        unsafe {
-            self.device.cmd_end_rendering(cmd);
-        }
-    }
-
-    fn draw_meshes(
-        &mut self,
-        cmd: vk::CommandBuffer,
-        global_descriptor: vk::DescriptorSet,
-        gpu_stats: &mut GPUStats,
-    ) {
-        let DrawRecord {
-            opaque_commands,
-            transparent_commands,
-        } = DrawRecord::record_draw_commands(&self.main_draw_context, &self.managed_resources);
-
-        if !opaque_commands.is_empty() {
-            let mut opaque_order: Vec<u32> = (0..opaque_commands.len() as u32).collect();
-
-            opaque_order.sort_by(|lhs, rhs| {
-                let lhs = &opaque_commands[*lhs as usize];
-                let rhs = &opaque_commands[*rhs as usize];
-
-                match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
-                    std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
-                    other => other,
-                }
-            });
-
-            DrawCommand::cmd_record_draw_command(
-                &self.device,
-                &mut self.allocator,
-                cmd,
-                global_descriptor,
-                &mut self.double_buffer,
-                &mut self.immediate_submit,
-                &opaque_commands,
-                &opaque_order,
-                gpu_stats,
-            );
-        }
-
-        if !transparent_commands.is_empty() {
-            let mut transparent_order: Vec<u32> = (0..transparent_commands.len() as u32).collect();
-
-            transparent_order.sort_by(|lhs, rhs| {
-                let lhs = &transparent_commands[*lhs as usize];
-                let rhs = &transparent_commands[*rhs as usize];
-
-                match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
-                    std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
-                    other => other,
-                }
-            });
-
-            DrawCommand::cmd_record_draw_command(
-                &self.device,
-                &mut self.allocator,
-                cmd,
-                global_descriptor,
-                &mut self.double_buffer,
-                &mut self.immediate_submit,
-                &transparent_commands,
-                &transparent_order,
-                gpu_stats,
-            );
-        }
-    }
-
-    #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self, render_scale: f32) -> Result<GPUStats, DrawError> {
         let mut gpu_stats = GPUStats::default();
 
@@ -978,15 +836,33 @@ impl VulkanEngine {
             let draw_image = self.double_buffer.get_draw_image();
             let depth_image = self.double_buffer.get_depth_image();
 
+            let draw_src = PassImageState {
+                image: draw_image.image,
+                image_view: draw_image.image_view,
+                layout: vk::ImageLayout::UNDEFINED,
+                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
+                access_mask: vk::AccessFlags2::NONE,
+            };
+
+            let depth_src = PassImageState {
+                image: depth_image.image,
+                image_view: depth_image.image_view,
+                layout: vk::ImageLayout::UNDEFINED,
+                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
+                access_mask: vk::AccessFlags2::NONE,
+            };
+
             let draw_width =
                 self.swapchain.extent.width.min(draw_image.extent.width) as f32 * render_scale;
 
             let draw_height =
                 self.swapchain.extent.height.min(draw_image.extent.height) as f32 * render_scale;
 
-            let draw_extent = vk::Extent2D::default()
-                .width(draw_width as u32)
-                .height(draw_height as u32);
+            let render_area = vk::Rect2D::default().extent(
+                vk::Extent2D::default()
+                    .width(draw_width as u32)
+                    .height(draw_height as u32),
+            );
 
             self.device
                 .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
@@ -1008,50 +884,96 @@ impl VulkanEngine {
                 0,
             );
 
-            vk_util::transition_image(
+            // TODO: Encapsulate
+            let gpu_scene_data_buffer = Buffer::new(
                 &self.device,
-                cmd,
-                draw_image.image,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::PipelineStageFlags2::TOP_OF_PIPE,
-                vk::AccessFlags2::NONE,
-                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                &mut self.allocator,
+                size_of::<GPUSceneData>() as u64,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                MemoryLocation::CpuToGpu,
+                "draw_geometry",
             );
 
-            vk_util::transition_image(
-                &self.device,
-                cmd,
-                depth_image.image,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-                vk::PipelineStageFlags2::TOP_OF_PIPE,
-                vk::AccessFlags2::NONE,
-                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                    | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            // TODO: part of allocated buffer?
+            vk_util::copy_data_to_allocation(
+                self.scene_data.as_bytes(),
+                gpu_scene_data_buffer.allocation.as_ref().unwrap(),
             );
 
-            self.draw_geometry(
+            // Part of DoubleBuffer/FrameBuffer
+            let global_descriptor = self
+                .double_buffer
+                .allocate_set(&self.device, self.gpu_scene_data_descriptor_layout);
+
+            let mut writer = DescriptorWriter::default();
+            writer.write_buffer(
+                0,
+                gpu_scene_data_buffer.buffer,
+                size_of::<GPUSceneData>() as u64,
+                0,
+                vk::DescriptorType::UNIFORM_BUFFER,
+            );
+
+            writer.update_set(&self.device, global_descriptor);
+
+            self.double_buffer.add_buffer(gpu_scene_data_buffer);
+            // ~TODO: Encapsulate
+
+            // TODO: Prepare data before draw
+            let DrawRecord {
+                opaque_commands,
+                transparent_commands,
+            } = DrawRecord::record_draw_commands(&self.main_draw_context, &self.managed_resources);
+
+            let mut opaque_order: Vec<u32> = (0..opaque_commands.len() as u32).collect();
+
+            opaque_order.sort_by(|lhs, rhs| {
+                let lhs = &opaque_commands[*lhs as usize];
+                let rhs = &opaque_commands[*rhs as usize];
+
+                match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
+                    std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
+                    other => other,
+                }
+            });
+
+            let mut transparent_order: Vec<u32> = (0..transparent_commands.len() as u32).collect();
+
+            transparent_order.sort_by(|lhs, rhs| {
+                let lhs = &transparent_commands[*lhs as usize];
+                let rhs = &transparent_commands[*rhs as usize];
+
+                match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
+                    std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
+                    other => other,
+                }
+            });
+
+            let draw_image_state = default_pass::record(
+                &self.device,
+                &mut self.allocator,
                 cmd,
-                draw_extent,
+                render_area,
+                &draw_src,
+                &depth_src,
+                global_descriptor,
+                &opaque_order,
+                &opaque_commands,
+                &transparent_order,
+                &transparent_commands,
+                &mut self.double_buffer,
+                &mut self.immediate_submit,
                 &mut gpu_stats,
-                draw_image.image_view,
-                depth_image.image_view,
             );
-
-            // TODO: If possible don't get it again here, but draw_geometry is currently &mut self
-            let draw_image = self.double_buffer.get_draw_image();
 
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                draw_image.image,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                draw_image_state.image,
+                draw_image_state.layout,
+                draw_image_state.stage_mask,
+                draw_image_state.access_mask,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                 vk::PipelineStageFlags2::TRANSFER,
                 vk::AccessFlags2::TRANSFER_READ,
             );
@@ -1061,9 +983,9 @@ impl VulkanEngine {
                 cmd,
                 acquired_swapchain.image,
                 vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags2::TOP_OF_PIPE,
                 vk::AccessFlags2::NONE,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
                 vk::AccessFlags2::TRANSFER_WRITE,
             );
@@ -1071,9 +993,9 @@ impl VulkanEngine {
             vk_util::blit_image(
                 &self.device,
                 cmd,
-                draw_image.image,
+                draw_image_state.image,
                 acquired_swapchain.image,
-                draw_extent,
+                render_area.extent,
                 self.swapchain.extent,
             );
 
@@ -1082,9 +1004,9 @@ impl VulkanEngine {
                 cmd,
                 acquired_swapchain.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::PRESENT_SRC_KHR,
                 vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
                 vk::AccessFlags2::TRANSFER_WRITE,
+                vk::ImageLayout::PRESENT_SRC_KHR,
                 vk::PipelineStageFlags2::NONE,
                 vk::AccessFlags2::NONE,
             );

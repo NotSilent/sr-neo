@@ -139,9 +139,9 @@ impl Image {
                 cmd,
                 new_image.image,
                 vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags2::TOP_OF_PIPE,
                 vk::AccessFlags2::NONE,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags2::COPY,
                 vk::AccessFlags2::TRANSFER_WRITE,
             );
@@ -174,9 +174,9 @@ impl Image {
                 cmd,
                 new_image.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::PipelineStageFlags2::COPY,
                 vk::AccessFlags2::TRANSFER_WRITE,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
                 access_flags,
             );
