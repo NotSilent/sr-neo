@@ -141,7 +141,7 @@ impl MasterMaterial {
             .set_shaders(shader.vert, shader.frag)
             .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE) // TODO: Cull and CounterClockwise
+            .set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE) // TODO: Cull and CounterClockwise
             .set_multisampling_none()
             .disable_blending()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)

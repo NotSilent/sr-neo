@@ -395,6 +395,8 @@ impl GLTFLoader {
 
                 // Load indexes
 
+                // TODO: Make sure indexes are in CCW order
+
                 let indices_accessor = primitive.indices().unwrap();
                 let indices_view = indices_accessor.view().unwrap();
 
