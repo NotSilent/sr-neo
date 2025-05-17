@@ -7,7 +7,7 @@ use crate::{
     draw::GPUPushDrawConstant,
     pipeline_builder::PipelineBuilder,
     resource_manager::{ResourceManager, VulkanResource},
-    shader_manager::ShaderManager,
+    shader_manager::GraphicsShader,
 };
 
 // Resource Managers
@@ -102,14 +102,12 @@ impl VulkanResource for MasterMaterial {
 impl MasterMaterial {
     pub fn new(
         device: &Device,
-        shader_manager: &mut ShaderManager,
         frame_layout: vk::DescriptorSetLayout,
         color_attachment_formats: &[vk::Format],
         depth_format: vk::Format,
         material_pass: MaterialPass,
+        shader: &GraphicsShader,
     ) -> Self {
-        let shader = shader_manager.get_graphics_shader_combined(device, "mesh");
-
         let matrix_range = [vk::PushConstantRange::default()
             .offset(0)
             .size(size_of::<GPUPushDrawConstant>() as u32)
@@ -143,17 +141,23 @@ impl MasterMaterial {
             .set_polygon_mode(vk::PolygonMode::FILL)
             .set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE) // TODO: Cull and CounterClockwise
             .set_multisampling_none()
-            .disable_blending()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
             .set_color_attachment_formats(color_attachment_formats)
             .set_depth_format(depth_format)
             .set_pipeline_layout(pipeline_layout);
 
         // TODO: Better split
-        if material_pass == MaterialPass::Transparent {
-            pipeline_builder = pipeline_builder
-                .enable_blending_alphablend()
-                .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
+        if material_pass == MaterialPass::Opaque {
+            for _format in color_attachment_formats {
+                pipeline_builder = pipeline_builder.add_attachment();
+            }
+        } else {
+            for _format in color_attachment_formats {
+                pipeline_builder = pipeline_builder.add_blend_attachment();
+            }
+
+            pipeline_builder =
+                pipeline_builder.enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
         }
 
         let pipeline = pipeline_builder.build_pipeline(device);

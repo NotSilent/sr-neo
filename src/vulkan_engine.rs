@@ -16,13 +16,14 @@ use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
     camera::{Camera, InputManager},
-    default_pass::{self, PassImageState},
+    default_pass::{self},
     default_resources,
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
     double_buffer::{self, DoubleBuffer},
     draw::{DrawCommands, DrawContext, DrawRecord},
+    geometry_pass,
     gltf_loader::GLTFLoader,
     images::{ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
@@ -31,6 +32,7 @@ use crate::{
         MaterialInstanceIndex, MaterialInstanceManager, MaterialPass, MaterialResources,
     },
     meshes::MeshManager,
+    renderpass_common::RenderpassImageState,
     shader_manager::ShaderManager,
     swapchain::{Swapchain, SwapchainError},
     vk_init, vk_util,
@@ -125,10 +127,13 @@ pub struct DefaultResources {
     pub sampler_nearest: vk::Sampler,
     pub sampler_linear: vk::Sampler,
 
+    pub geometry_pass_material: MasterMaterialIndex,
     pub opaque_material: MasterMaterialIndex,
     pub transparent_material: MasterMaterialIndex,
 
     pub default_material_instance: MaterialInstanceIndex,
+
+    pub geomatry_pass_material_instance: MaterialInstanceIndex,
 }
 
 pub struct VulkanEngine {
@@ -315,24 +320,38 @@ impl VulkanEngine {
 
         let mut master_material_manager = MasterMaterialManager::new();
 
+        let geometry_pass_shader =
+            shader_manager.get_graphics_shader_combined(&device, "geometry_pass");
+        let shader = shader_manager.get_graphics_shader_combined(&device, "mesh");
+
+        let geometry_pass_material = MasterMaterial::new(
+            &device,
+            gpu_scene_data_descriptor_layout,
+            &[double_buffer::COLOR_FORMAT, double_buffer::NORMAL_FORMAT],
+            double_buffer::DEPTH_FORMAT,
+            MaterialPass::Opaque,
+            &geometry_pass_shader,
+        );
+
         let default_opaque_material = MasterMaterial::new(
             &device,
-            &mut shader_manager,
             gpu_scene_data_descriptor_layout,
             &[double_buffer::DRAW_FORMAT],
             double_buffer::DEPTH_FORMAT,
             MaterialPass::Opaque,
+            &shader,
         );
 
         let default_transparent_material = MasterMaterial::new(
             &device,
-            &mut shader_manager,
             gpu_scene_data_descriptor_layout,
             &[double_buffer::DRAW_FORMAT],
             double_buffer::DEPTH_FORMAT,
             MaterialPass::Transparent,
+            &shader,
         );
 
+        let geometry_pass_material_index = master_material_manager.add(geometry_pass_material);
         let default_opaque_material_index = master_material_manager.add(default_opaque_material);
         let default_transparent_material_index =
             master_material_manager.add(default_transparent_material);
@@ -370,6 +389,18 @@ impl VulkanEngine {
         };
 
         buffer_manager.add(material_constants_buffer);
+
+        let geometry_pass_material = master_material_manager.get_mut(geometry_pass_material_index);
+
+        let geometry_pass_material_instance = geometry_pass_material.create_instance(
+            &device,
+            &resources,
+            &mut descriptor_allocator,
+            geometry_pass_material_index,
+        );
+
+        let geometry_pass_material_instance_index =
+            material_instance_manager.add(geometry_pass_material_instance);
 
         let default_opaque_material =
             master_material_manager.get_mut(default_opaque_material_index);
@@ -411,9 +442,11 @@ impl VulkanEngine {
             image_normal: image_normal_index,
             sampler_nearest: default_sampler_nearest,
             sampler_linear: default_sampler_linear,
+            geometry_pass_material: geometry_pass_material_index,
             opaque_material: default_opaque_material_index,
             transparent_material: default_transparent_material_index,
             default_material_instance: default_opaque_material_instance_index,
+            geomatry_pass_material_instance: geometry_pass_material_instance_index,
         };
 
         let gltf_loader = GLTFLoader::new(
@@ -492,9 +525,11 @@ impl VulkanEngine {
                 .acquire_next_image(synchronization_resources.swapchain_semaphore)?;
 
             let draw_image = self.double_buffer.get_draw_image();
+            let color_image = self.double_buffer.get_color_image();
+            let normal_image = self.double_buffer.get_normal_image();
             let depth_image = self.double_buffer.get_depth_image();
 
-            let draw_src = PassImageState {
+            let draw_src = RenderpassImageState {
                 image: draw_image.image,
                 image_view: draw_image.image_view,
                 layout: vk::ImageLayout::UNDEFINED,
@@ -502,7 +537,23 @@ impl VulkanEngine {
                 access_mask: vk::AccessFlags2::NONE,
             };
 
-            let depth_src = PassImageState {
+            let color_src = RenderpassImageState {
+                image: color_image.image,
+                image_view: color_image.image_view,
+                layout: vk::ImageLayout::UNDEFINED,
+                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
+                access_mask: vk::AccessFlags2::NONE,
+            };
+
+            let normal_src = RenderpassImageState {
+                image: normal_image.image,
+                image_view: normal_image.image_view,
+                layout: vk::ImageLayout::UNDEFINED,
+                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
+                access_mask: vk::AccessFlags2::NONE,
+            };
+
+            let depth_src = RenderpassImageState {
                 image: depth_image.image,
                 image_view: depth_image.image_view,
                 layout: vk::ImageLayout::UNDEFINED,
@@ -587,15 +638,29 @@ impl VulkanEngine {
             let opaque_commads = DrawCommands::from(opaque_commands);
             let transparent_commads = DrawCommands::from(transparent_commands);
 
+            let geomatry_pass_otuput = geometry_pass::record(
+                &self.device,
+                &mut self.allocator,
+                cmd,
+                render_area,
+                &color_src,
+                &normal_src,
+                &depth_src,
+                global_descriptor,
+                &opaque_commads,
+                &mut self.double_buffer,
+                &mut self.immediate_submit,
+                &mut gpu_stats,
+            );
+
             let draw_image_state = default_pass::record(
                 &self.device,
                 &mut self.allocator,
                 cmd,
                 render_area,
                 &draw_src,
-                &depth_src,
+                &geomatry_pass_otuput.depth,
                 global_descriptor,
-                &opaque_commads,
                 &transparent_commads,
                 &mut self.double_buffer,
                 &mut self.immediate_submit,

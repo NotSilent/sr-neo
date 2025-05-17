@@ -344,7 +344,7 @@ impl GLTFLoader {
             {
                 default_resources.transparent_material
             } else {
-                default_resources.opaque_material
+                default_resources.geometry_pass_material
             };
 
             let master_material = managed_resources

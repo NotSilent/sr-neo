@@ -5,7 +5,7 @@ pub struct PipelineBuilder<'a> {
     shader_stages: Vec<vk::PipelineShaderStageCreateInfo<'a>>,
     input_assembly: vk::PipelineInputAssemblyStateCreateInfo<'a>,
     rasterizer: vk::PipelineRasterizationStateCreateInfo<'a>,
-    color_blend_attachment: vk::PipelineColorBlendAttachmentState, // TODO: multiple
+    color_blend_attachments: Vec<vk::PipelineColorBlendAttachmentState>,
     multisampling: vk::PipelineMultisampleStateCreateInfo<'a>,
     pipeline_layout: vk::PipelineLayout,
     depth_stencil: vk::PipelineDepthStencilStateCreateInfo<'a>,
@@ -18,11 +18,10 @@ impl<'a> PipelineBuilder<'a> {
             .viewport_count(1)
             .scissor_count(1);
 
-        let color_blend_attachments = [self.color_blend_attachment];
         let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
             .logic_op(vk::LogicOp::COPY)
-            .attachments(&color_blend_attachments);
+            .attachments(&self.color_blend_attachments);
 
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
 
@@ -115,45 +114,46 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
-    pub fn disable_blending(mut self) -> Self {
-        self.color_blend_attachment.color_write_mask = vk::ColorComponentFlags::RGBA;
-        self.color_blend_attachment.blend_enable = vk::FALSE;
+    pub fn add_attachment(mut self) -> Self {
+        let attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false);
+
+        self.color_blend_attachments.push(attachment);
 
         self
     }
 
-    pub fn _enable_blending_additive(mut self) -> Self {
-        let Self {
-            color_blend_attachment,
-            ..
-        } = &mut self;
+    // pub fn _enable_blending_additive(mut self) -> Self {
+    //     let Self {
+    //         color_blend_attachment,
+    //         ..
+    //     } = &mut self;
 
-        color_blend_attachment.color_write_mask = vk::ColorComponentFlags::RGBA;
-        color_blend_attachment.blend_enable = vk::TRUE;
-        color_blend_attachment.src_color_blend_factor = vk::BlendFactor::SRC_ALPHA;
-        color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::ONE;
-        color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
-        color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
-        color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
-        color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
+    //     color_blend_attachment.color_write_mask = vk::ColorComponentFlags::RGBA;
+    //     color_blend_attachment.blend_enable = vk::TRUE;
+    //     color_blend_attachment.src_color_blend_factor = vk::BlendFactor::SRC_ALPHA;
+    //     color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::ONE;
+    //     color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
+    //     color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
+    //     color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
+    //     color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
 
-        self
-    }
+    //     self
+    // }
 
-    pub fn enable_blending_alphablend(mut self) -> Self {
-        let Self {
-            color_blend_attachment,
-            ..
-        } = &mut self;
+    pub fn add_blend_attachment(mut self) -> Self {
+        let attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD);
 
-        color_blend_attachment.color_write_mask = vk::ColorComponentFlags::RGBA;
-        color_blend_attachment.blend_enable = vk::TRUE;
-        color_blend_attachment.src_color_blend_factor = vk::BlendFactor::SRC_ALPHA;
-        color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::ONE_MINUS_SRC_ALPHA;
-        color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
-        color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
-        color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
-        color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
+        self.color_blend_attachments.push(attachment);
 
         self
     }

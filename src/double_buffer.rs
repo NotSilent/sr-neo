@@ -20,14 +20,19 @@ pub struct FrameBufferSynchronizationResources {
     pub fence: vk::Fence,
 }
 
-// Move somewhere else?
+// TODO: Move somewhere else?
+// TODO: Formats
 pub const DRAW_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+pub const COLOR_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
 const BUFFER_SIZE: usize = 2;
 
 struct FrameBuffer {
     draw_image: Image,
+    color_image: Image,
+    normal_image: Image,
     depth_image: Image,
 
     command_pool: vk::CommandPool,
@@ -52,12 +57,12 @@ impl FrameBuffer {
         height: u32,
         timestamp_period: f32,
     ) -> Self {
-        let draw_image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
+        let image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
         let draw_image = Image::new(
             device,
             allocator,
-            draw_image_extent,
+            image_extent,
             // TODO: Smaller format
             DRAW_FORMAT,
             vk::ImageUsageFlags::TRANSFER_SRC
@@ -67,10 +72,36 @@ impl FrameBuffer {
             "draw_image",
         );
 
+        let color_image = Image::new(
+            device,
+            allocator,
+            image_extent,
+            // TODO: Smaller format
+            COLOR_FORMAT,
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            false,
+            "color_image",
+        );
+
+        let normal_image = Image::new(
+            device,
+            allocator,
+            image_extent,
+            // TODO: Smaller format
+            NORMAL_FORMAT,
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            false,
+            "normal_image",
+        );
+
         let depth_image = Image::new(
             device,
             allocator,
-            draw_image_extent,
+            image_extent,
             DEPTH_FORMAT,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
             false,
@@ -112,6 +143,8 @@ impl FrameBuffer {
 
         Self {
             draw_image,
+            color_image,
+            normal_image,
             depth_image,
             command_pool,
             command_buffer: vk_util::allocate_command_buffer(device, command_pool),
@@ -164,6 +197,8 @@ impl FrameBuffer {
             self.buffer_manager.destroy(device, allocator);
 
             self.draw_image.destroy(device, allocator);
+            self.color_image.destroy(device, allocator);
+            self.normal_image.destroy(device, allocator);
             self.depth_image.destroy(device, allocator);
         }
     }
@@ -282,6 +317,14 @@ impl DoubleBuffer {
 
     pub fn get_draw_image(&self) -> &Image {
         &self.frame_buffers[self.current_frame].draw_image
+    }
+
+    pub fn get_color_image(&self) -> &Image {
+        &self.frame_buffers[self.current_frame].color_image
+    }
+
+    pub fn get_normal_image(&self) -> &Image {
+        &self.frame_buffers[self.current_frame].normal_image
     }
 
     pub fn get_depth_image(&self) -> &Image {

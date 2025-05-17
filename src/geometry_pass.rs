@@ -1,5 +1,3 @@
-// TODO: Transparent only
-
 use ash::{Device, vk};
 use gpu_allocator::vulkan::Allocator;
 
@@ -12,6 +10,12 @@ use crate::{
     vulkan_engine::GPUStats,
 };
 
+pub struct GeometryPassOutput {
+    pub color: RenderpassImageState,
+    pub normal: RenderpassImageState,
+    pub depth: RenderpassImageState,
+}
+
 // TODO:
 #[allow(clippy::too_many_arguments)]
 pub fn record(
@@ -19,17 +23,26 @@ pub fn record(
     allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
-    draw_src: &RenderpassImageState,
+    color_src: &RenderpassImageState,
+    normal_src: &RenderpassImageState,
     depth_src: &RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
-    transparent_commands: &DrawCommands,
+    opaque_commands: &DrawCommands,
     double_buffer: &mut DoubleBuffer,
     immediate_submit: &mut ImmediateSubmit,
     gpu_stats: &mut GPUStats,
-) -> RenderpassImageState {
-    let draw_dst = RenderpassImageState {
-        image: draw_src.image,
-        image_view: draw_src.image_view,
+) -> GeometryPassOutput {
+    let color_dst = RenderpassImageState {
+        image: color_src.image,
+        image_view: color_src.image_view,
+        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+    };
+
+    let normal_dst = RenderpassImageState {
+        image: normal_src.image,
+        image_view: normal_src.image_view,
         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
         access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
@@ -48,8 +61,10 @@ pub fn record(
         device,
         cmd,
         render_area,
-        draw_src,
-        &draw_dst,
+        color_src,
+        &color_dst,
+        normal_src,
+        &normal_dst,
         depth_src,
         &depth_dst,
     );
@@ -59,7 +74,7 @@ pub fn record(
         allocator,
         cmd,
         global_descriptor,
-        transparent_commands,
+        opaque_commands,
         double_buffer,
         immediate_submit,
         gpu_stats,
@@ -67,28 +82,47 @@ pub fn record(
 
     end(device, cmd);
 
-    draw_dst
+    GeometryPassOutput {
+        color: color_dst,
+        normal: normal_dst,
+        depth: depth_dst,
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn begin(
     device: &Device,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
-    draw_src: &RenderpassImageState,
-    draw_dst: &RenderpassImageState,
+    color_src: &RenderpassImageState,
+    color_dst: &RenderpassImageState,
+    normal_src: &RenderpassImageState,
+    normal_dst: &RenderpassImageState,
     depth_src: &RenderpassImageState,
     depth_dst: &RenderpassImageState,
 ) {
     vk_util::transition_image(
         device,
         cmd,
-        draw_src.image,
-        draw_src.layout,
-        draw_src.stage_mask,
-        draw_src.access_mask,
-        draw_dst.layout,
-        draw_dst.stage_mask,
-        draw_dst.access_mask,
+        color_src.image,
+        color_src.layout,
+        color_src.stage_mask,
+        color_src.access_mask,
+        color_dst.layout,
+        color_dst.stage_mask,
+        color_dst.access_mask,
+    );
+
+    vk_util::transition_image(
+        device,
+        cmd,
+        normal_src.image,
+        normal_src.layout,
+        normal_src.stage_mask,
+        normal_src.access_mask,
+        normal_dst.layout,
+        normal_dst.stage_mask,
+        normal_dst.access_mask,
     );
 
     vk_util::transition_image(
@@ -109,18 +143,27 @@ fn begin(
         },
     });
 
-    let color_attachment = [vk_util::attachment_info(
-        draw_src.image_view,
+    let color_attachment = vk_util::attachment_info(
+        color_src.image_view,
         clear_color,
         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-    )];
+    );
+
+    let normal_attachment = vk_util::attachment_info(
+        normal_src.image_view,
+        clear_color,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+    );
+
+    let color_attachments = [color_attachment, normal_attachment];
 
     let depth_attachment = vk_util::depth_attachment_info(
         depth_src.image_view,
         vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
     );
 
-    let rendering_info = vk_util::rendering_info(render_area, &color_attachment, &depth_attachment);
+    let rendering_info =
+        vk_util::rendering_info(render_area, &color_attachments, &depth_attachment);
 
     let viewports = [vk::Viewport::default()
         .width(render_area.extent.width as f32)
@@ -144,7 +187,7 @@ fn draw(
     allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
-    transparent_commands: &DrawCommands,
+    opaque_commands: &DrawCommands,
     double_buffer: &mut DoubleBuffer,
     immediate_submit: &mut ImmediateSubmit,
     gpu_stats: &mut GPUStats,
@@ -156,7 +199,7 @@ fn draw(
         global_descriptor,
         double_buffer,
         immediate_submit,
-        transparent_commands,
+        opaque_commands,
         gpu_stats,
     );
 }
