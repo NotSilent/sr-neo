@@ -58,6 +58,7 @@ impl DescriptorWriter {
         });
     }
 
+    // TODO: drop pointers
     // TODO: refactor to create_set, allocate and return the new set
     pub fn update_set(&mut self, device: &Device, set: vk::DescriptorSet) {
         let mut writes = vec![];

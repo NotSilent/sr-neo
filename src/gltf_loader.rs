@@ -250,6 +250,7 @@ impl GLTFLoader {
                 format,
                 vk::ImageUsageFlags::SAMPLED,
                 vk::AccessFlags2::SHADER_READ,
+                vk::ImageAspectFlags::COLOR,
                 false,
                 &data,
                 "GLTF_IMAGE_NAME_NONE",

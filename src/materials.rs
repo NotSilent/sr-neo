@@ -139,7 +139,7 @@ impl MasterMaterial {
             .set_shaders(shader.vert, shader.frag)
             .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE) // TODO: Cull and CounterClockwise
+            .set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE)
             .set_multisampling_none()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
             .set_color_attachment_formats(color_attachment_formats)
@@ -160,7 +160,7 @@ impl MasterMaterial {
                 pipeline_builder.enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
         }
 
-        let pipeline = pipeline_builder.build_pipeline(device);
+        let pipeline = pipeline_builder.build(device);
 
         Self {
             material_pass,

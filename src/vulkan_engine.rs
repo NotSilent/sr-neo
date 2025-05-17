@@ -27,6 +27,7 @@ use crate::{
     gltf_loader::GLTFLoader,
     images::{ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
+    lightning_pass,
     materials::{
         MasterMaterial, MasterMaterialIndex, MasterMaterialManager, MaterialConstants,
         MaterialInstanceIndex, MaterialInstanceManager, MaterialPass, MaterialResources,
@@ -128,12 +129,12 @@ pub struct DefaultResources {
     pub sampler_linear: vk::Sampler,
 
     pub geometry_pass_material: MasterMaterialIndex,
-    pub opaque_material: MasterMaterialIndex,
+    pub _opaque_material: MasterMaterialIndex,
     pub transparent_material: MasterMaterialIndex,
 
     pub default_material_instance: MaterialInstanceIndex,
 
-    pub geomatry_pass_material_instance: MaterialInstanceIndex,
+    pub _geomatry_pass_material_instance: MaterialInstanceIndex,
 }
 
 pub struct VulkanEngine {
@@ -225,19 +226,6 @@ impl VulkanEngine {
 
         let properties = unsafe { instance.get_physical_device_properties(physical_device) };
 
-        let double_buffer = DoubleBuffer::new(
-            &device,
-            &mut allocator,
-            graphics_queue_family_index,
-            width,
-            height,
-            properties.limits.timestamp_period,
-        );
-
-        let mut image_manager = ImageManager::new();
-
-        let mut shader_manager = ShaderManager::default();
-
         // init descriptors
         let pool_ratios = vec![
             PoolSizeRatio {
@@ -255,6 +243,30 @@ impl VulkanEngine {
         ];
 
         let mut descriptor_allocator = DescriptorAllocatorGrowable::new(&device, 10, pool_ratios);
+
+        let sampler_nearest_create_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::NEAREST)
+            .min_filter(vk::Filter::NEAREST);
+
+        let sampler_linear_create_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR);
+
+        let default_sampler_nearest = unsafe {
+            device
+                .create_sampler(&sampler_nearest_create_info, None)
+                .unwrap()
+        };
+
+        let default_sampler_linear = unsafe {
+            device
+                .create_sampler(&sampler_linear_create_info, None)
+                .unwrap()
+        };
+
+        let mut image_manager = ImageManager::new();
+
+        let mut shader_manager = ShaderManager::default();
 
         let gpu_scene_data_descriptor_layout = DescriptorLayoutBuilder::default()
             .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
@@ -298,27 +310,20 @@ impl VulkanEngine {
             vk::AccessFlags2::SHADER_READ,
         );
 
-        let sampler_nearest_create_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::NEAREST)
-            .min_filter(vk::Filter::NEAREST);
-
-        let sampler_linear_create_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR);
-
-        let default_sampler_nearest = unsafe {
-            device
-                .create_sampler(&sampler_nearest_create_info, None)
-                .unwrap()
-        };
-
-        let default_sampler_linear = unsafe {
-            device
-                .create_sampler(&sampler_linear_create_info, None)
-                .unwrap()
-        };
-
         let mut master_material_manager = MasterMaterialManager::new();
+
+        let double_buffer = DoubleBuffer::new(
+            &device,
+            &mut allocator,
+            graphics_queue_family_index,
+            width,
+            height,
+            properties.limits.timestamp_period,
+            &mut descriptor_allocator,
+            default_sampler_linear,
+            gpu_scene_data_descriptor_layout,
+            &mut shader_manager,
+        );
 
         let geometry_pass_shader =
             shader_manager.get_graphics_shader_combined(&device, "geometry_pass");
@@ -443,10 +448,10 @@ impl VulkanEngine {
             sampler_nearest: default_sampler_nearest,
             sampler_linear: default_sampler_linear,
             geometry_pass_material: geometry_pass_material_index,
-            opaque_material: default_opaque_material_index,
+            _opaque_material: default_opaque_material_index,
             transparent_material: default_transparent_material_index,
             default_material_instance: default_opaque_material_instance_index,
-            geomatry_pass_material_instance: geometry_pass_material_instance_index,
+            _geomatry_pass_material_instance: geometry_pass_material_instance_index,
         };
 
         let gltf_loader = GLTFLoader::new(
@@ -528,6 +533,7 @@ impl VulkanEngine {
             let color_image = self.double_buffer.get_color_image();
             let normal_image = self.double_buffer.get_normal_image();
             let depth_image = self.double_buffer.get_depth_image();
+            let lightning_pass_description = self.double_buffer.get_lightning_pass_description();
 
             let draw_src = RenderpassImageState {
                 image: draw_image.image,
@@ -638,14 +644,14 @@ impl VulkanEngine {
             let opaque_commads = DrawCommands::from(opaque_commands);
             let transparent_commads = DrawCommands::from(transparent_commands);
 
-            let geomatry_pass_otuput = geometry_pass::record(
+            let geometry_pass_output = geometry_pass::record(
                 &self.device,
                 &mut self.allocator,
                 cmd,
                 render_area,
-                &color_src,
-                &normal_src,
-                &depth_src,
+                color_src,
+                normal_src,
+                depth_src,
                 global_descriptor,
                 &opaque_commads,
                 &mut self.double_buffer,
@@ -653,13 +659,25 @@ impl VulkanEngine {
                 &mut gpu_stats,
             );
 
+            let lightning_pass_output = lightning_pass::record(
+                &self.device,
+                cmd,
+                render_area,
+                draw_src,
+                geometry_pass_output.color,
+                geometry_pass_output.normal,
+                geometry_pass_output.depth,
+                global_descriptor,
+                &lightning_pass_description,
+            );
+
             let draw_image_state = default_pass::record(
                 &self.device,
                 &mut self.allocator,
                 cmd,
                 render_area,
-                &draw_src,
-                &geomatry_pass_otuput.depth,
+                lightning_pass_output.draw,
+                lightning_pass_output.depth,
                 global_descriptor,
                 &transparent_commads,
                 &mut self.double_buffer,
@@ -677,6 +695,7 @@ impl VulkanEngine {
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::PipelineStageFlags2::TRANSFER,
                 vk::AccessFlags2::TRANSFER_READ,
+                vk::ImageAspectFlags::COLOR,
             );
 
             vk_util::transition_image(
@@ -689,6 +708,7 @@ impl VulkanEngine {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
                 vk::AccessFlags2::TRANSFER_WRITE,
+                vk::ImageAspectFlags::COLOR,
             );
 
             vk_util::blit_image(
@@ -710,6 +730,7 @@ impl VulkanEngine {
                 vk::ImageLayout::PRESENT_SRC_KHR,
                 vk::PipelineStageFlags2::NONE,
                 vk::AccessFlags2::NONE,
+                vk::ImageAspectFlags::COLOR,
             );
 
             self.device.cmd_write_timestamp(

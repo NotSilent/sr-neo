@@ -106,6 +106,7 @@ impl Image {
         format: vk::Format,
         image_usage: vk::ImageUsageFlags,
         access_flags: vk::AccessFlags2,
+        access_mask: vk::ImageAspectFlags,
         mipmapped: bool,
         data: &[T],
         name: &str,
@@ -144,6 +145,7 @@ impl Image {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags2::COPY,
                 vk::AccessFlags2::TRANSFER_WRITE,
+                access_mask,
             );
 
             let copy_regions = [vk::BufferImageCopy::default()
@@ -179,6 +181,7 @@ impl Image {
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
                 access_flags,
+                access_mask,
             );
         });
 

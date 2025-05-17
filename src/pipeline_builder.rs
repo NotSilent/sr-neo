@@ -13,7 +13,7 @@ pub struct PipelineBuilder<'a> {
 }
 
 impl<'a> PipelineBuilder<'a> {
-    pub fn build_pipeline(mut self, device: &Device) -> vk::Pipeline {
+    pub fn build(mut self, device: &Device) -> vk::Pipeline {
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
@@ -170,7 +170,7 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
-    pub fn _disable_depth_test(mut self) -> Self {
+    pub fn disable_depth_test(mut self) -> Self {
         let Self { depth_stencil, .. } = &mut self;
 
         depth_stencil.depth_test_enable = vk::FALSE;

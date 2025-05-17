@@ -6,7 +6,7 @@ pub fn image_white(
     device: &Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
-    access_mask: vk::AccessFlags2,
+    access_flags: vk::AccessFlags2,
 ) -> Image {
     let white = vk_util::pack_u32(&[1.0, 1.0, 1.0, 1.0]);
 
@@ -17,7 +17,8 @@ pub fn image_white(
         vk::Extent3D::default().width(1).height(1).depth(1),
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageUsageFlags::SAMPLED,
-        access_mask,
+        access_flags,
+        vk::ImageAspectFlags::COLOR,
         false,
         &[white],
         "image_white",
@@ -40,6 +41,7 @@ pub fn image_black(
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageUsageFlags::SAMPLED,
         access_mask,
+        vk::ImageAspectFlags::COLOR,
         false,
         &[black],
         "image_black",
@@ -76,6 +78,7 @@ pub fn image_error(
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageUsageFlags::SAMPLED,
         access_mask,
+        vk::ImageAspectFlags::COLOR,
         false,
         &pixels,
         "image_error",
@@ -98,6 +101,7 @@ pub fn image_normal(
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageUsageFlags::SAMPLED,
         access_mask,
+        vk::ImageAspectFlags::COLOR,
         false,
         &[normal],
         "image_black",

@@ -21,6 +21,7 @@ where
     S: VulkanSubresource,
     I: Copy + From<usize> + Into<usize> + PartialEq,
 {
+    // TODO: Forgot to actualy add sparse access
     dense: Vec<T>,
     destroyed: Vec<I>,
 

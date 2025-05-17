@@ -65,13 +65,8 @@ pub fn transition_image(
     dst_layout: vk::ImageLayout,
     dst_stage_mask: vk::PipelineStageFlags2,
     dst_access_mask: vk::AccessFlags2,
+    aspect_mask: vk::ImageAspectFlags,
 ) {
-    let aspect_mask = if dst_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL {
-        vk::ImageAspectFlags::DEPTH
-    } else {
-        vk::ImageAspectFlags::COLOR
-    };
-
     let image_barrier = vk::ImageMemoryBarrier2::default()
         .src_stage_mask(src_stage_mask)
         .src_access_mask(src_access_mask)
@@ -202,7 +197,7 @@ pub fn attachment_info(
         .clear_value(clear_value.unwrap_or_default())
 }
 
-pub fn depth_attachment_info(
+pub fn depth_attachment_info_write(
     image_view: vk::ImageView,
     image_layout: vk::ImageLayout,
 ) -> vk::RenderingAttachmentInfo<'static> {
@@ -212,6 +207,17 @@ pub fn depth_attachment_info(
         .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::STORE)
         .clear_value(vk::ClearValue::default())
+}
+
+pub fn _depth_attachment_info_read(
+    image_view: vk::ImageView,
+    image_layout: vk::ImageLayout,
+) -> vk::RenderingAttachmentInfo<'static> {
+    vk::RenderingAttachmentInfo::default()
+        .image_view(image_view)
+        .image_layout(image_layout)
+        .load_op(vk::AttachmentLoadOp::LOAD)
+        .store_op(vk::AttachmentStoreOp::DONT_CARE)
 }
 
 pub fn rendering_info<'a>(

@@ -25,6 +25,7 @@ mod geometry_pass;
 mod gltf_loader;
 mod images;
 mod immediate_submit;
+mod lightning_pass;
 mod materials;
 mod meshes;
 mod pipeline_builder;

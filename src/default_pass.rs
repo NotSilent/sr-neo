@@ -14,13 +14,17 @@ use crate::{
 
 // TODO:
 #[allow(clippy::too_many_arguments)]
+// RenderpassImageState is meant to be cosumed so its not used after recording
+// with the previous state, instead if resources are used
+// they will be provided as an output.
+#[allow(clippy::needless_pass_by_value)]
 pub fn record(
     device: &Device,
     allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
-    draw_src: &RenderpassImageState,
-    depth_src: &RenderpassImageState,
+    draw_src: RenderpassImageState,
+    depth_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
     transparent_commands: &DrawCommands,
     double_buffer: &mut DoubleBuffer,
@@ -48,9 +52,9 @@ pub fn record(
         device,
         cmd,
         render_area,
-        draw_src,
+        &draw_src,
         &draw_dst,
-        depth_src,
+        &depth_src,
         &depth_dst,
     );
 
@@ -89,6 +93,7 @@ fn begin(
         draw_dst.layout,
         draw_dst.stage_mask,
         draw_dst.access_mask,
+        vk::ImageAspectFlags::COLOR,
     );
 
     vk_util::transition_image(
@@ -101,21 +106,16 @@ fn begin(
         depth_dst.layout,
         depth_dst.stage_mask,
         depth_dst.access_mask,
+        vk::ImageAspectFlags::DEPTH,
     );
-
-    let clear_color = Some(vk::ClearValue {
-        color: vk::ClearColorValue {
-            float32: [1.0, 0.0, 1.0, 1.0],
-        },
-    });
 
     let color_attachment = [vk_util::attachment_info(
         draw_src.image_view,
-        clear_color,
+        None,
         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     )];
 
-    let depth_attachment = vk_util::depth_attachment_info(
+    let depth_attachment = vk_util::depth_attachment_info_write(
         depth_src.image_view,
         vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
     );

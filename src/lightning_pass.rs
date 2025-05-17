@@ -1,18 +1,15 @@
 use ash::{Device, vk};
-use gpu_allocator::vulkan::Allocator;
 
-use crate::{
-    double_buffer::DoubleBuffer,
-    draw::{DrawCommand, DrawCommands},
-    immediate_submit::ImmediateSubmit,
-    renderpass_common::RenderpassImageState,
-    vk_util,
-    vulkan_engine::GPUStats,
-};
+use crate::{renderpass_common::RenderpassImageState, vk_util};
 
-pub struct GeometryPassOutput {
-    pub color: RenderpassImageState,
-    pub normal: RenderpassImageState,
+pub struct LightningPassDescription {
+    pub pipeline: vk::Pipeline,
+    pub pipeline_layout: vk::PipelineLayout,
+    pub descriptor_set: vk::DescriptorSet,
+}
+
+pub struct LightningPassOutput {
+    pub draw: RenderpassImageState,
     pub depth: RenderpassImageState,
 }
 
@@ -24,47 +21,53 @@ pub struct GeometryPassOutput {
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
     device: &Device,
-    allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
+    draw_src: RenderpassImageState,
     color_src: RenderpassImageState,
     normal_src: RenderpassImageState,
     depth_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
-    opaque_commands: &DrawCommands,
-    double_buffer: &mut DoubleBuffer,
-    immediate_submit: &mut ImmediateSubmit,
-    gpu_stats: &mut GPUStats,
-) -> GeometryPassOutput {
-    let color_dst = RenderpassImageState {
-        image: color_src.image,
-        image_view: color_src.image_view,
+    lightning_pass_description: &LightningPassDescription,
+) -> LightningPassOutput {
+    let draw_dst = RenderpassImageState {
+        image: draw_src.image,
+        image_view: draw_src.image_view,
         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
         access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+    };
+
+    let color_dst = RenderpassImageState {
+        image: color_src.image,
+        image_view: color_src.image_view,
+        layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        access_mask: vk::AccessFlags2::SHADER_READ,
     };
 
     let normal_dst = RenderpassImageState {
         image: normal_src.image,
         image_view: normal_src.image_view,
-        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-        access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        access_mask: vk::AccessFlags2::SHADER_READ,
     };
 
     let depth_dst = RenderpassImageState {
         image: depth_src.image,
         image_view: depth_src.image_view,
-        layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-        stage_mask: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-            | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-        access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+        layout: vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
+        stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
     };
 
     begin(
         device,
         cmd,
         render_area,
+        &draw_src,
+        &draw_dst,
         &color_src,
         &color_dst,
         &normal_src,
@@ -73,22 +76,12 @@ pub fn record(
         &depth_dst,
     );
 
-    draw(
-        device,
-        allocator,
-        cmd,
-        global_descriptor,
-        opaque_commands,
-        double_buffer,
-        immediate_submit,
-        gpu_stats,
-    );
+    draw(device, cmd, global_descriptor, lightning_pass_description);
 
     end(device, cmd);
 
-    GeometryPassOutput {
-        color: color_dst,
-        normal: normal_dst,
+    LightningPassOutput {
+        draw: draw_dst,
         depth: depth_dst,
     }
 }
@@ -98,6 +91,8 @@ fn begin(
     device: &Device,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
+    draw_src: &RenderpassImageState,
+    draw_dst: &RenderpassImageState,
     color_src: &RenderpassImageState,
     color_dst: &RenderpassImageState,
     normal_src: &RenderpassImageState,
@@ -105,6 +100,19 @@ fn begin(
     depth_src: &RenderpassImageState,
     depth_dst: &RenderpassImageState,
 ) {
+    vk_util::transition_image(
+        device,
+        cmd,
+        draw_src.image,
+        draw_src.layout,
+        draw_src.stage_mask,
+        draw_src.access_mask,
+        draw_dst.layout,
+        draw_dst.stage_mask,
+        draw_dst.access_mask,
+        vk::ImageAspectFlags::COLOR,
+    );
+
     vk_util::transition_image(
         device,
         cmd,
@@ -146,28 +154,19 @@ fn begin(
 
     let clear_color = Some(vk::ClearValue {
         color: vk::ClearColorValue {
-            float32: [0.0, 0.0, 0.0, 0.0],
+            float32: [1.0, 0.0, 1.0, 1.0],
         },
     });
 
-    let color_attachment = vk_util::attachment_info(
-        color_src.image_view,
+    let draw_attachment = vk_util::attachment_info(
+        draw_src.image_view,
         clear_color,
         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     );
 
-    let normal_attachment = vk_util::attachment_info(
-        normal_src.image_view,
-        clear_color,
-        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-    );
+    let color_attachments = [draw_attachment];
 
-    let color_attachments = [color_attachment, normal_attachment];
-
-    let depth_attachment = vk_util::depth_attachment_info_write(
-        depth_src.image_view,
-        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-    );
+    let depth_attachment = vk::RenderingAttachmentInfo::default();
 
     let rendering_info =
         vk_util::rendering_info(render_area, &color_attachments, &depth_attachment);
@@ -191,24 +190,28 @@ fn begin(
 #[allow(clippy::too_many_arguments)]
 fn draw(
     device: &Device,
-    allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
-    opaque_commands: &DrawCommands,
-    double_buffer: &mut DoubleBuffer,
-    immediate_submit: &mut ImmediateSubmit,
-    gpu_stats: &mut GPUStats,
+    lightning_pass_description: &LightningPassDescription,
 ) {
-    DrawCommand::cmd_record_draw_commands(
-        device,
-        allocator,
-        cmd,
-        global_descriptor,
-        double_buffer,
-        immediate_submit,
-        opaque_commands,
-        gpu_stats,
-    );
+    unsafe {
+        device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            lightning_pass_description.pipeline,
+        );
+
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            lightning_pass_description.pipeline_layout,
+            0,
+            &[global_descriptor, lightning_pass_description.descriptor_set],
+            &[],
+        );
+
+        device.cmd_draw(cmd, 3, 1, 0, 0);
+    }
 }
 
 fn end(device: &Device, cmd: vk::CommandBuffer) {

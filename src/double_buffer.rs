@@ -3,9 +3,12 @@ use gpu_allocator::vulkan::Allocator;
 
 use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
-    descriptors::{DescriptorAllocatorGrowable, PoolSizeRatio},
+    descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, PoolSizeRatio},
     images::Image,
+    lightning_pass::LightningPassDescription,
+    pipeline_builder::PipelineBuilder,
     resource_manager::VulkanResource,
+    shader_manager::ShaderManager,
     vk_util,
 };
 
@@ -46,9 +49,13 @@ struct FrameBuffer {
     // TODO: Abstract
     query_pool: vk::QueryPool,
     timestamp_period: f32,
+
+    lightning_descriptor_set: vk::DescriptorSet,
 }
 
 impl FrameBuffer {
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     fn new(
         device: &Device,
         allocator: &mut Allocator,
@@ -56,6 +63,9 @@ impl FrameBuffer {
         width: u32,
         height: u32,
         timestamp_period: f32,
+        global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
+        lightning_descriptor_layout: vk::DescriptorSetLayout,
+        default_sampler_linear: vk::Sampler,
     ) -> Self {
         let image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
@@ -80,7 +90,8 @@ impl FrameBuffer {
             COLOR_FORMAT,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED,
             false,
             "color_image",
         );
@@ -93,7 +104,8 @@ impl FrameBuffer {
             NORMAL_FORMAT,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED,
             false,
             "normal_image",
         );
@@ -103,7 +115,7 @@ impl FrameBuffer {
             allocator,
             image_extent,
             DEPTH_FORMAT,
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             false,
             "depth_image",
         );
@@ -141,6 +153,36 @@ impl FrameBuffer {
 
         unsafe { device.reset_query_pool(query_pool, 0, 2) };
 
+        let lightning_descriptor_set =
+            global_descriptor_allocator.allocate(device, lightning_descriptor_layout);
+
+        let color_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(color_image.image_view)
+            .sampler(default_sampler_linear)];
+
+        let normal_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(normal_image.image_view)
+            .sampler(default_sampler_linear)];
+
+        let write_color = vk::WriteDescriptorSet::default()
+            .dst_binding(0)
+            .dst_set(lightning_descriptor_set)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&color_info);
+
+        let write_normal = vk::WriteDescriptorSet::default()
+            .dst_binding(1)
+            .dst_set(lightning_descriptor_set)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&normal_info);
+
+        unsafe {
+            // TODO: Combine writes?
+            device.update_descriptor_sets(&[write_color, write_normal], &[]);
+        }
+
         Self {
             draw_image,
             color_image,
@@ -156,6 +198,7 @@ impl FrameBuffer {
             descriptors: DescriptorAllocatorGrowable::new(device, 1024, ratios),
             query_pool,
             timestamp_period,
+            lightning_descriptor_set,
         }
     }
 
@@ -208,9 +251,14 @@ impl FrameBuffer {
 pub struct DoubleBuffer {
     current_frame: usize,
     frame_buffers: [FrameBuffer; BUFFER_SIZE],
+
+    lightning_descriptor_layout: vk::DescriptorSetLayout,
+    lightning_pipeline: vk::Pipeline,
+    lightning_pipeline_layout: vk::PipelineLayout,
 }
 
 impl DoubleBuffer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &Device,
         allocator: &mut Allocator,
@@ -218,7 +266,45 @@ impl DoubleBuffer {
         width: u32,
         height: u32,
         timestamp_period: f32,
+        global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
+        default_sampler_linear: vk::Sampler,
+        frame_layout: vk::DescriptorSetLayout,
+        shader_manager: &mut ShaderManager,
     ) -> Self {
+        let shader = shader_manager.get_graphics_shader_combined(device, "lightning_pass");
+
+        let lightning_descriptor_layout = DescriptorLayoutBuilder::default()
+            .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .build(
+                device,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            );
+
+        let layouts = [frame_layout, lightning_descriptor_layout];
+
+        let pipeline_layout_create_info =
+            vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
+
+        let lightning_pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&pipeline_layout_create_info, None)
+                .unwrap()
+        };
+
+        let pipeline_builder = PipelineBuilder::default()
+            .set_shaders(shader.vert, shader.frag)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE)
+            .set_multisampling_none()
+            .set_color_attachment_formats(&[DRAW_FORMAT])
+            .disable_depth_test()
+            .set_pipeline_layout(lightning_pipeline_layout)
+            .add_attachment();
+
+        let lightning_pipeline = pipeline_builder.build(device);
+
         Self {
             current_frame: 0,
             frame_buffers: [
@@ -229,6 +315,9 @@ impl DoubleBuffer {
                     width,
                     height,
                     timestamp_period,
+                    global_descriptor_allocator,
+                    lightning_descriptor_layout,
+                    default_sampler_linear,
                 ),
                 FrameBuffer::new(
                     device,
@@ -237,14 +326,26 @@ impl DoubleBuffer {
                     width,
                     height,
                     timestamp_period,
+                    global_descriptor_allocator,
+                    lightning_descriptor_layout,
+                    default_sampler_linear,
                 ),
             ],
+            lightning_descriptor_layout,
+            lightning_pipeline_layout,
+            lightning_pipeline,
         }
     }
 
     pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
         for buffer in &mut self.frame_buffers {
             buffer.destroy(device, allocator);
+        }
+
+        unsafe {
+            device.destroy_pipeline(self.lightning_pipeline, None);
+            device.destroy_pipeline_layout(self.lightning_pipeline_layout, None);
+            device.destroy_descriptor_set_layout(self.lightning_descriptor_layout, None);
         }
     }
 
@@ -329,5 +430,13 @@ impl DoubleBuffer {
 
     pub fn get_depth_image(&self) -> &Image {
         &self.frame_buffers[self.current_frame].depth_image
+    }
+
+    pub fn get_lightning_pass_description(&self) -> LightningPassDescription {
+        LightningPassDescription {
+            pipeline: self.lightning_pipeline,
+            pipeline_layout: self.lightning_pipeline_layout,
+            descriptor_set: self.frame_buffers[self.current_frame].lightning_descriptor_set,
+        }
     }
 }
