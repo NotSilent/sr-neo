@@ -1,4 +1,4 @@
-use std::mem::ManuallyDrop;
+use std::{f32, mem::ManuallyDrop};
 
 use ash::{
     Device, Entry, Instance,
@@ -425,10 +425,10 @@ impl VulkanEngine {
             material_instance_manager.add(default_opaque_material_instance);
 
         let main_camera = Camera {
-            position: vector![0.0, 0.0, 5.0],
+            position: vector![-6.0, 4.0, 0.0],
             velocity: Vector3::from_element(0.0),
-            pitch: 0.0,
-            yaw: 0.0,
+            pitch: f32::consts::PI / -10.0,
+            yaw: f32::consts::FRAC_PI_2,
         };
 
         let image_white_index = image_manager.add(image_white);
