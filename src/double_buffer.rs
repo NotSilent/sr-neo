@@ -166,6 +166,11 @@ impl FrameBuffer {
             .image_view(normal_image.image_view)
             .sampler(default_sampler_linear)];
 
+        let depth_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL)
+            .image_view(depth_image.image_view)
+            .sampler(default_sampler_linear)];
+
         let write_color = vk::WriteDescriptorSet::default()
             .dst_binding(0)
             .dst_set(lightning_descriptor_set)
@@ -178,9 +183,15 @@ impl FrameBuffer {
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(&normal_info);
 
+        let write_depth = vk::WriteDescriptorSet::default()
+            .dst_binding(2)
+            .dst_set(lightning_descriptor_set)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&depth_info);
+
         unsafe {
             // TODO: Combine writes?
-            device.update_descriptor_sets(&[write_color, write_normal], &[]);
+            device.update_descriptor_sets(&[write_color, write_normal, write_depth], &[]);
         }
 
         Self {
@@ -276,6 +287,7 @@ impl DoubleBuffer {
         let lightning_descriptor_layout = DescriptorLayoutBuilder::default()
             .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .build(
                 device,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,

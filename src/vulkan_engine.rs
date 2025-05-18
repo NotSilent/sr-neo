@@ -9,7 +9,7 @@ use ash::{
 
 use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 
-use nalgebra::{Matrix4, Vector3, Vector4, vector};
+use nalgebra::{Matrix4, Vector2, Vector3, Vector4, vector};
 use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
@@ -53,14 +53,18 @@ pub struct GeoSurface {
 }
 
 #[derive(Default)]
+#[repr(C)]
 struct GPUSceneData {
     view: Matrix4<f32>,
     proj: Matrix4<f32>,
+    inv_proj: Matrix4<f32>,
     view_proj: Matrix4<f32>,
     ambient_color: Vector4<f32>,
     sunlight_direction: Vector4<f32>, // w for sun power
     sunlight_color: Vector4<f32>,
     view_position: Vector3<f32>,
+    _padding: f32,
+    screen_size: Vector2<f32>,
 }
 
 impl GPUSceneData {
@@ -511,7 +515,10 @@ impl VulkanEngine {
 
         let render_scale = render_scale.clamp(0.25, 1.0);
 
-        self.update_scene();
+        self.update_scene(
+            self.swapchain.extent.width as f32,
+            self.swapchain.extent.height as f32,
+        );
 
         unsafe {
             let query_results = self
@@ -787,7 +794,7 @@ impl VulkanEngine {
         Ok(gpu_stats)
     }
 
-    fn update_scene(&mut self) {
+    fn update_scene(&mut self, width: f32, height: f32) {
         self.main_camera.update();
 
         self.main_draw_context.render_objects.clear();
@@ -801,6 +808,7 @@ impl VulkanEngine {
         self.scene_data.proj = Camera::get_projection(
             draw_image.extent.height as f32 / draw_image.extent.width as f32,
         );
+        self.scene_data.inv_proj = self.scene_data.proj.try_inverse().unwrap();
         // self.scene_data.proj = Camera::get_orthographic(-10.0, 10.0, -10.0, 10.0, 0.01, 1000.0);
         self.scene_data.view_proj = self.scene_data.proj * self.scene_data.view;
 
@@ -813,6 +821,7 @@ impl VulkanEngine {
             vector![sin_x, 1.0, cos_z].normalize().insert_row(3, 1.0);
 
         self.scene_data.view_position = self.main_camera.get_position();
+        self.scene_data.screen_size = vector![width, height];
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {

@@ -7,10 +7,7 @@
 
 layout (location = 0) out vec3 out_color;
 layout (location = 1) out vec2 out_uv;
-layout (location = 2) out vec3 out_frag_position_tbn;
-layout (location = 3) out vec3 out_light_direction_tbn; //
-layout (location = 4) out float out_light_power; //
-layout (location = 5) out vec3 out_view_position_tbn;
+layout (location = 2) out mat3 out_tbn_to_view;
 
 struct Vertex 
 {
@@ -45,7 +42,7 @@ layout( push_constant ) uniform constants
 
 void main() 
 {
-	UniformData uniform_data = PushConstants.uniform_buffer.uniforms[PushConstants.index+ gl_DrawID];
+	UniformData uniform_data = PushConstants.uniform_buffer.uniforms[PushConstants.index + gl_DrawID];
 	Vertex v = PushConstants.vertexBuffer.vertices[gl_VertexIndex];
 	
 	vec4 position = vec4(v.position, 1.0f);
@@ -62,14 +59,9 @@ void main()
 	// then retrieve perpendicular vector B with the cross product of T and N
 	vec3 B = cross(N, T) * v.tangent.w;
 
-	// Transforms world-space to TBN space
-	mat3 TBN = inverse(mat3(T, B, N));
+	mat3 TBN = mat3(T, B, N);
 
-	// Transform world-space LightDirection to TBN space
-	out_frag_position_tbn = TBN * mat3(uniform_data.world_matrix) * position.xyz;
-	out_light_direction_tbn = TBN * sceneData.sunlight_direction.xyz;//, 1.0;
-	out_light_power = sceneData.sunlight_direction.w;
-	out_view_position_tbn = TBN * sceneData.view_position;
+    out_tbn_to_view = mat3(sceneData.view) * TBN;
 
 	gl_Position =  sceneData.view_proj * uniform_data.world_matrix * position;
 }

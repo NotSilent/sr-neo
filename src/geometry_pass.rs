@@ -18,7 +18,7 @@ pub struct GeometryPassOutput {
 
 // TODO:
 #[allow(clippy::too_many_arguments)]
-// RenderpassImageState is meant to be cosumed so its not used after recording
+// RenderpassImageState is meant to be cosumed so it's not used after recording
 // with the previous state, instead if resources are used
 // they will be provided as an output.
 #[allow(clippy::needless_pass_by_value)]
