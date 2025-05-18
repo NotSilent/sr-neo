@@ -115,7 +115,7 @@ fn begin(
         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     )];
 
-    let depth_attachment = vk_util::depth_attachment_info_write(
+    let depth_attachment = vk_util::depth_attachment_info_read(
         depth_src.image_view,
         vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
     );

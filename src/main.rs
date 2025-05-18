@@ -16,11 +16,11 @@ use winit::{
 
 mod buffers;
 mod camera;
-mod default_pass;
 mod default_resources;
 mod descriptors;
 mod double_buffer;
 mod draw;
+mod forward_pass;
 mod geometry_pass;
 mod gltf_loader;
 mod images;

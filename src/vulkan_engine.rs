@@ -16,13 +16,13 @@ use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
     camera::{Camera, InputManager},
-    default_pass::{self},
     default_resources,
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
     double_buffer::{self, DoubleBuffer},
     draw::{DrawCommands, DrawContext, DrawRecord},
+    forward_pass::{self},
     geometry_pass,
     gltf_loader::GLTFLoader,
     images::{ImageIndex, ImageManager},
@@ -133,12 +133,9 @@ pub struct DefaultResources {
     pub sampler_linear: vk::Sampler,
 
     pub geometry_pass_material: MasterMaterialIndex,
-    pub _opaque_material: MasterMaterialIndex,
     pub transparent_material: MasterMaterialIndex,
 
-    pub default_material_instance: MaterialInstanceIndex,
-
-    pub _geomatry_pass_material_instance: MaterialInstanceIndex,
+    pub geometry_pass_material_instance: MaterialInstanceIndex,
 }
 
 pub struct VulkanEngine {
@@ -342,15 +339,6 @@ impl VulkanEngine {
             &geometry_pass_shader,
         );
 
-        let default_opaque_material = MasterMaterial::new(
-            &device,
-            gpu_scene_data_descriptor_layout,
-            &[double_buffer::DRAW_FORMAT],
-            double_buffer::DEPTH_FORMAT,
-            MaterialPass::Opaque,
-            &shader,
-        );
-
         let default_transparent_material = MasterMaterial::new(
             &device,
             gpu_scene_data_descriptor_layout,
@@ -361,7 +349,6 @@ impl VulkanEngine {
         );
 
         let geometry_pass_material_index = master_material_manager.add(geometry_pass_material);
-        let default_opaque_material_index = master_material_manager.add(default_opaque_material);
         let default_transparent_material_index =
             master_material_manager.add(default_transparent_material);
 
@@ -411,19 +398,6 @@ impl VulkanEngine {
         let geometry_pass_material_instance_index =
             material_instance_manager.add(geometry_pass_material_instance);
 
-        let default_opaque_material =
-            master_material_manager.get_mut(default_opaque_material_index);
-
-        let default_opaque_material_instance = default_opaque_material.create_instance(
-            &device,
-            &resources,
-            &mut descriptor_allocator,
-            default_opaque_material_index,
-        );
-
-        let default_opaque_material_instance_index =
-            material_instance_manager.add(default_opaque_material_instance);
-
         let main_camera = Camera {
             position: vector![-6.0, 4.0, 0.0],
             velocity: Vector3::from_element(0.0),
@@ -452,10 +426,8 @@ impl VulkanEngine {
             sampler_nearest: default_sampler_nearest,
             sampler_linear: default_sampler_linear,
             geometry_pass_material: geometry_pass_material_index,
-            _opaque_material: default_opaque_material_index,
             transparent_material: default_transparent_material_index,
-            default_material_instance: default_opaque_material_instance_index,
-            _geomatry_pass_material_instance: geometry_pass_material_instance_index,
+            geometry_pass_material_instance: geometry_pass_material_instance_index,
         };
 
         let gltf_loader = GLTFLoader::new(
@@ -678,7 +650,7 @@ impl VulkanEngine {
                 &lightning_pass_description,
             );
 
-            let draw_image_state = default_pass::record(
+            let draw_image_state = forward_pass::record(
                 &self.device,
                 &mut self.allocator,
                 cmd,

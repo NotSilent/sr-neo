@@ -386,7 +386,7 @@ impl GLTFLoader {
                         materials[material]
                     } else {
                         // TODO: What exactly would default material be for GLTF?
-                        default_resources.default_material_instance
+                        default_resources.geometry_pass_material_instance
                     },
                 });
 

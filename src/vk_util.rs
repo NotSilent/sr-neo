@@ -209,7 +209,7 @@ pub fn depth_attachment_info_write(
         .clear_value(vk::ClearValue::default())
 }
 
-pub fn _depth_attachment_info_read(
+pub fn depth_attachment_info_read(
     image_view: vk::ImageView,
     image_layout: vk::ImageLayout,
 ) -> vk::RenderingAttachmentInfo<'static> {
