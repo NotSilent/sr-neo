@@ -328,7 +328,7 @@ impl VulkanEngine {
 
         let geometry_pass_shader =
             shader_manager.get_graphics_shader_combined(&device, "geometry_pass");
-        let shader = shader_manager.get_graphics_shader_combined(&device, "mesh");
+        let shader = shader_manager.get_graphics_shader_combined(&device, "forward_pass");
 
         let geometry_pass_material = MasterMaterial::new(
             &device,

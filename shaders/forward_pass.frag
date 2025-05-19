@@ -18,7 +18,7 @@ layout (location = 0) out vec4 out_frag_color;
 // Modified to be in TBH space
 void main()
 {
-	vec4 color = texture(color_tex,in_uv) * material_data.color_factors;
+	vec4 color = pow(texture(color_tex,in_uv), vec4(2.2));
 
 	//TODO: This is temp for master material, should be different shader for masked
 	if (color.w < 0.5) {
@@ -26,8 +26,8 @@ void main()
 	}
 
 	vec3 normal = texture(normal_tex,in_uv).xyz * 2.0 - 1.0;
-	vec3 albedo = pow(color.rgb, vec3(2.2)) * in_color;
-	vec4 metal_rough = texture(metal_rough_tex,in_uv);
+	vec3 albedo = color.rgb * in_color * material_data.color_factors.rgb;
+	vec4 metal_rough = pow(texture(metal_rough_tex,in_uv), vec4(2.2));
 
 	float metallic = metal_rough.b * material_data.metal_rough_factors.x;
 	float roughness = metal_rough.g * material_data.metal_rough_factors.y;
@@ -89,5 +89,5 @@ void main()
     // gamma correct
     final_color = pow(final_color, vec3(1.0/2.2)); 
 
-    out_frag_color = vec4(final_color, color.a);
+    out_frag_color = vec4(final_color, color.a * in_color * material_data.color_factors.a);
 }

@@ -14,16 +14,16 @@ layout (location = 1) out vec4 out_normal; // normal + roughness
 
 void main()
 {
-	vec4 color = texture(color_tex,in_uv);
+	vec4 color = pow(texture(color_tex,in_uv), vec4(2.2));
 
 	//TODO: This is temp for master material, should be different shader for masked
 	if (color.w < 0.5) {
 		discard;
 	}
 
-	vec3 albedo = pow(color.rgb, vec3(2.2)) * material_data.color_factors.rgb;
+	vec3 albedo = color.rgb * in_color;
 	vec3 normal = texture(normal_tex,in_uv).rgb * 2.0 - 1.0;
-	vec4 metal_rough = texture(metal_rough_tex,in_uv);
+	vec4 metal_rough = pow(texture(metal_rough_tex,in_uv), vec4(2.2));
 	
 	vec3 view_space_normal = normalize(in_tbn_to_view * normal);
     
