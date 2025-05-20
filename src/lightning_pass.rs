@@ -27,6 +27,7 @@ pub fn record(
     color_src: RenderpassImageState,
     normal_src: RenderpassImageState,
     depth_src: RenderpassImageState,
+    shadow_map_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
     lightning_pass_description: &LightningPassDescription,
 ) -> LightningPassOutput {
@@ -62,6 +63,14 @@ pub fn record(
         access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
     };
 
+    let shadow_map_dst = RenderpassImageState {
+        image: shadow_map_src.image,
+        image_view: shadow_map_src.image_view,
+        layout: vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
+        stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
+    };
+
     begin(
         device,
         cmd,
@@ -74,6 +83,8 @@ pub fn record(
         &normal_dst,
         &depth_src,
         &depth_dst,
+        &shadow_map_src,
+        &shadow_map_dst,
     );
 
     draw(device, cmd, global_descriptor, lightning_pass_description);
@@ -99,6 +110,8 @@ fn begin(
     normal_dst: &RenderpassImageState,
     depth_src: &RenderpassImageState,
     depth_dst: &RenderpassImageState,
+    shadow_map_src: &RenderpassImageState,
+    shadow_map_dst: &RenderpassImageState,
 ) {
     vk_util::transition_image(
         device,
@@ -149,6 +162,19 @@ fn begin(
         depth_dst.layout,
         depth_dst.stage_mask,
         depth_dst.access_mask,
+        vk::ImageAspectFlags::DEPTH,
+    );
+
+    vk_util::transition_image(
+        device,
+        cmd,
+        shadow_map_src.image,
+        shadow_map_src.layout,
+        shadow_map_src.stage_mask,
+        shadow_map_src.access_mask,
+        shadow_map_dst.layout,
+        shadow_map_dst.stage_mask,
+        shadow_map_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
     );
 

@@ -6,10 +6,6 @@
 #include "scene_data.glsl"
 #include "input_structures.glsl"
 
-layout (location = 0) out vec3 out_color;
-layout (location = 1) out vec2 out_uv;
-layout (location = 2) out mat3 out_tbn_to_view;
-
 struct Vertex 
 {
 	vec3 position;
@@ -48,20 +44,5 @@ void main()
 	
 	vec4 position = vec4(v.position, 1.0f);
 
-	out_color = v.color.xyz * material_data.color_factors.xyz;	
-	out_uv.x = v.uv_x;
-	out_uv.y = v.uv_y;
-
-	vec3 T = normalize(mat3(uniform_data.world_matrix) * v.tangent.xyz);
-	vec3 N = normalize(mat3(uniform_data.world_matrix) * v.normal);
-	// re-orthogonalize T with respect to N
-	T = normalize(T - dot(T, N) * N);
-	// then retrieve perpendicular vector B with the cross product of T and N
-	vec3 B = cross(N, T) * v.tangent.w;
-
-	mat3 TBN = mat3(T, B, N);
-
-    out_tbn_to_view = mat3(scene_data.view) * TBN;
-
-	gl_Position =  scene_data.view_proj * uniform_data.world_matrix * position;
+	gl_Position =  scene_data.light_view_proj * uniform_data.world_matrix * position;
 }

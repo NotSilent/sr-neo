@@ -35,6 +35,7 @@ use crate::{
     meshes::MeshManager,
     renderpass_common::RenderpassImageState,
     shader_manager::ShaderManager,
+    shadow_map_pass,
     swapchain::{Swapchain, SwapchainError},
     vk_init, vk_util,
 };
@@ -54,11 +55,13 @@ pub struct GeoSurface {
 
 #[derive(Default)]
 #[repr(C)]
-struct GPUSceneData {
+struct SceneData {
     view: Matrix4<f32>,
     proj: Matrix4<f32>,
     inv_proj: Matrix4<f32>,
     view_proj: Matrix4<f32>,
+    light_view: Matrix4<f32>,
+    light_view_proj: Matrix4<f32>,
     ambient_color: Vector4<f32>,
     sunlight_direction: Vector4<f32>, // w for sun power
     sunlight_color: Vector4<f32>,
@@ -67,7 +70,7 @@ struct GPUSceneData {
     screen_size: Vector2<f32>,
 }
 
-impl GPUSceneData {
+impl SceneData {
     fn as_bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
@@ -133,6 +136,7 @@ pub struct DefaultResources {
     pub sampler_linear: vk::Sampler,
 
     pub geometry_pass_material: MasterMaterialIndex,
+    pub shadow_map_pass_material: MasterMaterialIndex,
     pub transparent_material: MasterMaterialIndex,
 
     pub geometry_pass_material_instance: MaterialInstanceIndex,
@@ -164,7 +168,7 @@ pub struct VulkanEngine {
 
     immediate_submit: ImmediateSubmit,
 
-    scene_data: GPUSceneData,
+    scene_data: SceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
     managed_resources: ManagedResources,
@@ -179,6 +183,8 @@ pub struct VulkanEngine {
 
 impl VulkanEngine {
     const _USE_VALIDATION_LAYERS: bool = false;
+
+    const DIRECTIONAL_LIGHT_CLIP_LENGTH: f32 = 100.0;
 
     #[allow(clippy::too_many_lines)]
     pub fn new(
@@ -328,6 +334,8 @@ impl VulkanEngine {
 
         let geometry_pass_shader =
             shader_manager.get_graphics_shader_combined(&device, "geometry_pass");
+        let shadow_map_pass_shader =
+            shader_manager.get_graphics_shader_combined(&device, "shadow_map_pass");
         let shader = shader_manager.get_graphics_shader_combined(&device, "forward_pass");
 
         let geometry_pass_material = MasterMaterial::new(
@@ -337,6 +345,14 @@ impl VulkanEngine {
             double_buffer::DEPTH_FORMAT,
             MaterialPass::Opaque,
             &geometry_pass_shader,
+        );
+
+        let shadow_map_pass_material = MasterMaterial::new_shadow_map(
+            &device,
+            gpu_scene_data_descriptor_layout,
+            double_buffer::SHADOW_MAP_FORMAT,
+            MaterialPass::Opaque,
+            &shadow_map_pass_shader,
         );
 
         let default_transparent_material = MasterMaterial::new(
@@ -349,6 +365,7 @@ impl VulkanEngine {
         );
 
         let geometry_pass_material_index = master_material_manager.add(geometry_pass_material);
+        let shadow_map_pass_material_index = master_material_manager.add(shadow_map_pass_material);
         let default_transparent_material_index =
             master_material_manager.add(default_transparent_material);
 
@@ -428,6 +445,7 @@ impl VulkanEngine {
             geometry_pass_material: geometry_pass_material_index,
             transparent_material: default_transparent_material_index,
             geometry_pass_material_instance: geometry_pass_material_instance_index,
+            shadow_map_pass_material: shadow_map_pass_material_index,
         };
 
         let gltf_loader = GLTFLoader::new(
@@ -462,7 +480,7 @@ impl VulkanEngine {
 
             immediate_submit,
 
-            scene_data: GPUSceneData::default(),
+            scene_data: SceneData::default(),
             gpu_scene_data_descriptor_layout,
 
             managed_resources,
@@ -512,6 +530,7 @@ impl VulkanEngine {
             let color_image = self.double_buffer.get_color_image();
             let normal_image = self.double_buffer.get_normal_image();
             let depth_image = self.double_buffer.get_depth_image();
+            let shadow_map_image = self.double_buffer.get_shadow_map_image();
             let lightning_pass_description = self.double_buffer.get_lightning_pass_description();
 
             let draw_src = RenderpassImageState {
@@ -541,6 +560,14 @@ impl VulkanEngine {
             let depth_src = RenderpassImageState {
                 image: depth_image.image,
                 image_view: depth_image.image_view,
+                layout: vk::ImageLayout::UNDEFINED,
+                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
+                access_mask: vk::AccessFlags2::NONE,
+            };
+
+            let shadow_map_src = RenderpassImageState {
+                image: shadow_map_image.image,
+                image_view: shadow_map_image.image_view,
                 layout: vk::ImageLayout::UNDEFINED,
                 stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
                 access_mask: vk::AccessFlags2::NONE,
@@ -582,7 +609,7 @@ impl VulkanEngine {
             let gpu_scene_data_buffer = Buffer::new(
                 &self.device,
                 &mut self.allocator,
-                size_of::<GPUSceneData>() as u64,
+                size_of::<SceneData>() as u64,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 MemoryLocation::CpuToGpu,
                 "draw_geometry",
@@ -603,7 +630,7 @@ impl VulkanEngine {
             writer.write_buffer(
                 0,
                 gpu_scene_data_buffer.buffer,
-                size_of::<GPUSceneData>() as u64,
+                size_of::<SceneData>() as u64,
                 0,
                 vk::DescriptorType::UNIFORM_BUFFER,
             );
@@ -638,6 +665,24 @@ impl VulkanEngine {
                 &mut gpu_stats,
             );
 
+            let shadow_pass_master_material = self
+                .managed_resources
+                .master_materials
+                .get(self.default_resources.shadow_map_pass_material);
+
+            let shadow_map_pass_output = shadow_map_pass::record(
+                &self.device,
+                &mut self.allocator,
+                cmd,
+                shadow_map_src,
+                shadow_pass_master_material,
+                global_descriptor,
+                &opaque_commads,
+                &mut self.double_buffer,
+                &mut self.immediate_submit,
+                &mut gpu_stats,
+            );
+
             let lightning_pass_output = lightning_pass::record(
                 &self.device,
                 cmd,
@@ -646,6 +691,7 @@ impl VulkanEngine {
                 geometry_pass_output.color,
                 geometry_pass_output.normal,
                 geometry_pass_output.depth,
+                shadow_map_pass_output.shadow_map,
                 global_descriptor,
                 &lightning_pass_description,
             );
@@ -776,12 +822,15 @@ impl VulkanEngine {
 
         self.gltf_loader.draw(&mut self.main_draw_context);
 
+        self.scene_data.view_position = self.main_camera.get_position();
+
         self.scene_data.view = self.main_camera.get_view();
+        //self.scene_data.inv_view = self.scene_data.view.try_inverse().unwrap();
         self.scene_data.proj = Camera::get_projection(
             draw_image.extent.height as f32 / draw_image.extent.width as f32,
         );
+        //self.scene_data.proj = Camera::get_orthographic(-25.0, 25.0, -25.0, 25.0, 100.0, 0.01);
         self.scene_data.inv_proj = self.scene_data.proj.try_inverse().unwrap();
-        // self.scene_data.proj = Camera::get_orthographic(-10.0, 10.0, -10.0, 10.0, 0.01, 1000.0);
         self.scene_data.view_proj = self.scene_data.proj * self.scene_data.view;
 
         self.scene_data.ambient_color = Vector4::from_element(0.1);
@@ -790,9 +839,34 @@ impl VulkanEngine {
         let sin_x = f32::sin(self.frame_number as f32 / 200.0);
         let cos_z = f32::cos(self.frame_number as f32 / 200.0);
         self.scene_data.sunlight_direction =
-            vector![sin_x, 1.0, cos_z].normalize().insert_row(3, 1.0);
+            vector![sin_x, 4.0, cos_z].normalize().insert_row(3, 1.0);
 
-        self.scene_data.view_position = self.main_camera.get_position();
+        self.scene_data.light_view = Matrix4::look_at_rh(
+            &From::from(
+                self.scene_data.view_position
+                    + (self.scene_data.sunlight_direction.xyz()
+                        * Self::DIRECTIONAL_LIGHT_CLIP_LENGTH
+                        / 2.0),
+            ),
+            &From::from(
+                self.scene_data.view_position
+                    + -self.scene_data.sunlight_direction.xyz()
+                        * Self::DIRECTIONAL_LIGHT_CLIP_LENGTH
+                        / 2.0,
+            ),
+            &Vector3::y(),
+        );
+
+        let light_proj = Camera::get_orthographic(
+            -25.0,
+            25.0,
+            -25.0,
+            25.0,
+            Self::DIRECTIONAL_LIGHT_CLIP_LENGTH,
+            0.01,
+        );
+        self.scene_data.light_view_proj = light_proj * self.scene_data.light_view;
+
         self.scene_data.screen_size = vector![width, height];
     }
 

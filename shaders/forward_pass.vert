@@ -3,6 +3,7 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_buffer_reference : require
 
+#include "scene_data.glsl"
 #include "input_structures.glsl"
 
 layout (location = 0) out vec3 out_color;
@@ -45,7 +46,7 @@ layout( push_constant ) uniform constants
 
 void main() 
 {
-	UniformData uniform_data = PushConstants.uniform_buffer.uniforms[PushConstants.index+ gl_DrawID];
+	UniformData uniform_data = PushConstants.uniform_buffer.uniforms[PushConstants.index + gl_DrawID];
 	Vertex v = PushConstants.vertexBuffer.vertices[gl_VertexIndex];
 	
 	vec4 position = vec4(v.position, 1.0f);
@@ -67,9 +68,9 @@ void main()
 
 	// Transform world-space LightDirection to TBN space
 	out_frag_position_tbn = TBN * mat3(uniform_data.world_matrix) * position.xyz;
-	out_light_direction_tbn = TBN * sceneData.sunlight_direction.xyz;//, 1.0;
-	out_light_power = sceneData.sunlight_direction.w;
-	out_view_position_tbn = TBN * sceneData.view_position;
+	out_light_direction_tbn = TBN * scene_data.sunlight_direction.xyz;//, 1.0;
+	out_light_power = scene_data.sunlight_direction.w;
+	out_view_position_tbn = TBN * scene_data.view_position;
 
-	gl_Position =  sceneData.view_proj * uniform_data.world_matrix * position;
+	gl_Position =  scene_data.view_proj * uniform_data.world_matrix * position;
 }

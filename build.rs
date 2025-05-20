@@ -17,7 +17,7 @@ fn main() -> io::Result<()> {
 
                 // Compile with glslangValidator
                 let output_spv = path.with_extension(format!("{ext}.spv"));
-                let _ = Command::new("glslangValidator")
+                let status = Command::new("glslangValidator")
                     .args([
                         "-V",
                         path.to_str().unwrap(),
@@ -29,7 +29,11 @@ fn main() -> io::Result<()> {
                     .status()
                     .expect("Failed to run glslangValidator");
 
-                // assert!(status.success(), "Shader compilation failed for {path:?}");
+                assert!(
+                    status.success(),
+                    "Shader compilation failed for {}",
+                    path.to_str().unwrap()
+                );
 
                 //println!("cargo:warning=Compiled {}", filename.display());
             }

@@ -47,11 +47,11 @@ pub struct DrawCommands {
 }
 
 impl DrawCommands {
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.order.len()
     }
 
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }

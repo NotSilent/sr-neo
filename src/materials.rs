@@ -171,6 +171,51 @@ impl MasterMaterial {
         }
     }
 
+    pub fn new_shadow_map(
+        device: &Device,
+        frame_layout: vk::DescriptorSetLayout,
+        depth_format: vk::Format,
+        material_pass: MaterialPass,
+        shader: &GraphicsShader,
+    ) -> Self {
+        let matrix_range = [vk::PushConstantRange::default()
+            .offset(0)
+            .size(size_of::<GPUPushDrawConstant>() as u32)
+            .stage_flags(vk::ShaderStageFlags::VERTEX)];
+
+        let layouts = [frame_layout];
+
+        let pipeline_layouts_create_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&layouts)
+            .push_constant_ranges(&matrix_range);
+
+        let pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&pipeline_layouts_create_info, None)
+                .unwrap()
+        };
+
+        let pipeline_builder = PipelineBuilder::default()
+            .set_shaders(shader.vert, shader.frag)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::FRONT, vk::FrontFace::COUNTER_CLOCKWISE)
+            .set_multisampling_none()
+            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
+            .set_depth_format(depth_format)
+            .set_pipeline_layout(pipeline_layout);
+
+        let pipeline = pipeline_builder.build(device);
+
+        Self {
+            material_pass,
+            pipeline_layout,
+            pipeline,
+            material_layout: vk::DescriptorSetLayout::null(),
+            writer: DescriptorWriter::default(),
+        }
+    }
+
     pub fn create_instance(
         // TODO: &self
         &mut self,

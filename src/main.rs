@@ -32,6 +32,7 @@ mod pipeline_builder;
 mod renderpass_common;
 mod resource_manager;
 mod shader_manager;
+mod shadow_map_pass;
 mod swapchain;
 mod vk_init;
 mod vk_util;

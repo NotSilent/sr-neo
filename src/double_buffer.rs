@@ -29,6 +29,9 @@ pub const DRAW_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 pub const COLOR_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
+pub const SHADOW_MAP_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
+
+pub const SHADOW_MAP_DIMENSION: u32 = 2000;
 
 const BUFFER_SIZE: usize = 2;
 
@@ -37,6 +40,7 @@ struct FrameBuffer {
     color_image: Image,
     normal_image: Image,
     depth_image: Image,
+    shadow_map_image: Image,
 
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
@@ -120,6 +124,19 @@ impl FrameBuffer {
             "depth_image",
         );
 
+        let shadow_map_image = Image::new(
+            device,
+            allocator,
+            vk::Extent3D::default()
+                .width(SHADOW_MAP_DIMENSION)
+                .height(SHADOW_MAP_DIMENSION)
+                .depth(1),
+            SHADOW_MAP_FORMAT,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            false,
+            "shadow_map_image",
+        );
+
         let command_pool = vk_util::create_command_pool(device, graphics_queue_family_index);
 
         let ratios = vec![
@@ -171,6 +188,12 @@ impl FrameBuffer {
             .image_view(depth_image.image_view)
             .sampler(default_sampler_linear)];
 
+        // TODO: Sampler: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
+        let shadow_map_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL)
+            .image_view(shadow_map_image.image_view)
+            .sampler(default_sampler_linear)];
+
         let write_color = vk::WriteDescriptorSet::default()
             .dst_binding(0)
             .dst_set(lightning_descriptor_set)
@@ -184,14 +207,23 @@ impl FrameBuffer {
             .image_info(&normal_info);
 
         let write_depth = vk::WriteDescriptorSet::default()
-            .dst_binding(2)
+            .dst_binding(3)
             .dst_set(lightning_descriptor_set)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(&depth_info);
 
+        let write_shadow_map = vk::WriteDescriptorSet::default()
+            .dst_binding(4)
+            .dst_set(lightning_descriptor_set)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&shadow_map_info);
+
         unsafe {
             // TODO: Combine writes?
-            device.update_descriptor_sets(&[write_color, write_normal, write_depth], &[]);
+            device.update_descriptor_sets(
+                &[write_color, write_normal, write_depth, write_shadow_map],
+                &[],
+            );
         }
 
         Self {
@@ -199,6 +231,7 @@ impl FrameBuffer {
             color_image,
             normal_image,
             depth_image,
+            shadow_map_image,
             command_pool,
             command_buffer: vk_util::allocate_command_buffer(device, command_pool),
             synchronization_resources: FrameBufferSynchronizationResources {
@@ -254,6 +287,7 @@ impl FrameBuffer {
             self.color_image.destroy(device, allocator);
             self.normal_image.destroy(device, allocator);
             self.depth_image.destroy(device, allocator);
+            self.shadow_map_image.destroy(device, allocator);
         }
     }
 }
@@ -288,6 +322,8 @@ impl DoubleBuffer {
             .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(4, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .build(
                 device,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -442,6 +478,10 @@ impl DoubleBuffer {
 
     pub fn get_depth_image(&self) -> &Image {
         &self.frame_buffers[self.current_frame].depth_image
+    }
+
+    pub fn get_shadow_map_image(&self) -> &Image {
+        &self.frame_buffers[self.current_frame].shadow_map_image
     }
 
     pub fn get_lightning_pass_description(&self) -> LightningPassDescription {
