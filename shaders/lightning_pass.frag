@@ -14,7 +14,7 @@ layout (location = 0) in vec2 in_uv;
  
 layout (location = 0) out vec4 out_color;
 
-float shadow_contribution(vec4 light_space_pos, vec3 normal)
+float shadow_contribution(vec4 light_space_pos, vec3 normal_view, vec3 sunlight_rection_view)
 {
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
 
@@ -27,14 +27,12 @@ float shadow_contribution(vec4 light_space_pos, vec3 normal)
         return 0.0;
     }
 
-    float bias = max(0.05 * (1.0 - dot(normal, scene_data.sunlight_direction.xyz)), 0.005);  
-    
-    //float shadow = current_depth > closest_depth - bias ? 1.0 : 0.0;
+    float bias = max(0.01 * (1.0 - dot(normal_view, sunlight_rection_view)), 0.001);
 
     float shadow = 0.0;
     vec2 texel_size = 1.0 / textureSize(shadow_map_tex, 0);
 
-    int SAMPLES = 3;
+    int SAMPLES = 2;
 
     for(int x = -SAMPLES; x <= SAMPLES; ++x)
     {
@@ -73,10 +71,10 @@ void main()
     vec4 world_pos = inv_view * vec4(pos, 1.0);
     vec4 light_space_pos = scene_data.light_view_proj * world_pos;
 
-    float shadow_contribution = shadow_contribution(light_space_pos, normal.xyz);
-
 	vec3 view_position = (scene_data.view * vec4(scene_data.view_position, 1.0)).rgb;
 	vec3 light_direction = normalize((mat3(scene_data.view) * (scene_data.sunlight_direction.rgb)));
+
+    float shadow_contribution = shadow_contribution(light_space_pos, normal.xyz, light_direction);
 
 	vec3 N = normal.rgb;
     vec3 V = normalize(view_position - pos);
