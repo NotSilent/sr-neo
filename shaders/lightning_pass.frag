@@ -27,7 +27,7 @@ float shadow_contribution(vec4 light_space_pos, vec3 normal_view, vec3 sunlight_
         return 0.0;
     }
 
-    float bias = max(0.01 * (1.0 - dot(normal_view, sunlight_rection_view)), 0.001);
+    float bias = max(0.05 * (1.0 - dot(normal_view, sunlight_rection_view)), 0.005);
 
     float shadow = 0.0;
     vec2 texel_size = 1.0 / textureSize(shadow_map_tex, 0);

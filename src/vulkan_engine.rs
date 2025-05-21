@@ -184,7 +184,7 @@ pub struct VulkanEngine {
 impl VulkanEngine {
     const _USE_VALIDATION_LAYERS: bool = false;
 
-    const DIRECTIONAL_LIGHT_CLIP_LENGTH: f32 = 100.0;
+    const DIRECTIONAL_LIGHT_CLIP_LENGTH: f32 = 50.0;
 
     #[allow(clippy::too_many_lines)]
     pub fn new(
@@ -374,7 +374,7 @@ impl VulkanEngine {
         let material_constants_buffer = Buffer::new(
             &device,
             &mut allocator,
-            size_of::<MaterialConstants>() as u64,
+            size_of::<MaterialConstants>(),
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             MemoryLocation::CpuToGpu,
             "default_data_constants_buffer",
@@ -526,58 +526,28 @@ impl VulkanEngine {
                 .swapchain
                 .acquire_next_image(synchronization_resources.swapchain_semaphore)?;
 
-            let draw_image = self.double_buffer.get_draw_image();
-            let color_image = self.double_buffer.get_color_image();
-            let normal_image = self.double_buffer.get_normal_image();
-            let depth_image = self.double_buffer.get_depth_image();
-            let shadow_map_image = self.double_buffer.get_shadow_map_image();
+            let frame_targets = self.double_buffer.get_frame_targets();
             let lightning_pass_description = self.double_buffer.get_lightning_pass_description();
 
-            let draw_src = RenderpassImageState {
-                image: draw_image.image,
-                image_view: draw_image.image_view,
-                layout: vk::ImageLayout::UNDEFINED,
-                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
-                access_mask: vk::AccessFlags2::NONE,
-            };
+            let draw_src = RenderpassImageState::new(&frame_targets.draw);
+            let color_src = RenderpassImageState::new(&frame_targets.color);
+            let normal_src = RenderpassImageState::new(&frame_targets.normal);
+            let depth_src = RenderpassImageState::new(&frame_targets.depth);
+            let shadow_map_src = RenderpassImageState::new(&frame_targets.shadow_map);
 
-            let color_src = RenderpassImageState {
-                image: color_image.image,
-                image_view: color_image.image_view,
-                layout: vk::ImageLayout::UNDEFINED,
-                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
-                access_mask: vk::AccessFlags2::NONE,
-            };
+            let draw_width = self
+                .swapchain
+                .extent
+                .width
+                .min(frame_targets.draw.extent.width) as f32
+                * render_scale;
 
-            let normal_src = RenderpassImageState {
-                image: normal_image.image,
-                image_view: normal_image.image_view,
-                layout: vk::ImageLayout::UNDEFINED,
-                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
-                access_mask: vk::AccessFlags2::NONE,
-            };
-
-            let depth_src = RenderpassImageState {
-                image: depth_image.image,
-                image_view: depth_image.image_view,
-                layout: vk::ImageLayout::UNDEFINED,
-                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
-                access_mask: vk::AccessFlags2::NONE,
-            };
-
-            let shadow_map_src = RenderpassImageState {
-                image: shadow_map_image.image,
-                image_view: shadow_map_image.image_view,
-                layout: vk::ImageLayout::UNDEFINED,
-                stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
-                access_mask: vk::AccessFlags2::NONE,
-            };
-
-            let draw_width =
-                self.swapchain.extent.width.min(draw_image.extent.width) as f32 * render_scale;
-
-            let draw_height =
-                self.swapchain.extent.height.min(draw_image.extent.height) as f32 * render_scale;
+            let draw_height = self
+                .swapchain
+                .extent
+                .height
+                .min(frame_targets.draw.extent.height) as f32
+                * render_scale;
 
             let render_area = vk::Rect2D::default().extent(
                 vk::Extent2D::default()
@@ -609,7 +579,7 @@ impl VulkanEngine {
             let gpu_scene_data_buffer = Buffer::new(
                 &self.device,
                 &mut self.allocator,
-                size_of::<SceneData>() as u64,
+                size_of::<SceneData>(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 MemoryLocation::CpuToGpu,
                 "draw_geometry",
@@ -650,9 +620,10 @@ impl VulkanEngine {
             let opaque_commads = DrawCommands::from(opaque_commands);
             let transparent_commads = DrawCommands::from(transparent_commands);
 
+            let mut write_data = self.double_buffer.upload_buffers(&self.device, cmd);
+
             let geometry_pass_output = geometry_pass::record(
                 &self.device,
-                &mut self.allocator,
                 cmd,
                 render_area,
                 color_src,
@@ -660,8 +631,7 @@ impl VulkanEngine {
                 depth_src,
                 global_descriptor,
                 &opaque_commads,
-                &mut self.double_buffer,
-                &mut self.immediate_submit,
+                &mut write_data,
                 &mut gpu_stats,
             );
 
@@ -672,14 +642,12 @@ impl VulkanEngine {
 
             let shadow_map_pass_output = shadow_map_pass::record(
                 &self.device,
-                &mut self.allocator,
                 cmd,
                 shadow_map_src,
                 shadow_pass_master_material,
                 global_descriptor,
                 &opaque_commads,
-                &mut self.double_buffer,
-                &mut self.immediate_submit,
+                &mut write_data,
                 &mut gpu_stats,
             );
 
@@ -698,15 +666,13 @@ impl VulkanEngine {
 
             let draw_image_state = forward_pass::record(
                 &self.device,
-                &mut self.allocator,
                 cmd,
                 render_area,
                 lightning_pass_output.draw,
                 lightning_pass_output.depth,
                 global_descriptor,
                 &transparent_commads,
-                &mut self.double_buffer,
-                &mut self.immediate_submit,
+                &mut write_data,
                 &mut gpu_stats,
             );
 
@@ -818,7 +784,7 @@ impl VulkanEngine {
         self.main_draw_context.render_objects.clear();
 
         // TODO: More global source of size/aspect ratio
-        let draw_image = self.double_buffer.get_draw_image();
+        let frame_targets = self.double_buffer.get_frame_targets();
 
         self.gltf_loader.draw(&mut self.main_draw_context);
 
@@ -827,7 +793,7 @@ impl VulkanEngine {
         self.scene_data.view = self.main_camera.get_view();
         //self.scene_data.inv_view = self.scene_data.view.try_inverse().unwrap();
         self.scene_data.proj = Camera::get_projection(
-            draw_image.extent.height as f32 / draw_image.extent.width as f32,
+            frame_targets.draw.extent.height as f32 / frame_targets.draw.extent.width as f32,
         );
         //self.scene_data.proj = Camera::get_orthographic(-25.0, 25.0, -25.0, 25.0, 100.0, 0.01);
         self.scene_data.inv_proj = self.scene_data.proj.try_inverse().unwrap();

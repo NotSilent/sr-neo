@@ -106,8 +106,8 @@ impl GLTFLoader {
         indices: &[u32],
         vertices: &[Vertex],
     ) -> GPUMeshBuffers {
-        let index_buffer_size = size_of_val(indices) as u64;
-        let vertex_buffer_size = size_of_val(vertices) as u64;
+        let index_buffer_size = size_of_val(indices);
+        let vertex_buffer_size = size_of_val(vertices);
 
         let index_buffer = Buffer::new(
             device,
@@ -147,19 +147,19 @@ impl GLTFLoader {
         vk_util::copy_data_to_allocation_with_byte_offset(
             vertices,
             staging.allocation.as_ref().unwrap(),
-            index_buffer_size as usize,
+            index_buffer_size,
         );
 
         immediate_submit.submit(device, |cmd| {
-            let index_regions = [vk::BufferCopy::default().size(index_buffer_size)];
+            let index_regions = [vk::BufferCopy::default().size(index_buffer_size as u64)];
 
             unsafe {
                 device.cmd_copy_buffer(cmd, staging.buffer, index_buffer.buffer, &index_regions);
             };
 
-            let vertex_regions = [vk::BufferCopy::default()
-                .src_offset(index_buffer_size)
-                .size(vertex_buffer_size)];
+            let vertex_regions: [vk::BufferCopy; 1] = [vk::BufferCopy::default()
+                .src_offset(index_buffer_size as u64)
+                .size(vertex_buffer_size as u64)];
 
             unsafe {
                 device.cmd_copy_buffer(cmd, staging.buffer, vertex_buffer.buffer, &vertex_regions);
@@ -269,7 +269,7 @@ impl GLTFLoader {
             let material_constants_buffer = Buffer::new(
                 device,
                 allocator,
-                size_of::<MaterialConstants>() as u64,
+                size_of::<MaterialConstants>(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 MemoryLocation::CpuToGpu,
                 material.name().unwrap_or("GLTF_NAME_NONE"),

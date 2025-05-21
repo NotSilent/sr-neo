@@ -116,7 +116,7 @@ impl Image {
         let mut upload_buffer = Buffer::new(
             device,
             allocator,
-            data_size as u64,
+            data_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
             "upload_buffer",

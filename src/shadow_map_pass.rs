@@ -1,15 +1,10 @@
 use ash::{Device, vk};
-use gpu_allocator::{MemoryLocation, vulkan::Allocator};
-use nalgebra::Matrix4;
 
 use crate::{
-    buffers::Buffer,
-    double_buffer::{self, DoubleBuffer},
+    double_buffer::{self, FrameBufferWriteData},
     draw::{DrawCommands, GPUPushDrawConstant},
-    immediate_submit::ImmediateSubmit,
     materials::MasterMaterial,
     renderpass_common::RenderpassImageState,
-    resource_manager::VulkanResource,
     vk_util,
     vulkan_engine::GPUStats,
 };
@@ -26,14 +21,12 @@ pub struct ShaowMapPassOutput {
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
     device: &Device,
-    allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     shadow_map_src: RenderpassImageState,
     shadow_pass_master_material: &MasterMaterial,
     global_descriptor: vk::DescriptorSet,
     draw_commands: &DrawCommands,
-    double_buffer: &mut DoubleBuffer,
-    immediate_submit: &mut ImmediateSubmit,
+    write_data: &mut FrameBufferWriteData,
     gpu_stats: &mut GPUStats,
 ) -> ShaowMapPassOutput {
     let shadow_map_dst = RenderpassImageState {
@@ -49,13 +42,11 @@ pub fn record(
 
     draw(
         device,
-        allocator,
         cmd,
         global_descriptor,
         shadow_pass_master_material,
         draw_commands,
-        double_buffer,
-        immediate_submit,
+        write_data,
         gpu_stats,
     );
 
@@ -119,79 +110,17 @@ fn begin(
 #[allow(clippy::too_many_lines)]
 fn draw(
     device: &Device,
-    allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     shadow_pass_master_material: &MasterMaterial,
     draw_commands: &DrawCommands,
-    double_buffer: &mut DoubleBuffer,
-    immediate_submit: &mut ImmediateSubmit,
+    write_data: &mut FrameBufferWriteData,
     gpu_stats: &mut GPUStats,
 ) {
     // TODO: create uniform buffers once and reuse their data across passes
 
     if !draw_commands.is_empty() {
         let mut last_index_buffer = vk::Buffer::null();
-
-        let mut uniform_buffer_staging = Buffer::new(
-            device,
-            allocator,
-            (size_of::<Matrix4<f32>>() * draw_commands.len()) as vk::DeviceSize,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            MemoryLocation::CpuToGpu,
-            "uniform_buffer_staging",
-        );
-
-        let uniform_buffer = Buffer::new(
-            device,
-            allocator,
-            (size_of::<Matrix4<f32>>() * draw_commands.len()) as vk::DeviceSize,
-            vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::UNIFORM_BUFFER
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            MemoryLocation::CpuToGpu,
-            "uniform_buffer",
-        );
-
-        let info = vk::BufferDeviceAddressInfo::default().buffer(uniform_buffer.buffer);
-        let uniform_buffer_address = unsafe { device.get_buffer_device_address(&info) };
-
-        let memory = uniform_buffer_staging
-            .allocation
-            .as_mut()
-            .unwrap()
-            .mapped_slice_mut()
-            .unwrap();
-
-        // TODO: Struct
-        let (_, uniforms, _) = unsafe { memory.align_to_mut::<Matrix4<f32>>() };
-
-        let mut draw_indexed_indirect_buffer_staging = Buffer::new(
-            device,
-            allocator,
-            (size_of::<vk::DrawIndexedIndirectCommand>() * draw_commands.len()) as vk::DeviceSize,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            MemoryLocation::CpuToGpu,
-            "draw_indirect_buffer_staging",
-        );
-
-        let draw_indexed_indirect_buffer = Buffer::new(
-            device,
-            allocator,
-            (size_of::<vk::DrawIndexedIndirectCommand>() * draw_commands.len()) as vk::DeviceSize,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDIRECT_BUFFER,
-            MemoryLocation::CpuToGpu,
-            "draw_indirect_buffer",
-        );
-
-        let memory = draw_indexed_indirect_buffer_staging
-            .allocation
-            .as_mut()
-            .unwrap()
-            .mapped_slice_mut()
-            .unwrap();
-
-        let (_, draws, _) = unsafe { memory.align_to_mut::<vk::DrawIndexedIndirectCommand>() };
 
         let mut total_draw_count = 0_u64;
         let mut current_batch_count = 0;
@@ -223,7 +152,7 @@ fn draw(
                 if any_state_changed {
                     device.cmd_draw_indexed_indirect(
                         cmd,
-                        draw_indexed_indirect_buffer.buffer,
+                        write_data.draws_buffer,
                         total_draw_count * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
                         current_batch_count,
                         size_of::<vk::DrawIndexedIndirectCommand>() as u32,
@@ -237,7 +166,7 @@ fn draw(
                     last_index_buffer = command.index_buffer;
 
                     let push_constants = GPUPushDrawConstant {
-                        uniform_buffer: uniform_buffer_address,
+                        uniform_buffer: write_data.uniforms_address,
                         vertex_buffer: command.vertex_buffer_address,
                         index: total_draw_count as u32,
                     };
@@ -258,16 +187,14 @@ fn draw(
                     );
                 }
 
-                let index = total_draw_count + u64::from(current_batch_count);
+                // uniforms[index as usize] = command.world_matrix;
 
-                uniforms[index as usize] = command.world_matrix;
-
-                draws[index as usize] = vk::DrawIndexedIndirectCommand::default()
-                    .index_count(command.surface_index_count)
-                    .instance_count(1)
-                    .first_index(command.surface_first_index)
-                    .vertex_offset(0)
-                    .first_instance(0);
+                // draws[index as usize] = vk::DrawIndexedIndirectCommand::default()
+                //     .index_count(command.surface_index_count)
+                //     .instance_count(1)
+                //     .first_index(command.surface_first_index)
+                //     .vertex_offset(0)
+                //     .first_instance(0);
 
                 current_batch_count += 1;
 
@@ -282,47 +209,12 @@ fn draw(
         unsafe {
             device.cmd_draw_indexed_indirect(
                 cmd,
-                draw_indexed_indirect_buffer.buffer,
+                write_data.draws_buffer,
                 total_draw_count * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
                 current_batch_count,
                 size_of::<vk::DrawIndexedIndirectCommand>() as u32,
             );
         };
-
-        immediate_submit.submit(device, |cmd| {
-            let uniform_regions = [vk::BufferCopy::default()
-                .src_offset(0)
-                .size((size_of::<Matrix4<f32>>() * draw_commands.len()) as vk::DeviceSize)];
-
-            unsafe {
-                device.cmd_copy_buffer(
-                    cmd,
-                    uniform_buffer_staging.buffer,
-                    uniform_buffer.buffer,
-                    &uniform_regions,
-                );
-            }
-
-            let draw_regions = [vk::BufferCopy::default().src_offset(0).size(
-                (size_of::<vk::DrawIndexedIndirectCommand>() * draw_commands.len())
-                    as vk::DeviceSize,
-            )];
-
-            unsafe {
-                device.cmd_copy_buffer(
-                    cmd,
-                    draw_indexed_indirect_buffer_staging.buffer,
-                    draw_indexed_indirect_buffer.buffer,
-                    &draw_regions,
-                );
-            }
-        });
-
-        uniform_buffer_staging.destroy(device, allocator);
-        draw_indexed_indirect_buffer_staging.destroy(device, allocator);
-
-        double_buffer.add_buffer(uniform_buffer);
-        double_buffer.add_buffer(draw_indexed_indirect_buffer);
     }
 }
 

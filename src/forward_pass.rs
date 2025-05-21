@@ -1,12 +1,10 @@
 // TODO: Transparent only
 
 use ash::{Device, vk};
-use gpu_allocator::vulkan::Allocator;
 
 use crate::{
-    double_buffer::DoubleBuffer,
+    double_buffer::FrameBufferWriteData,
     draw::{DrawCommand, DrawCommands},
-    immediate_submit::ImmediateSubmit,
     renderpass_common::RenderpassImageState,
     vk_util,
     vulkan_engine::GPUStats,
@@ -20,15 +18,13 @@ use crate::{
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
     device: &Device,
-    allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     draw_src: RenderpassImageState,
     depth_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
     transparent_commands: &DrawCommands,
-    double_buffer: &mut DoubleBuffer,
-    immediate_submit: &mut ImmediateSubmit,
+    write_data: &mut FrameBufferWriteData,
     gpu_stats: &mut GPUStats,
 ) -> RenderpassImageState {
     let draw_dst = RenderpassImageState {
@@ -60,12 +56,10 @@ pub fn record(
 
     draw(
         device,
-        allocator,
         cmd,
         global_descriptor,
         transparent_commands,
-        double_buffer,
-        immediate_submit,
+        write_data,
         gpu_stats,
     );
 
@@ -141,22 +135,18 @@ fn begin(
 #[allow(clippy::too_many_arguments)]
 fn draw(
     device: &Device,
-    allocator: &mut Allocator,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     transparent_commands: &DrawCommands,
-    double_buffer: &mut DoubleBuffer,
-    immediate_submit: &mut ImmediateSubmit,
+    write_data: &mut FrameBufferWriteData,
     gpu_stats: &mut GPUStats,
 ) {
     DrawCommand::cmd_record_draw_commands(
         device,
-        allocator,
         cmd,
         global_descriptor,
-        double_buffer,
-        immediate_submit,
         transparent_commands,
+        write_data,
         gpu_stats,
     );
 }

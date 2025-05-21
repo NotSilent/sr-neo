@@ -1,5 +1,6 @@
 use ash::{Device, vk};
 use gpu_allocator::vulkan::Allocator;
+use nalgebra::Matrix4;
 
 use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
@@ -35,42 +36,32 @@ pub const SHADOW_MAP_DIMENSION: u32 = 2000;
 
 const BUFFER_SIZE: usize = 2;
 
-struct FrameBuffer {
-    draw_image: Image,
-    color_image: Image,
-    normal_image: Image,
-    depth_image: Image,
-    shadow_map_image: Image,
+// TODO: This barely holds within 64kB base limit (for single mat4 in UniformData), might switch to storage buffer later
+const FRAME_BUFFER_ELEMENTS: usize = 1000;
 
-    command_pool: vk::CommandPool,
-    command_buffer: vk::CommandBuffer,
-
-    synchronization_resources: FrameBufferSynchronizationResources,
-
-    buffer_manager: BufferManager,
-    descriptors: DescriptorAllocatorGrowable,
-
-    // TODO: Abstract
-    query_pool: vk::QueryPool,
-    timestamp_period: f32,
-
-    lightning_descriptor_set: vk::DescriptorSet,
+pub struct UniformData {
+    pub world: Matrix4<f32>,
 }
 
-impl FrameBuffer {
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
-    fn new(
-        device: &Device,
-        allocator: &mut Allocator,
-        graphics_queue_family_index: u32,
-        width: u32,
-        height: u32,
-        timestamp_period: f32,
-        global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
-        lightning_descriptor_layout: vk::DescriptorSetLayout,
-        default_sampler_linear: vk::Sampler,
-    ) -> Self {
+pub struct FrameBufferTargets {
+    pub draw: Image,
+    pub color: Image,
+    pub normal: Image,
+    pub depth: Image,
+    pub shadow_map: Image,
+}
+
+pub struct FrameBufferWriteData<'a> {
+    pub uniforms_buffer: vk::Buffer,
+    pub uniforms_address: vk::DeviceAddress,
+    pub uniforms: &'a mut [UniformData],
+    pub draws_buffer: vk::Buffer,
+    pub draws_address: vk::DeviceAddress,
+    pub draws: &'a mut [vk::DrawIndexedIndirectCommand],
+}
+
+impl FrameBufferTargets {
+    fn new(device: &Device, allocator: &mut Allocator, width: u32, height: u32) -> Self {
         let image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
         let draw_image = Image::new(
@@ -92,10 +83,7 @@ impl FrameBuffer {
             image_extent,
             // TODO: Smaller format
             COLOR_FORMAT,
-            vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT
-                | vk::ImageUsageFlags::SAMPLED,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             false,
             "color_image",
         );
@@ -106,10 +94,7 @@ impl FrameBuffer {
             image_extent,
             // TODO: Smaller format
             NORMAL_FORMAT,
-            vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT
-                | vk::ImageUsageFlags::SAMPLED,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             false,
             "normal_image",
         );
@@ -137,26 +122,64 @@ impl FrameBuffer {
             "shadow_map_image",
         );
 
-        let command_pool = vk_util::create_command_pool(device, graphics_queue_family_index);
+        Self {
+            draw: draw_image,
+            color: color_image,
+            normal: normal_image,
+            depth: depth_image,
+            shadow_map: shadow_map_image,
+        }
+    }
 
-        let ratios = vec![
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                ratio: 4,
-            },
-        ];
+    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+        self.draw.destroy(device, allocator);
+        self.color.destroy(device, allocator);
+        self.normal.destroy(device, allocator);
+        self.depth.destroy(device, allocator);
+        self.shadow_map.destroy(device, allocator);
+    }
+}
+
+struct FrameBuffer {
+    targets: FrameBufferTargets,
+
+    command_pool: vk::CommandPool,
+    command_buffer: vk::CommandBuffer,
+
+    synchronization_resources: FrameBufferSynchronizationResources,
+
+    buffer_manager: BufferManager,
+    descriptors: DescriptorAllocatorGrowable,
+
+    // TODO: Abstract
+    query_pool: vk::QueryPool,
+    timestamp_period: f32,
+
+    lightning_descriptor_set: vk::DescriptorSet,
+
+    uniform_host_buffer: Buffer,
+    uniform_device_buffer: Buffer,
+    draw_host_buffer: Buffer,
+    draw_device_buffer: Buffer,
+}
+
+impl FrameBuffer {
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    fn new(
+        device: &Device,
+        allocator: &mut Allocator,
+        graphics_queue_family_index: u32,
+        width: u32,
+        height: u32,
+        timestamp_period: f32,
+        global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
+        lightning_descriptor_layout: vk::DescriptorSetLayout,
+        default_sampler_linear: vk::Sampler,
+    ) -> Self {
+        let targets = FrameBufferTargets::new(device, allocator, width, height);
+
+        let command_pool = vk_util::create_command_pool(device, graphics_queue_family_index);
 
         let query_pool_create_info = vk::QueryPoolCreateInfo::default()
             .query_type(vk::QueryType::TIMESTAMP)
@@ -170,68 +193,63 @@ impl FrameBuffer {
 
         unsafe { device.reset_query_pool(query_pool, 0, 2) };
 
-        let lightning_descriptor_set =
-            global_descriptor_allocator.allocate(device, lightning_descriptor_layout);
+        let lightning_descriptor_set = create_lightning_descriptor_set(
+            device,
+            global_descriptor_allocator,
+            lightning_descriptor_layout,
+            default_sampler_linear,
+            &targets,
+        );
 
-        let color_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(color_image.image_view)
-            .sampler(default_sampler_linear)];
+        let uniform_alloc_size = size_of::<UniformData>() * FRAME_BUFFER_ELEMENTS;
 
-        let normal_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(normal_image.image_view)
-            .sampler(default_sampler_linear)];
+        let uniform_host_buffer = Buffer::new(
+            device,
+            allocator,
+            uniform_alloc_size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+            "uniform_cpu_buffer",
+        );
 
-        let depth_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL)
-            .image_view(depth_image.image_view)
-            .sampler(default_sampler_linear)];
+        let uniform_device_buffer = Buffer::new(
+            device,
+            allocator,
+            uniform_alloc_size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            gpu_allocator::MemoryLocation::GpuOnly,
+            "uniform_gpu_buffer",
+        );
 
-        // TODO: Sampler: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
-        let shadow_map_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL)
-            .image_view(shadow_map_image.image_view)
-            .sampler(default_sampler_linear)];
+        let draw_alloc_size = size_of::<vk::DrawIndexedIndirectCommand>() * FRAME_BUFFER_ELEMENTS;
 
-        let write_color = vk::WriteDescriptorSet::default()
-            .dst_binding(0)
-            .dst_set(lightning_descriptor_set)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&color_info);
+        let draw_host_buffer = Buffer::new(
+            device,
+            allocator,
+            draw_alloc_size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_SRC
+                | vk::BufferUsageFlags::INDIRECT_BUFFER,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+            "draw_cpu_buffer",
+        );
 
-        let write_normal = vk::WriteDescriptorSet::default()
-            .dst_binding(1)
-            .dst_set(lightning_descriptor_set)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&normal_info);
-
-        let write_depth = vk::WriteDescriptorSet::default()
-            .dst_binding(3)
-            .dst_set(lightning_descriptor_set)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&depth_info);
-
-        let write_shadow_map = vk::WriteDescriptorSet::default()
-            .dst_binding(4)
-            .dst_set(lightning_descriptor_set)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&shadow_map_info);
-
-        unsafe {
-            // TODO: Combine writes?
-            device.update_descriptor_sets(
-                &[write_color, write_normal, write_depth, write_shadow_map],
-                &[],
-            );
-        }
+        let draw_device_buffer = Buffer::new(
+            device,
+            allocator,
+            draw_alloc_size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::INDIRECT_BUFFER,
+            gpu_allocator::MemoryLocation::GpuOnly,
+            "draw_gpu_buffer",
+        );
 
         Self {
-            draw_image,
-            color_image,
-            normal_image,
-            depth_image,
-            shadow_map_image,
+            targets,
             command_pool,
             command_buffer: vk_util::allocate_command_buffer(device, command_pool),
             synchronization_resources: FrameBufferSynchronizationResources {
@@ -239,10 +257,18 @@ impl FrameBuffer {
                 fence: vk_util::create_fence(device, vk::FenceCreateFlags::SIGNALED),
             },
             buffer_manager: BufferManager::new(),
-            descriptors: DescriptorAllocatorGrowable::new(device, 1024, ratios),
+            descriptors: DescriptorAllocatorGrowable::new(
+                device,
+                1024,
+                create_default_pool_size_ratios(),
+            ),
             query_pool,
             timestamp_period,
             lightning_descriptor_set,
+            uniform_host_buffer,
+            uniform_device_buffer,
+            draw_host_buffer,
+            draw_device_buffer,
         }
     }
 
@@ -283,13 +309,194 @@ impl FrameBuffer {
             self.descriptors.destroy(device);
             self.buffer_manager.destroy(device, allocator);
 
-            self.draw_image.destroy(device, allocator);
-            self.color_image.destroy(device, allocator);
-            self.normal_image.destroy(device, allocator);
-            self.depth_image.destroy(device, allocator);
-            self.shadow_map_image.destroy(device, allocator);
+            self.targets.destroy(device, allocator);
+
+            self.uniform_device_buffer.destroy(device, allocator);
+            self.uniform_host_buffer.destroy(device, allocator);
+
+            self.draw_device_buffer.destroy(device, allocator);
+            self.draw_host_buffer.destroy(device, allocator);
         }
     }
+
+    // TODO: Don;t upload whole buffers, just the data that will be actually used
+    fn upload_buffers(&mut self, device: &Device, cmd: vk::CommandBuffer) -> FrameBufferWriteData {
+        let uniform_regions = [vk::BufferCopy::default()
+            .src_offset(0)
+            .size((size_of::<UniformData>() * FRAME_BUFFER_ELEMENTS) as u64)];
+
+        unsafe {
+            device.cmd_copy_buffer(
+                cmd,
+                self.uniform_host_buffer.buffer,
+                self.uniform_device_buffer.buffer,
+                &uniform_regions,
+            );
+        }
+
+        let draw_regions = [vk::BufferCopy::default().src_offset(0).size(
+            (size_of::<vk::DrawIndexedIndirectCommand>() * FRAME_BUFFER_ELEMENTS) as vk::DeviceSize,
+        )];
+
+        unsafe {
+            device.cmd_copy_buffer(
+                cmd,
+                self.draw_host_buffer.buffer,
+                self.draw_device_buffer.buffer,
+                &draw_regions,
+            );
+        }
+
+        let buffer_barriers = [
+            vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_access_mask(vk::AccessFlags2::NONE)
+                .dst_stage_mask(vk::PipelineStageFlags2::VERTEX_SHADER)
+                .dst_access_mask(vk::AccessFlags2::UNIFORM_READ)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(self.uniform_device_buffer.buffer)
+                .offset(0)
+                .size((size_of::<UniformData>() * FRAME_BUFFER_ELEMENTS) as u64),
+            vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_access_mask(vk::AccessFlags2::NONE)
+                .dst_stage_mask(vk::PipelineStageFlags2::VERTEX_SHADER)
+                .dst_access_mask(vk::AccessFlags2::UNIFORM_READ)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(self.draw_device_buffer.buffer)
+                .offset(0)
+                .size((size_of::<vk::DrawIndexedIndirectCommand>() * FRAME_BUFFER_ELEMENTS) as u64),
+        ];
+
+        let dependency_info =
+            vk::DependencyInfo::default().buffer_memory_barriers(&buffer_barriers);
+
+        unsafe { device.cmd_pipeline_barrier2(cmd, &dependency_info) };
+
+        let uniform_memory = self
+            .uniform_host_buffer
+            .allocation
+            .as_mut()
+            .unwrap()
+            .mapped_slice_mut()
+            .unwrap();
+
+        // TODO: Struct
+        let (_, uniforms, _) = unsafe { uniform_memory.align_to_mut::<UniformData>() };
+
+        let info = vk::BufferDeviceAddressInfo::default().buffer(self.uniform_device_buffer.buffer);
+        let uniforms_address = unsafe { device.get_buffer_device_address(&info) };
+
+        let draw_memory = self
+            .draw_host_buffer
+            .allocation
+            .as_mut()
+            .unwrap()
+            .mapped_slice_mut()
+            .unwrap();
+
+        let (_, draws, _) = unsafe { draw_memory.align_to_mut::<vk::DrawIndexedIndirectCommand>() };
+
+        let info = vk::BufferDeviceAddressInfo::default().buffer(self.draw_device_buffer.buffer);
+        let draws_address = unsafe { device.get_buffer_device_address(&info) };
+
+        FrameBufferWriteData {
+            uniforms_buffer: self.uniform_host_buffer.buffer,
+            uniforms_address,
+            uniforms,
+            draws_buffer: self.draw_host_buffer.buffer,
+            draws_address,
+            draws,
+        }
+    }
+}
+
+fn create_lightning_descriptor_set(
+    device: &Device,
+    global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
+    lightning_descriptor_layout: vk::DescriptorSetLayout,
+    default_sampler_linear: vk::Sampler,
+    targets: &FrameBufferTargets,
+) -> vk::DescriptorSet {
+    let lightning_descriptor_set =
+        global_descriptor_allocator.allocate(device, lightning_descriptor_layout);
+
+    let color_info = [vk::DescriptorImageInfo::default()
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .image_view(targets.color.image_view)
+        .sampler(default_sampler_linear)];
+
+    let normal_info = [vk::DescriptorImageInfo::default()
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .image_view(targets.normal.image_view)
+        .sampler(default_sampler_linear)];
+
+    let depth_info = [vk::DescriptorImageInfo::default()
+        .image_layout(vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL)
+        .image_view(targets.depth.image_view)
+        .sampler(default_sampler_linear)];
+
+    // TODO: Sampler: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
+    let shadow_map_info = [vk::DescriptorImageInfo::default()
+        .image_layout(vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL)
+        .image_view(targets.shadow_map.image_view)
+        .sampler(default_sampler_linear)];
+
+    let write_color = vk::WriteDescriptorSet::default()
+        .dst_binding(0)
+        .dst_set(lightning_descriptor_set)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(&color_info);
+
+    let write_normal = vk::WriteDescriptorSet::default()
+        .dst_binding(1)
+        .dst_set(lightning_descriptor_set)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(&normal_info);
+
+    let write_depth = vk::WriteDescriptorSet::default()
+        .dst_binding(3)
+        .dst_set(lightning_descriptor_set)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(&depth_info);
+
+    let write_shadow_map = vk::WriteDescriptorSet::default()
+        .dst_binding(4)
+        .dst_set(lightning_descriptor_set)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(&shadow_map_info);
+
+    unsafe {
+        // TODO: Combine writes?
+        device.update_descriptor_sets(
+            &[write_color, write_normal, write_depth, write_shadow_map],
+            &[],
+        );
+    }
+    lightning_descriptor_set
+}
+
+fn create_default_pool_size_ratios() -> Vec<PoolSizeRatio> {
+    vec![
+        PoolSizeRatio {
+            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+            ratio: 4,
+        },
+        PoolSizeRatio {
+            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+            ratio: 4,
+        },
+        PoolSizeRatio {
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            ratio: 4,
+        },
+        PoolSizeRatio {
+            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            ratio: 4,
+        },
+    ]
 }
 
 // TODO: All resources eg. gbuffer, per buffer
@@ -422,6 +629,14 @@ impl DoubleBuffer {
         current_buffer.reset(device, allocator)
     }
 
+    pub fn upload_buffers(
+        &mut self,
+        device: &Device,
+        cmd: vk::CommandBuffer,
+    ) -> FrameBufferWriteData {
+        self.frame_buffers[self.current_frame].upload_buffers(device, cmd)
+    }
+
     pub fn get_synchronization_resources(&self) -> FrameBufferSynchronizationResources {
         self.frame_buffers[self.current_frame]
             .synchronization_resources
@@ -464,24 +679,8 @@ impl DoubleBuffer {
             .get_mut(buffer_index)
     }
 
-    pub fn get_draw_image(&self) -> &Image {
-        &self.frame_buffers[self.current_frame].draw_image
-    }
-
-    pub fn get_color_image(&self) -> &Image {
-        &self.frame_buffers[self.current_frame].color_image
-    }
-
-    pub fn get_normal_image(&self) -> &Image {
-        &self.frame_buffers[self.current_frame].normal_image
-    }
-
-    pub fn get_depth_image(&self) -> &Image {
-        &self.frame_buffers[self.current_frame].depth_image
-    }
-
-    pub fn get_shadow_map_image(&self) -> &Image {
-        &self.frame_buffers[self.current_frame].shadow_map_image
+    pub fn get_frame_targets(&self) -> &FrameBufferTargets {
+        &self.frame_buffers[self.current_frame].targets
     }
 
     pub fn get_lightning_pass_description(&self) -> LightningPassDescription {

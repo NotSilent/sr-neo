@@ -32,13 +32,13 @@ impl Buffer {
     pub fn new(
         device: &Device,
         allocator: &mut Allocator,
-        alloc_size: vk::DeviceSize,
+        alloc_size: usize,
         usage: vk::BufferUsageFlags,
         memory_location: MemoryLocation,
         name: &str,
     ) -> Buffer {
         let create_info = vk::BufferCreateInfo::default()
-            .size(alloc_size)
+            .size(alloc_size as u64)
             .usage(usage);
 
         let buffer = unsafe { device.create_buffer(&create_info, None).unwrap() };
