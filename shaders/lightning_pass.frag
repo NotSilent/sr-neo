@@ -7,8 +7,8 @@
 
 layout (set = 1, binding = 0) uniform sampler2D color_tex;  // color + metallic
 layout (set = 1, binding = 1) uniform sampler2D normal_tex; // normal + roughness
-layout (set = 1, binding = 3) uniform sampler2D depth_tex;
-layout (set = 1, binding = 4) uniform sampler2D shadow_map_tex;
+layout (set = 1, binding = 2) uniform sampler2D depth_tex;
+layout (set = 1, binding = 3) uniform sampler2D shadow_map_tex;
  
 layout (location = 0) in vec2 in_uv;
  
@@ -18,7 +18,7 @@ float shadow_contribution(vec4 light_space_pos, vec3 normal_view, vec3 sunlight_
 {
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
 
-    float closest_depth = texture(shadow_map_tex, proj_coords.xy * 0.5 + 0.5).r;
+    //float closest_depth = texture(shadow_map_tex, proj_coords.xy * 0.5 + 0.5).r;
 
     float current_depth = proj_coords.z;
     
@@ -38,6 +38,8 @@ float shadow_contribution(vec4 light_space_pos, vec3 normal_view, vec3 sunlight_
     {
         for(int y = -SAMPLES; y <= SAMPLES; ++y)
         {
+            // TODO: Texture gather might reduce it by more than half
+            // eg. instead of 5*5 samples, 8 gathers and one center sample could cover the same area
             float pcf_depth = texture(shadow_map_tex, proj_coords.xy * 0.5 + 0.5 + vec2(x, y) * texel_size).r; 
             shadow += current_depth > pcf_depth - bias ? 1.0 : 0.0;        
         }    

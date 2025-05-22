@@ -20,6 +20,8 @@ fn main() -> io::Result<()> {
                 let status = Command::new("glslangValidator")
                     .args([
                         "-V",
+                        "--target-env",
+                        "vulkan1.3",
                         path.to_str().unwrap(),
                         "-o",
                         output_spv.to_str().unwrap(),

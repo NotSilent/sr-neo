@@ -17,9 +17,7 @@ use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
     camera::{Camera, InputManager},
     default_resources,
-    descriptors::{
-        DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
-    },
+    descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, PoolSizeRatio},
     double_buffer::{self, DoubleBuffer},
     draw::{DrawCommands, DrawContext, DrawRecord},
     forward_pass::{self},
@@ -55,14 +53,13 @@ pub struct GeoSurface {
 
 #[derive(Default)]
 #[repr(C)]
-struct SceneData {
+pub struct SceneData {
     view: Matrix4<f32>,
     proj: Matrix4<f32>,
     inv_proj: Matrix4<f32>,
     view_proj: Matrix4<f32>,
     light_view: Matrix4<f32>,
     light_view_proj: Matrix4<f32>,
-    ambient_color: Vector4<f32>,
     sunlight_direction: Vector4<f32>, // w for sun power
     sunlight_color: Vector4<f32>,
     view_position: Vector3<f32>,
@@ -71,7 +68,7 @@ struct SceneData {
 }
 
 impl SceneData {
-    fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
                 std::ptr::from_ref::<Self>(self).cast::<u8>(),
@@ -168,7 +165,6 @@ pub struct VulkanEngine {
 
     immediate_submit: ImmediateSubmit,
 
-    scene_data: SceneData,
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
     managed_resources: ManagedResources,
@@ -326,6 +322,7 @@ impl VulkanEngine {
             width,
             height,
             properties.limits.timestamp_period,
+            gpu_scene_data_descriptor_layout,
             &mut descriptor_allocator,
             default_sampler_linear,
             gpu_scene_data_descriptor_layout,
@@ -480,7 +477,6 @@ impl VulkanEngine {
 
             immediate_submit,
 
-            scene_data: SceneData::default(),
             gpu_scene_data_descriptor_layout,
 
             managed_resources,
@@ -505,10 +501,10 @@ impl VulkanEngine {
 
         let render_scale = render_scale.clamp(0.25, 1.0);
 
-        self.update_scene(
-            self.swapchain.extent.width as f32,
-            self.swapchain.extent.height as f32,
-        );
+        let width = self.swapchain.extent.width as f32;
+        let height = self.swapchain.extent.height as f32;
+
+        self.update_scene();
 
         unsafe {
             let query_results = self
@@ -520,6 +516,7 @@ impl VulkanEngine {
             let synchronization_resources = self.double_buffer.get_synchronization_resources();
             let query_pool = self.double_buffer.get_query_pool();
             let cmd = self.double_buffer.get_command_buffer();
+            let globals_descriptor_set = self.double_buffer.get_globals_descriptor_set();
 
             // TODO: encapsulate, into swapchain?
             let acquired_swapchain = self
@@ -575,41 +572,6 @@ impl VulkanEngine {
                 0,
             );
 
-            // TODO: Encapsulate
-            let gpu_scene_data_buffer = Buffer::new(
-                &self.device,
-                &mut self.allocator,
-                size_of::<SceneData>(),
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-                MemoryLocation::CpuToGpu,
-                "draw_geometry",
-            );
-
-            // TODO: part of allocated buffer?
-            vk_util::copy_data_to_allocation(
-                self.scene_data.as_bytes(),
-                gpu_scene_data_buffer.allocation.as_ref().unwrap(),
-            );
-
-            // Part of DoubleBuffer/FrameBuffer
-            let global_descriptor = self
-                .double_buffer
-                .allocate_set(&self.device, self.gpu_scene_data_descriptor_layout);
-
-            let mut writer = DescriptorWriter::default();
-            writer.write_buffer(
-                0,
-                gpu_scene_data_buffer.buffer,
-                size_of::<SceneData>() as u64,
-                0,
-                vk::DescriptorType::UNIFORM_BUFFER,
-            );
-
-            writer.update_set(&self.device, global_descriptor);
-
-            self.double_buffer.add_buffer(gpu_scene_data_buffer);
-            // ~TODO: Encapsulate
-
             // TODO: Prepare data before draw
             // TODO: split and sort commands in one function?
             let DrawRecord {
@@ -620,6 +582,13 @@ impl VulkanEngine {
             let opaque_commads = DrawCommands::from(opaque_commands);
             let transparent_commads = DrawCommands::from(transparent_commands);
 
+            self.double_buffer.set_globals(&Self::create_scene_data(
+                &self.main_camera,
+                self.frame_number,
+                width,
+                height,
+            ));
+
             let mut write_data = self.double_buffer.upload_buffers(&self.device, cmd);
 
             let geometry_pass_output = geometry_pass::record(
@@ -629,7 +598,7 @@ impl VulkanEngine {
                 color_src,
                 normal_src,
                 depth_src,
-                global_descriptor,
+                globals_descriptor_set,
                 &opaque_commads,
                 &mut write_data,
                 &mut gpu_stats,
@@ -645,7 +614,7 @@ impl VulkanEngine {
                 cmd,
                 shadow_map_src,
                 shadow_pass_master_material,
-                global_descriptor,
+                globals_descriptor_set,
                 &opaque_commads,
                 &mut write_data,
                 &mut gpu_stats,
@@ -660,7 +629,7 @@ impl VulkanEngine {
                 geometry_pass_output.normal,
                 geometry_pass_output.depth,
                 shadow_map_pass_output.shadow_map,
-                global_descriptor,
+                globals_descriptor_set,
                 &lightning_pass_description,
             );
 
@@ -670,7 +639,7 @@ impl VulkanEngine {
                 render_area,
                 lightning_pass_output.draw,
                 lightning_pass_output.depth,
-                global_descriptor,
+                globals_descriptor_set,
                 &transparent_commads,
                 &mut write_data,
                 &mut gpu_stats,
@@ -778,47 +747,27 @@ impl VulkanEngine {
         Ok(gpu_stats)
     }
 
-    fn update_scene(&mut self, width: f32, height: f32) {
-        self.main_camera.update();
+    // TODO: Drop frame counter in favor of delta time and light entities
+    fn create_scene_data(camera: &Camera, frame_number: u64, width: f32, height: f32) -> SceneData {
+        let view_position = camera.get_position();
 
-        self.main_draw_context.render_objects.clear();
+        let view = camera.get_view();
+        let proj = Camera::get_projection(height / width);
+        let inv_proj = proj.try_inverse().unwrap();
+        let view_proj = proj * view;
 
-        // TODO: More global source of size/aspect ratio
-        let frame_targets = self.double_buffer.get_frame_targets();
+        let sin_x = f32::sin(frame_number as f32 / 200.0);
+        let cos_z = f32::cos(frame_number as f32 / 200.0);
+        let sunlight_direction = vector![sin_x, 4.0, cos_z].normalize().insert_row(3, 1.0);
 
-        self.gltf_loader.draw(&mut self.main_draw_context);
-
-        self.scene_data.view_position = self.main_camera.get_position();
-
-        self.scene_data.view = self.main_camera.get_view();
-        //self.scene_data.inv_view = self.scene_data.view.try_inverse().unwrap();
-        self.scene_data.proj = Camera::get_projection(
-            frame_targets.draw.extent.height as f32 / frame_targets.draw.extent.width as f32,
-        );
-        //self.scene_data.proj = Camera::get_orthographic(-25.0, 25.0, -25.0, 25.0, 100.0, 0.01);
-        self.scene_data.inv_proj = self.scene_data.proj.try_inverse().unwrap();
-        self.scene_data.view_proj = self.scene_data.proj * self.scene_data.view;
-
-        self.scene_data.ambient_color = Vector4::from_element(0.1);
-        self.scene_data.sunlight_color = Vector4::from_element(1.0);
-
-        let sin_x = f32::sin(self.frame_number as f32 / 200.0);
-        let cos_z = f32::cos(self.frame_number as f32 / 200.0);
-        self.scene_data.sunlight_direction =
-            vector![sin_x, 4.0, cos_z].normalize().insert_row(3, 1.0);
-
-        self.scene_data.light_view = Matrix4::look_at_rh(
+        let light_view = Matrix4::look_at_rh(
             &From::from(
-                self.scene_data.view_position
-                    + (self.scene_data.sunlight_direction.xyz()
-                        * Self::DIRECTIONAL_LIGHT_CLIP_LENGTH
-                        / 2.0),
+                view_position
+                    + (sunlight_direction.xyz() * Self::DIRECTIONAL_LIGHT_CLIP_LENGTH / 2.0),
             ),
             &From::from(
-                self.scene_data.view_position
-                    + -self.scene_data.sunlight_direction.xyz()
-                        * Self::DIRECTIONAL_LIGHT_CLIP_LENGTH
-                        / 2.0,
+                view_position
+                    + -sunlight_direction.xyz() * Self::DIRECTIONAL_LIGHT_CLIP_LENGTH / 2.0,
             ),
             &Vector3::y(),
         );
@@ -831,9 +780,30 @@ impl VulkanEngine {
             Self::DIRECTIONAL_LIGHT_CLIP_LENGTH,
             0.01,
         );
-        self.scene_data.light_view_proj = light_proj * self.scene_data.light_view;
 
-        self.scene_data.screen_size = vector![width, height];
+        let light_view_proj = light_proj * light_view;
+
+        SceneData {
+            view: camera.get_view(),
+            proj,
+            inv_proj,
+            view_proj,
+            light_view,
+            light_view_proj,
+            sunlight_direction,
+            sunlight_color: Vector4::from_element(1.0),
+            view_position,
+            _padding: 0.0,
+            screen_size: vector![width, height],
+        }
+    }
+
+    fn update_scene(&mut self) {
+        self.main_camera.update();
+
+        self.main_draw_context.render_objects.clear();
+
+        self.gltf_loader.draw(&mut self.main_draw_context);
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
