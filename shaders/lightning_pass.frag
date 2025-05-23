@@ -14,7 +14,7 @@ layout (location = 0) in vec2 in_uv;
  
 layout (location = 0) out vec4 out_color;
 
-float shadow_contribution(vec4 light_space_pos, vec3 normal_view, vec3 sunlight_rection_view)
+float shadow_contribution(vec4 light_space_pos, vec3 normal_view, vec3 sunlight_direction_view)
 {
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
 
@@ -27,19 +27,19 @@ float shadow_contribution(vec4 light_space_pos, vec3 normal_view, vec3 sunlight_
         return 0.0;
     }
 
-    float bias = max(0.05 * (1.0 - dot(normal_view, sunlight_rection_view)), 0.005);
+    float bias = max(0.0002 * (1.0 - dot(normal_view, sunlight_direction_view)), 0.00002);
 
     float shadow = 0.0;
     vec2 texel_size = 1.0 / textureSize(shadow_map_tex, 0);
 
-    int SAMPLES = 2;
+    // TODO: Try separate shadowpass
+    int SAMPLES = 3;
 
     for(int x = -SAMPLES; x <= SAMPLES; ++x)
     {
         for(int y = -SAMPLES; y <= SAMPLES; ++y)
         {
-            // TODO: Texture gather might reduce it by more than half
-            // eg. instead of 5*5 samples, 8 gathers and one center sample could cover the same area
+            // Tried texture gather, no gain
             float pcf_depth = texture(shadow_map_tex, proj_coords.xy * 0.5 + 0.5 + vec2(x, y) * texel_size).r; 
             shadow += current_depth > pcf_depth - bias ? 1.0 : 0.0;        
         }    
@@ -107,7 +107,7 @@ void main()
 
     float NdotL = max(dot(N, L), 0.0);        
 
-    Lo += (kD * color.rgb / PI + specular) * radiance * NdotL * shadow_contribution;
+    Lo += (kD * color.rgb / PI + specular) * radiance * NdotL * shadow_contribution * scene_data.sunlight_direction.w;
 
     vec3 ambient = vec3(0.01) * color.rgb; // * ao;
 

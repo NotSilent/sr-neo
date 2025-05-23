@@ -39,9 +39,11 @@ pub const SHADOW_MAP_DIMENSION: u32 = 2000;
 
 const BUFFER_SIZE: usize = 2;
 
-// TODO: This barely holds within 64kB base limit (for single mat4 in UniformData), might switch to storage buffer later
-const FRAME_BUFFER_ELEMENTS: usize = 1000;
+// TODO: Technicaly wouldn't fit into mainimum 64kB uniform buffer allows
+// Switch to storage buffer?
+const FRAME_BUFFER_ELEMENTS: usize = 10000;
 
+#[allow(dead_code)] // UniformData is copied to inform buffer
 pub struct UniformData {
     pub world: Matrix4<f32>,
 }
@@ -55,11 +57,9 @@ pub struct FrameBufferTargets {
 }
 
 pub struct FrameBufferWriteData<'a> {
-    pub uniforms_buffer: vk::Buffer,
     pub uniforms_address: vk::DeviceAddress,
     pub uniforms: &'a mut [UniformData],
     pub draws_buffer: vk::Buffer,
-    pub draws_address: vk::DeviceAddress,
     pub draws: &'a mut [vk::DrawIndexedIndirectCommand],
 }
 
@@ -471,15 +471,10 @@ impl FrameBuffer {
 
         let (_, draws, _) = unsafe { draw_memory.align_to_mut::<vk::DrawIndexedIndirectCommand>() };
 
-        let info = vk::BufferDeviceAddressInfo::default().buffer(self.draw_device_buffer.buffer);
-        let draws_address = unsafe { device.get_buffer_device_address(&info) };
-
         FrameBufferWriteData {
-            uniforms_buffer: self.uniform_host_buffer.buffer,
             uniforms_address,
             uniforms,
             draws_buffer: self.draw_host_buffer.buffer,
-            draws_address,
             draws,
         }
     }

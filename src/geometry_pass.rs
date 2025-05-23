@@ -1,8 +1,7 @@
 use ash::{Device, vk};
 
 use crate::{
-    double_buffer::FrameBufferWriteData,
-    draw::{DrawCommand, DrawCommands},
+    draw::{DrawCommand, IndexedIndirectRecord},
     renderpass_common::RenderpassImageState,
     vk_util,
     vulkan_engine::GPUStats,
@@ -28,8 +27,7 @@ pub fn record(
     normal_src: RenderpassImageState,
     depth_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
-    opaque_commands: &DrawCommands,
-    write_data: &mut FrameBufferWriteData,
+    records: &Vec<IndexedIndirectRecord>,
     gpu_stats: &mut GPUStats,
 ) -> GeometryPassOutput {
     let color_dst = RenderpassImageState {
@@ -69,14 +67,7 @@ pub fn record(
         &depth_dst,
     );
 
-    draw(
-        device,
-        cmd,
-        global_descriptor,
-        opaque_commands,
-        write_data,
-        gpu_stats,
-    );
+    draw(device, cmd, global_descriptor, records, gpu_stats);
 
     end(device, cmd);
 
@@ -187,18 +178,10 @@ fn draw(
     device: &Device,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
-    opaque_commands: &DrawCommands,
-    write_data: &mut FrameBufferWriteData,
+    records: &Vec<IndexedIndirectRecord>,
     gpu_stats: &mut GPUStats,
 ) {
-    DrawCommand::cmd_record_draw_commands(
-        device,
-        cmd,
-        global_descriptor,
-        opaque_commands,
-        write_data,
-        gpu_stats,
-    );
+    DrawCommand::cmd_record_draw_commands(device, cmd, global_descriptor, records, gpu_stats);
 }
 
 fn end(device: &Device, cmd: vk::CommandBuffer) {

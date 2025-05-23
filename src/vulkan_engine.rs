@@ -19,7 +19,7 @@ use crate::{
     default_resources,
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, PoolSizeRatio},
     double_buffer::{self, DoubleBuffer},
-    draw::{DrawCommands, DrawContext, DrawRecord},
+    draw::{DrawCommands, DrawContext, DrawRecord, IndexedIndirectData},
     forward_pass::{self},
     geometry_pass,
     gltf_loader::GLTFLoader,
@@ -591,6 +591,12 @@ impl VulkanEngine {
 
             let mut write_data = self.double_buffer.upload_buffers(&self.device, cmd);
 
+            let indexed_indirect_data = IndexedIndirectData::prepare(
+                &opaque_commads,
+                &transparent_commads,
+                &mut write_data,
+            );
+
             let geometry_pass_output = geometry_pass::record(
                 &self.device,
                 cmd,
@@ -599,8 +605,7 @@ impl VulkanEngine {
                 normal_src,
                 depth_src,
                 globals_descriptor_set,
-                &opaque_commads,
-                &mut write_data,
+                &indexed_indirect_data.opaque,
                 &mut gpu_stats,
             );
 
@@ -640,8 +645,7 @@ impl VulkanEngine {
                 lightning_pass_output.draw,
                 lightning_pass_output.depth,
                 globals_descriptor_set,
-                &transparent_commads,
-                &mut write_data,
+                &indexed_indirect_data.transparent,
                 &mut gpu_stats,
             );
 
@@ -758,7 +762,7 @@ impl VulkanEngine {
 
         let sin_x = f32::sin(frame_number as f32 / 200.0);
         let cos_z = f32::cos(frame_number as f32 / 200.0);
-        let sunlight_direction = vector![sin_x, 4.0, cos_z].normalize().insert_row(3, 1.0);
+        let sunlight_direction = vector![sin_x, 4.0, cos_z].normalize().insert_row(3, 3.0);
 
         let light_view = Matrix4::look_at_rh(
             &From::from(

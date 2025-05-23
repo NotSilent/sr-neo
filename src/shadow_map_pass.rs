@@ -144,8 +144,6 @@ fn draw(
 
         for command in draw_commands {
             unsafe {
-                // TODO: Compute earlier so it can be put at the end?
-
                 let any_state_changed =
                     current_batch_count != 0 && last_index_buffer != command.index_buffer;
 
@@ -186,15 +184,6 @@ fn draw(
                         vk::IndexType::UINT32,
                     );
                 }
-
-                // uniforms[index as usize] = command.world_matrix;
-
-                // draws[index as usize] = vk::DrawIndexedIndirectCommand::default()
-                //     .index_count(command.surface_index_count)
-                //     .instance_count(1)
-                //     .first_index(command.surface_first_index)
-                //     .vertex_offset(0)
-                //     .first_instance(0);
 
                 current_batch_count += 1;
 

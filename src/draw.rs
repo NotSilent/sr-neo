@@ -50,6 +50,10 @@ impl DrawCommands {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn first(&self) -> Option<&DrawCommand> {
+        self.draw_commands.first()
+    }
 }
 
 impl From<Vec<DrawCommand>> for DrawCommands {
@@ -118,6 +122,113 @@ pub struct DrawCommand {
     pub surface_first_index: u32,
 }
 
+// TODO: Buffer for count from frustum + occlusion culling
+#[derive(Clone)]
+pub struct IndexedIndirectRecord {
+    pub pipeline_layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
+    pub material_set: vk::DescriptorSet,
+
+    // TODO: Make sure there is only one?
+    pub index_buffer: vk::Buffer,
+    // TODO: Make sure there is only one and put in uniform?
+    pub vertex_address: vk::DeviceAddress,
+
+    pub uniforms_address: vk::DeviceAddress,
+    pub draws_buffer: vk::Buffer,
+
+    pub draw_offset: u32,
+    pub batch_count: u32,
+}
+
+impl IndexedIndirectRecord {
+    fn prepare(
+        write_data: &mut FrameBufferWriteData,
+        commands: &DrawCommands,
+        starting_draw_index: u32,
+    ) -> (Vec<IndexedIndirectRecord>, u32) {
+        let mut opaque_data: Vec<IndexedIndirectRecord> = vec![];
+
+        let mut draw_index = starting_draw_index;
+
+        if !commands.is_empty() {
+            let first = commands.first().unwrap();
+
+            let mut new_record = IndexedIndirectRecord {
+                // TODO: layout shouldn't really change
+                pipeline_layout: first.pipeline_layout,
+                pipeline: first.pipeline,
+                material_set: first.material_instance_set,
+                index_buffer: first.index_buffer,
+                vertex_address: first.vertex_buffer_address,
+                uniforms_address: write_data.uniforms_address,
+                draws_buffer: write_data.draws_buffer,
+                draw_offset: 0,
+                batch_count: 0,
+            };
+
+            for command in commands {
+                let any_state_changed = new_record.batch_count != 0
+                    && (new_record.material_set != command.material_instance_set
+                        || new_record.index_buffer != command.index_buffer);
+
+                if any_state_changed {
+                    opaque_data.push(new_record.clone());
+
+                    new_record.pipeline = command.pipeline;
+                    new_record.pipeline_layout = command.pipeline_layout;
+                    new_record.material_set = command.material_instance_set;
+                    new_record.index_buffer = command.index_buffer;
+                    new_record.draw_offset = draw_index;
+                    new_record.batch_count = 0;
+                }
+
+                new_record.batch_count += 1;
+
+                write_data.uniforms[draw_index as usize] = UniformData {
+                    world: command.world_matrix,
+                };
+
+                write_data.draws[draw_index as usize] = vk::DrawIndexedIndirectCommand::default()
+                    .index_count(command.surface_index_count)
+                    .instance_count(1)
+                    .first_index(command.surface_first_index)
+                    .vertex_offset(0)
+                    .first_instance(0);
+
+                draw_index += 1;
+            }
+
+            // Push the last one that didn't have a chance to have it's status checked due to loop end
+            opaque_data.push(new_record);
+        }
+
+        (opaque_data, draw_index)
+    }
+}
+
+pub struct IndexedIndirectData {
+    pub opaque: Vec<IndexedIndirectRecord>,
+    pub transparent: Vec<IndexedIndirectRecord>,
+}
+
+impl IndexedIndirectData {
+    pub fn prepare(
+        opaque_commands: &DrawCommands,
+        transparent_commnads: &DrawCommands,
+        write_data: &mut FrameBufferWriteData,
+    ) -> IndexedIndirectData {
+        let (opaque_data, draws) = IndexedIndirectRecord::prepare(write_data, opaque_commands, 0);
+        let (transparent_data, _) =
+            IndexedIndirectRecord::prepare(write_data, transparent_commnads, draws);
+
+        Self {
+            opaque: opaque_data,
+            transparent: transparent_data,
+        }
+    }
+}
+
 // TODO: Move this somewhere
 impl DrawCommand {
     #[allow(clippy::too_many_arguments)]
@@ -126,134 +237,86 @@ impl DrawCommand {
         device: &Device,
         cmd: vk::CommandBuffer,
         global_descriptor: vk::DescriptorSet,
-        draw_commands: &DrawCommands,
-        write_data: &mut FrameBufferWriteData,
         // TODO: Return instead and add in caller?
+        records: &[IndexedIndirectRecord],
         gpu_stats: &mut GPUStats,
     ) {
-        if !draw_commands.is_empty() {
-            let mut last_material_set = vk::DescriptorSet::null();
-            let mut last_pipeline = vk::Pipeline::null();
-            let mut last_index_buffer = vk::Buffer::null();
+        let mut last_material_set = vk::DescriptorSet::null();
+        let mut last_pipeline = vk::Pipeline::null();
+        let mut last_index_buffer = vk::Buffer::null();
 
-            let mut total_draw_count = 0_u64;
-            let mut current_batch_count = 0;
+        //let records = &records[0..0];
 
-            for command in draw_commands {
-                unsafe {
-                    {
-                        // TODO: Compute earlier so it can be put at the end?
+        for record in records {
+            unsafe {
+                if last_material_set != record.material_set {
+                    last_material_set = record.material_set;
 
-                        let any_state_changed = current_batch_count != 0
-                            && (last_material_set != command.material_instance_set
-                                || last_index_buffer != command.index_buffer);
+                    if last_pipeline != record.pipeline {
+                        last_pipeline = record.pipeline;
 
-                        if any_state_changed {
-                            device.cmd_draw_indexed_indirect(
-                                cmd,
-                                write_data.draws_buffer,
-                                total_draw_count
-                                    * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
-                                current_batch_count,
-                                size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                            );
-
-                            total_draw_count += u64::from(current_batch_count);
-                            current_batch_count = 0;
-                        }
-                    }
-
-                    if last_material_set != command.material_instance_set {
-                        last_material_set = command.material_instance_set;
-
-                        if last_pipeline != command.pipeline {
-                            last_pipeline = command.pipeline;
-
-                            device.cmd_bind_pipeline(
-                                cmd,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                command.pipeline,
-                            );
-
-                            device.cmd_bind_descriptor_sets(
-                                cmd,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                command.pipeline_layout,
-                                0,
-                                &[global_descriptor],
-                                &[],
-                            );
-
-                            // TODO: Dynamic state
-                        }
+                        device.cmd_bind_pipeline(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            record.pipeline,
+                        );
 
                         device.cmd_bind_descriptor_sets(
                             cmd,
                             vk::PipelineBindPoint::GRAPHICS,
-                            command.pipeline_layout,
-                            1,
-                            &[command.material_instance_set],
+                            record.pipeline_layout,
+                            0,
+                            &[global_descriptor],
                             &[],
                         );
+
+                        // TODO: Dynamic state
                     }
 
-                    if last_index_buffer != command.index_buffer {
-                        last_index_buffer = command.index_buffer;
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        record.pipeline_layout,
+                        1,
+                        &[record.material_set],
+                        &[],
+                    );
+                }
 
-                        let push_constants = GPUPushDrawConstant {
-                            uniform_buffer: write_data.uniforms_address,
-                            vertex_buffer: command.vertex_buffer_address,
-                            index: total_draw_count as u32,
-                        };
+                if last_index_buffer != record.index_buffer {
+                    last_index_buffer = record.index_buffer;
 
-                        device.cmd_push_constants(
-                            cmd,
-                            command.pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            push_constants.as_bytes(),
-                        );
-
-                        device.cmd_bind_index_buffer(
-                            cmd,
-                            command.index_buffer,
-                            0,
-                            vk::IndexType::UINT32,
-                        );
-                    }
-
-                    let index = total_draw_count + u64::from(current_batch_count);
-
-                    write_data.uniforms[index as usize] = UniformData {
-                        world: command.world_matrix,
+                    let push_constants = GPUPushDrawConstant {
+                        uniform_buffer: record.uniforms_address,
+                        vertex_buffer: record.vertex_address,
+                        index: record.draw_offset,
                     };
 
-                    write_data.draws[index as usize] = vk::DrawIndexedIndirectCommand::default()
-                        .index_count(command.surface_index_count)
-                        .instance_count(1)
-                        .first_index(command.surface_first_index)
-                        .vertex_offset(0)
-                        .first_instance(0);
+                    device.cmd_push_constants(
+                        cmd,
+                        record.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        push_constants.as_bytes(),
+                    );
 
-                    current_batch_count += 1;
-
-                    gpu_stats.draw_calls += 1;
-                    gpu_stats.triangles += command.surface_index_count as usize / 3;
+                    device.cmd_bind_index_buffer(
+                        cmd,
+                        record.index_buffer,
+                        0,
+                        vk::IndexType::UINT32,
+                    );
                 }
-            }
 
-            // TODO: Compute earlier so it won't have to be duplicated
-            // This is needed because draw is performed at the beginning of the loop
-            // and the last one has no chance to be recorded
-            unsafe {
                 device.cmd_draw_indexed_indirect(
                     cmd,
-                    write_data.draws_buffer,
-                    total_draw_count * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
-                    current_batch_count,
+                    record.draws_buffer,
+                    u64::from(record.draw_offset)
+                        * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
+                    record.batch_count,
                     size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                 );
-            };
+            }
         }
     }
 }
