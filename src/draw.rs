@@ -170,7 +170,8 @@ impl IndexedIndirectRecord {
             for command in commands {
                 let any_state_changed = new_record.batch_count != 0
                     && (new_record.material_set != command.material_instance_set
-                        || new_record.index_buffer != command.index_buffer);
+                        || new_record.index_buffer != command.index_buffer)
+                    || new_record.vertex_address != command.vertex_buffer_address;
 
                 if any_state_changed {
                     opaque_data.push(new_record.clone());
@@ -179,6 +180,7 @@ impl IndexedIndirectRecord {
                     new_record.pipeline_layout = command.pipeline_layout;
                     new_record.material_set = command.material_instance_set;
                     new_record.index_buffer = command.index_buffer;
+                    new_record.vertex_address = command.vertex_buffer_address;
                     new_record.draw_offset = draw_index;
                     new_record.batch_count = 0;
                 }
