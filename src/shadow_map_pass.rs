@@ -1,12 +1,11 @@
 use ash::{Device, vk};
 
 use crate::{
-    double_buffer::{self, FrameBufferWriteData},
-    draw::{DrawCommands, GPUPushDrawConstant},
+    double_buffer::{self},
+    draw::{GPUPushDrawConstant, IndexedIndirectRecord},
     materials::MasterMaterial,
     renderpass_common::RenderpassImageState,
     vk_util,
-    vulkan_engine::GPUStats,
 };
 
 pub struct ShaowMapPassOutput {
@@ -25,9 +24,7 @@ pub fn record(
     shadow_map_src: RenderpassImageState,
     shadow_pass_master_material: &MasterMaterial,
     global_descriptor: vk::DescriptorSet,
-    draw_commands: &DrawCommands,
-    write_data: &mut FrameBufferWriteData,
-    gpu_stats: &mut GPUStats,
+    records: &[IndexedIndirectRecord],
 ) -> ShaowMapPassOutput {
     let shadow_map_dst = RenderpassImageState {
         image: shadow_map_src.image,
@@ -45,9 +42,7 @@ pub fn record(
         cmd,
         global_descriptor,
         shadow_pass_master_material,
-        draw_commands,
-        write_data,
-        gpu_stats,
+        records,
     );
 
     end(device, cmd);
@@ -113,17 +108,10 @@ fn draw(
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     shadow_pass_master_material: &MasterMaterial,
-    draw_commands: &DrawCommands,
-    write_data: &mut FrameBufferWriteData,
-    gpu_stats: &mut GPUStats,
+    records: &[IndexedIndirectRecord],
 ) {
-    // TODO: create uniform buffers once and reuse their data across passes
-
-    if !draw_commands.is_empty() {
+    if !records.is_empty() {
         let mut last_index_buffer = vk::Buffer::null();
-
-        let mut total_draw_count = 0_u64;
-        let mut current_batch_count = 0;
 
         unsafe {
             device.cmd_bind_pipeline(
@@ -142,36 +130,20 @@ fn draw(
             );
         }
 
-        for command in draw_commands {
+        for record in records {
             unsafe {
-                let any_state_changed =
-                    current_batch_count != 0 && last_index_buffer != command.index_buffer;
-
-                if any_state_changed {
-                    device.cmd_draw_indexed_indirect(
-                        cmd,
-                        write_data.draws_buffer,
-                        total_draw_count * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
-                        current_batch_count,
-                        size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                    );
-
-                    total_draw_count += u64::from(current_batch_count);
-                    current_batch_count = 0;
-                }
-
-                if last_index_buffer != command.index_buffer {
-                    last_index_buffer = command.index_buffer;
+                if last_index_buffer != record.index_buffer {
+                    last_index_buffer = record.index_buffer;
 
                     let push_constants = GPUPushDrawConstant {
-                        uniform_buffer: write_data.uniforms_address,
-                        vertex_buffer: command.vertex_buffer_address,
-                        index: total_draw_count as u32,
+                        uniform_buffer: record.uniforms_address,
+                        vertex_buffer: record.vertex_address,
+                        index: record.draw_offset as u32,
                     };
 
                     device.cmd_push_constants(
                         cmd,
-                        command.pipeline_layout,
+                        record.pipeline_layout,
                         vk::ShaderStageFlags::VERTEX,
                         0,
                         push_constants.as_bytes(),
@@ -179,31 +151,21 @@ fn draw(
 
                     device.cmd_bind_index_buffer(
                         cmd,
-                        command.index_buffer,
+                        record.index_buffer,
                         0,
                         vk::IndexType::UINT32,
                     );
                 }
 
-                current_batch_count += 1;
-
-                gpu_stats.draw_calls += 1;
-                gpu_stats.triangles += command.surface_index_count as usize / 3;
+                device.cmd_draw_indexed_indirect(
+                    cmd,
+                    record.draws_buffer,
+                    record.draw_offset as u64 * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
+                    record.batch_count,
+                    size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                );
             }
         }
-
-        // TODO: Compute earlier so it won't have to be duplicated
-        // This is needed because draw is performed at the beginning of the loop
-        // and the last one has no chance to be recorded
-        unsafe {
-            device.cmd_draw_indexed_indirect(
-                cmd,
-                write_data.draws_buffer,
-                total_draw_count * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
-                current_batch_count,
-                size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-            );
-        };
     }
 }
 

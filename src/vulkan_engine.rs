@@ -42,7 +42,7 @@ use crate::{
 pub struct GPUStats {
     pub draw_time: f64,
     pub draw_calls: u32,
-    pub triangles: usize,
+    pub triangles: u64,
 }
 
 pub struct GeoSurface {
@@ -595,6 +595,7 @@ impl VulkanEngine {
                 &opaque_commads,
                 &transparent_commads,
                 &mut write_data,
+                &mut gpu_stats,
             );
 
             let geometry_pass_output = geometry_pass::record(
@@ -606,7 +607,6 @@ impl VulkanEngine {
                 depth_src,
                 globals_descriptor_set,
                 &indexed_indirect_data.opaque,
-                &mut gpu_stats,
             );
 
             let shadow_pass_master_material = self
@@ -620,9 +620,7 @@ impl VulkanEngine {
                 shadow_map_src,
                 shadow_pass_master_material,
                 globals_descriptor_set,
-                &opaque_commads,
-                &mut write_data,
-                &mut gpu_stats,
+                &indexed_indirect_data.opaque,
             );
 
             let lightning_pass_output = lightning_pass::record(
@@ -646,7 +644,6 @@ impl VulkanEngine {
                 lightning_pass_output.depth,
                 globals_descriptor_set,
                 &indexed_indirect_data.transparent,
-                &mut gpu_stats,
             );
 
             vk_util::transition_image(

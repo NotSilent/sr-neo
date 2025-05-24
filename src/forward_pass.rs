@@ -6,7 +6,6 @@ use crate::{
     draw::{DrawCommand, IndexedIndirectRecord},
     renderpass_common::RenderpassImageState,
     vk_util,
-    vulkan_engine::GPUStats,
 };
 
 // TODO:
@@ -23,7 +22,6 @@ pub fn record(
     depth_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
     records: &[IndexedIndirectRecord],
-    gpu_stats: &mut GPUStats,
 ) -> RenderpassImageState {
     let draw_dst = RenderpassImageState {
         image: draw_src.image,
@@ -52,7 +50,7 @@ pub fn record(
         &depth_dst,
     );
 
-    draw(device, cmd, global_descriptor, records, gpu_stats);
+    draw(device, cmd, global_descriptor, records);
 
     end(device, cmd);
 
@@ -129,9 +127,8 @@ fn draw(
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     records: &[IndexedIndirectRecord],
-    gpu_stats: &mut GPUStats,
 ) {
-    DrawCommand::cmd_record_draw_commands(device, cmd, global_descriptor, records, gpu_stats);
+    DrawCommand::cmd_record_draw_commands(device, cmd, global_descriptor, records);
 }
 
 fn end(device: &Device, cmd: vk::CommandBuffer) {

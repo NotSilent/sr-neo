@@ -146,6 +146,7 @@ impl IndexedIndirectRecord {
         write_data: &mut FrameBufferWriteData,
         commands: &DrawCommands,
         starting_draw_index: u32,
+        gpu_stats: &mut GPUStats,
     ) -> (Vec<IndexedIndirectRecord>, u32) {
         let mut opaque_data: Vec<IndexedIndirectRecord> = vec![];
 
@@ -198,6 +199,9 @@ impl IndexedIndirectRecord {
                     .vertex_offset(0)
                     .first_instance(0);
 
+                gpu_stats.draw_calls += 1;
+                gpu_stats.triangles += u64::from(command.surface_index_count);
+
                 draw_index += 1;
             }
 
@@ -219,10 +223,12 @@ impl IndexedIndirectData {
         opaque_commands: &DrawCommands,
         transparent_commnads: &DrawCommands,
         write_data: &mut FrameBufferWriteData,
+        gpu_stats: &mut GPUStats,
     ) -> IndexedIndirectData {
-        let (opaque_data, draws) = IndexedIndirectRecord::prepare(write_data, opaque_commands, 0);
+        let (opaque_data, draws) =
+            IndexedIndirectRecord::prepare(write_data, opaque_commands, 0, gpu_stats);
         let (transparent_data, _) =
-            IndexedIndirectRecord::prepare(write_data, transparent_commnads, draws);
+            IndexedIndirectRecord::prepare(write_data, transparent_commnads, draws, gpu_stats);
 
         Self {
             opaque: opaque_data,
@@ -241,13 +247,10 @@ impl DrawCommand {
         global_descriptor: vk::DescriptorSet,
         // TODO: Return instead and add in caller?
         records: &[IndexedIndirectRecord],
-        gpu_stats: &mut GPUStats,
     ) {
         let mut last_material_set = vk::DescriptorSet::null();
         let mut last_pipeline = vk::Pipeline::null();
         let mut last_index_buffer = vk::Buffer::null();
-
-        //let records = &records[0..0];
 
         for record in records {
             unsafe {
