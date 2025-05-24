@@ -10,12 +10,12 @@ Just another renderer built with Vulkan and Rust.
 - Shadow Mapping
 - Basic glTF loading
 - Draw-call batching
+- FXAA
 
 ---
 
 ## Short-Term Goals
 
-- FXAA
 - Depth pre-pass
 - Compute-based frustum & occlusion culling
 - Bindless textures
