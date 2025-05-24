@@ -21,7 +21,7 @@ use crate::{
     double_buffer::{self, DoubleBuffer},
     draw::{DrawCommands, DrawContext, DrawRecord, IndexedIndirectData},
     forward_pass::{self},
-    geometry_pass,
+    fxaa_pass, geometry_pass,
     gltf_loader::GLTFLoader,
     images::{ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
@@ -524,13 +524,15 @@ impl VulkanEngine {
                 .acquire_next_image(synchronization_resources.swapchain_semaphore)?;
 
             let frame_targets = self.double_buffer.get_frame_targets();
-            let lightning_pass_description = self.double_buffer.get_lightning_pass_description();
+            let lightning_pass_data = self.double_buffer.get_lightning_pass_data();
+            let fxaa_pass_data = self.double_buffer.get_fxaa_pass_data();
 
             let draw_src = RenderpassImageState::new(&frame_targets.draw);
             let color_src = RenderpassImageState::new(&frame_targets.color);
             let normal_src = RenderpassImageState::new(&frame_targets.normal);
             let depth_src = RenderpassImageState::new(&frame_targets.depth);
             let shadow_map_src = RenderpassImageState::new(&frame_targets.shadow_map);
+            let fxaa_src = RenderpassImageState::new(&frame_targets.fxaa);
 
             let draw_width = self
                 .swapchain
@@ -633,7 +635,7 @@ impl VulkanEngine {
                 geometry_pass_output.depth,
                 shadow_map_pass_output.shadow_map,
                 globals_descriptor_set,
-                &lightning_pass_description,
+                &lightning_pass_data,
             );
 
             let draw_image_state = forward_pass::record(
@@ -646,13 +648,23 @@ impl VulkanEngine {
                 &indexed_indirect_data.transparent,
             );
 
+            let fxaa_pass_output = fxaa_pass::record(
+                &self.device,
+                cmd,
+                render_area,
+                draw_image_state,
+                fxaa_src,
+                globals_descriptor_set,
+                &fxaa_pass_data,
+            );
+
             vk_util::transition_image(
                 &self.device,
                 cmd,
-                draw_image_state.image,
-                draw_image_state.layout,
-                draw_image_state.stage_mask,
-                draw_image_state.access_mask,
+                fxaa_pass_output.fxaa.image,
+                fxaa_pass_output.fxaa.layout,
+                fxaa_pass_output.fxaa.stage_mask,
+                fxaa_pass_output.fxaa.access_mask,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::PipelineStageFlags2::TRANSFER,
                 vk::AccessFlags2::TRANSFER_READ,
@@ -675,7 +687,7 @@ impl VulkanEngine {
             vk_util::blit_image(
                 &self.device,
                 cmd,
-                draw_image_state.image,
+                fxaa_pass_output.fxaa.image,
                 acquired_swapchain.image,
                 render_area.extent,
                 self.swapchain.extent,

@@ -138,7 +138,7 @@ fn draw(
                     let push_constants = GPUPushDrawConstant {
                         uniform_buffer: record.uniforms_address,
                         vertex_buffer: record.vertex_address,
-                        index: record.draw_offset as u32,
+                        index: record.draw_offset,
                     };
 
                     device.cmd_push_constants(
@@ -160,7 +160,8 @@ fn draw(
                 device.cmd_draw_indexed_indirect(
                     cmd,
                     record.draws_buffer,
-                    record.draw_offset as u64 * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
+                    u64::from(record.draw_offset)
+                        * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
                     record.batch_count,
                     size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                 );

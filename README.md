@@ -19,6 +19,7 @@ Just another renderer built with Vulkan and Rust.
 - Depth pre-pass
 - Compute-based frustum & occlusion culling
 - Bindless textures
+- Single index and vertex buffer
 - RSM for simple GI
 - Switch to HLSL
 
@@ -33,6 +34,8 @@ Just another renderer built with Vulkan and Rust.
 - Improved glTF loader
 - Cascaded Shadow Maps
 - Variance Shadow Mapping or Moment Shadow Mapping
+- Manaing index and vertex buffer memory, allow streaming nad reusing memory and deal with fragmentation
+- Remove per-frame render targets
 
 ---
 

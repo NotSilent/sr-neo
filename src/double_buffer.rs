@@ -8,13 +8,34 @@ use crate::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
     images::Image,
-    lightning_pass::LightningPassDescription,
     pipeline_builder::PipelineBuilder,
     resource_manager::VulkanResource,
     shader_manager::ShaderManager,
     vk_util,
     vulkan_engine::SceneData,
 };
+
+pub struct FullScreenPassDescription {
+    pub pipeline_layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
+    pub descriptor_layout: vk::DescriptorSetLayout,
+}
+
+impl FullScreenPassDescription {
+    pub fn destroy(&mut self, device: &Device) {
+        unsafe {
+            device.destroy_descriptor_set_layout(self.descriptor_layout, None);
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.pipeline_layout, None);
+        }
+    }
+}
+
+pub struct FullScreenPassData {
+    pub pipeline_layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
+    pub descriptor_set: vk::DescriptorSet,
+}
 
 // TODO?: This is frame late now
 pub struct QueryResults {
@@ -54,6 +75,7 @@ pub struct FrameBufferTargets {
     pub normal: Image,
     pub depth: Image,
     pub shadow_map: Image,
+    pub fxaa: Image,
 }
 
 pub struct FrameBufferWriteData<'a> {
@@ -75,7 +97,8 @@ impl FrameBufferTargets {
             DRAW_FORMAT,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED,
             false,
             "draw_image",
         );
@@ -125,12 +148,25 @@ impl FrameBufferTargets {
             "shadow_map_image",
         );
 
+        let fxaa_image = Image::new(
+            device,
+            allocator,
+            image_extent,
+            DRAW_FORMAT,
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            false,
+            "fxaa_image",
+        );
+
         Self {
             draw: draw_image,
             color: color_image,
             normal: normal_image,
             depth: depth_image,
             shadow_map: shadow_map_image,
+            fxaa: fxaa_image,
         }
     }
 
@@ -140,6 +176,7 @@ impl FrameBufferTargets {
         self.normal.destroy(device, allocator);
         self.depth.destroy(device, allocator);
         self.shadow_map.destroy(device, allocator);
+        self.fxaa.destroy(device, allocator);
     }
 }
 
@@ -160,6 +197,7 @@ struct FrameBuffer {
 
     globals_descriptor_set: vk::DescriptorSet,
     lightning_descriptor_set: vk::DescriptorSet,
+    fxaa_descriptor_set: vk::DescriptorSet,
 
     globals_host_buffer: Buffer,
     globals_device_buffer: Buffer,
@@ -184,6 +222,7 @@ impl FrameBuffer {
         globals_descriptor_set_layout: vk::DescriptorSetLayout,
         global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
         lightning_descriptor_layout: vk::DescriptorSetLayout,
+        fxaa_descriptor_layout: vk::DescriptorSetLayout,
         default_sampler_linear: vk::Sampler,
     ) -> Self {
         let targets = FrameBufferTargets::new(device, allocator, width, height);
@@ -206,6 +245,14 @@ impl FrameBuffer {
             device,
             global_descriptor_allocator,
             lightning_descriptor_layout,
+            default_sampler_linear,
+            &targets,
+        );
+
+        let fxaa_descriptor_set = Self::create_fxaa_descriptor_set(
+            device,
+            global_descriptor_allocator,
+            fxaa_descriptor_layout,
             default_sampler_linear,
             &targets,
         );
@@ -315,6 +362,7 @@ impl FrameBuffer {
             uniform_device_buffer,
             draw_host_buffer,
             draw_device_buffer,
+            fxaa_descriptor_set,
         }
     }
 
@@ -544,6 +592,34 @@ impl FrameBuffer {
         lightning_descriptor_set
     }
 
+    fn create_fxaa_descriptor_set(
+        device: &Device,
+        global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
+        fxaa_descriptor_layout: vk::DescriptorSetLayout,
+        default_sampler_linear: vk::Sampler,
+        targets: &FrameBufferTargets,
+    ) -> vk::DescriptorSet {
+        let fxaa_descriptor_set =
+            global_descriptor_allocator.allocate(device, fxaa_descriptor_layout);
+
+        let color_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(targets.draw.image_view)
+            .sampler(default_sampler_linear)];
+
+        let write_color = vk::WriteDescriptorSet::default()
+            .dst_binding(0)
+            .dst_set(fxaa_descriptor_set)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&color_info);
+
+        unsafe {
+            // TODO: Combine writes?
+            device.update_descriptor_sets(&[write_color], &[]);
+        }
+        fxaa_descriptor_set
+    }
+
     fn create_default_pool_size_ratios() -> Vec<PoolSizeRatio> {
         vec![
             PoolSizeRatio {
@@ -578,9 +654,8 @@ pub struct DoubleBuffer {
     current_frame: usize,
     frame_buffers: [FrameBuffer; BUFFER_SIZE],
 
-    lightning_descriptor_layout: vk::DescriptorSetLayout,
-    lightning_pipeline: vk::Pipeline,
-    lightning_pipeline_layout: vk::PipelineLayout,
+    lightning_pass_description: FullScreenPassDescription,
+    fxaa_pass_description: FullScreenPassDescription,
 }
 
 impl DoubleBuffer {
@@ -598,41 +673,11 @@ impl DoubleBuffer {
         frame_layout: vk::DescriptorSetLayout,
         shader_manager: &mut ShaderManager,
     ) -> Self {
-        let shader = shader_manager.get_graphics_shader_combined(device, "lightning_pass");
+        let lightning_pass_description =
+            Self::create_lightning_pass_description(device, frame_layout, shader_manager);
 
-        let lightning_descriptor_layout = DescriptorLayoutBuilder::default()
-            .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .add_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .build(
-                device,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            );
-
-        let layouts = [frame_layout, lightning_descriptor_layout];
-
-        let pipeline_layout_create_info =
-            vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
-
-        let lightning_pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layout_create_info, None)
-                .unwrap()
-        };
-
-        let pipeline_builder = PipelineBuilder::default()
-            .set_shaders(shader.vert, shader.frag)
-            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE)
-            .set_multisampling_none()
-            .set_color_attachment_formats(&[DRAW_FORMAT])
-            .disable_depth_test()
-            .set_pipeline_layout(lightning_pipeline_layout)
-            .add_attachment();
-
-        let lightning_pipeline = pipeline_builder.build(device);
+        let fxaa_pass_description =
+            Self::create_fxaa_pass_description(device, frame_layout, shader_manager);
 
         Self {
             current_frame: 0,
@@ -646,7 +691,8 @@ impl DoubleBuffer {
                     timestamp_period,
                     globals_descriptor_set_layout,
                     global_descriptor_allocator,
-                    lightning_descriptor_layout,
+                    lightning_pass_description.descriptor_layout,
+                    fxaa_pass_description.descriptor_layout,
                     default_sampler_linear,
                 ),
                 FrameBuffer::new(
@@ -658,13 +704,13 @@ impl DoubleBuffer {
                     timestamp_period,
                     globals_descriptor_set_layout,
                     global_descriptor_allocator,
-                    lightning_descriptor_layout,
+                    lightning_pass_description.descriptor_layout,
+                    fxaa_pass_description.descriptor_layout,
                     default_sampler_linear,
                 ),
             ],
-            lightning_descriptor_layout,
-            lightning_pipeline_layout,
-            lightning_pipeline,
+            lightning_pass_description,
+            fxaa_pass_description,
         }
     }
 
@@ -673,11 +719,8 @@ impl DoubleBuffer {
             buffer.destroy(device, allocator);
         }
 
-        unsafe {
-            device.destroy_pipeline(self.lightning_pipeline, None);
-            device.destroy_pipeline_layout(self.lightning_pipeline_layout, None);
-            device.destroy_descriptor_set_layout(self.lightning_descriptor_layout, None);
-        }
+        self.lightning_pass_description.destroy(device);
+        self.fxaa_pass_description.destroy(device);
     }
 
     pub fn swap_buffer(&mut self, device: &Device, allocator: &mut Allocator) -> QueryResults {
@@ -757,11 +800,112 @@ impl DoubleBuffer {
         self.frame_buffers[self.current_frame].set_globals(scene_data);
     }
 
-    pub fn get_lightning_pass_description(&self) -> LightningPassDescription {
-        LightningPassDescription {
-            pipeline: self.lightning_pipeline,
-            pipeline_layout: self.lightning_pipeline_layout,
+    pub fn get_lightning_pass_data(&self) -> FullScreenPassData {
+        FullScreenPassData {
+            pipeline_layout: self.lightning_pass_description.pipeline_layout,
+            pipeline: self.lightning_pass_description.pipeline,
             descriptor_set: self.frame_buffers[self.current_frame].lightning_descriptor_set,
+        }
+    }
+
+    pub fn get_fxaa_pass_data(&self) -> FullScreenPassData {
+        FullScreenPassData {
+            pipeline_layout: self.fxaa_pass_description.pipeline_layout,
+            pipeline: self.fxaa_pass_description.pipeline,
+            descriptor_set: self.frame_buffers[self.current_frame].fxaa_descriptor_set,
+        }
+    }
+
+    fn create_lightning_pass_description(
+        device: &Device,
+        frame_layout: vk::DescriptorSetLayout,
+        shader_manager: &mut ShaderManager,
+    ) -> FullScreenPassDescription {
+        let shader = shader_manager.get_graphics_shader(device, "full_screen", "lightning_pass");
+
+        let lightning_descriptor_layout = DescriptorLayoutBuilder::default()
+            .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .add_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .build(
+                device,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            );
+
+        let layouts = [frame_layout, lightning_descriptor_layout];
+
+        let pipeline_layout_create_info =
+            vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
+
+        let lightning_pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&pipeline_layout_create_info, None)
+                .unwrap()
+        };
+
+        let pipeline_builder = PipelineBuilder::default()
+            .set_shaders(shader.vert, shader.frag)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE)
+            .set_multisampling_none()
+            .set_color_attachment_formats(&[DRAW_FORMAT])
+            .disable_depth_test()
+            .set_pipeline_layout(lightning_pipeline_layout)
+            .add_attachment();
+
+        let lightning_pipeline = pipeline_builder.build(device);
+
+        FullScreenPassDescription {
+            pipeline_layout: lightning_pipeline_layout,
+            pipeline: lightning_pipeline,
+            descriptor_layout: lightning_descriptor_layout,
+        }
+    }
+
+    fn create_fxaa_pass_description(
+        device: &Device,
+        frame_layout: vk::DescriptorSetLayout,
+        shader_manager: &mut ShaderManager,
+    ) -> FullScreenPassDescription {
+        let shader = shader_manager.get_graphics_shader(device, "full_screen", "fxaa_pass");
+
+        let fxaa_descriptor_layout = DescriptorLayoutBuilder::default()
+            .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .build(
+                device,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            );
+
+        let layouts = [frame_layout, fxaa_descriptor_layout];
+
+        let pipeline_layout_create_info =
+            vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
+
+        let fxaa_pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&pipeline_layout_create_info, None)
+                .unwrap()
+        };
+
+        let pipeline_builder = PipelineBuilder::default()
+            .set_shaders(shader.vert, shader.frag)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE)
+            .set_multisampling_none()
+            .set_color_attachment_formats(&[DRAW_FORMAT])
+            .disable_depth_test()
+            .set_pipeline_layout(fxaa_pipeline_layout)
+            .add_attachment();
+
+        let fxaa_pipeline = pipeline_builder.build(device);
+
+        FullScreenPassDescription {
+            pipeline_layout: fxaa_pipeline_layout,
+            pipeline: fxaa_pipeline,
+            descriptor_layout: fxaa_descriptor_layout,
         }
     }
 }

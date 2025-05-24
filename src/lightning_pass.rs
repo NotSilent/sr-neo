@@ -1,12 +1,6 @@
 use ash::{Device, vk};
 
-use crate::{renderpass_common::RenderpassImageState, vk_util};
-
-pub struct LightningPassDescription {
-    pub pipeline: vk::Pipeline,
-    pub pipeline_layout: vk::PipelineLayout,
-    pub descriptor_set: vk::DescriptorSet,
-}
+use crate::{double_buffer::FullScreenPassData, renderpass_common::RenderpassImageState, vk_util};
 
 pub struct LightningPassOutput {
     pub draw: RenderpassImageState,
@@ -29,7 +23,7 @@ pub fn record(
     depth_src: RenderpassImageState,
     shadow_map_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
-    lightning_pass_description: &LightningPassDescription,
+    lightning_pass_data: &FullScreenPassData,
 ) -> LightningPassOutput {
     let draw_dst = RenderpassImageState {
         image: draw_src.image,
@@ -87,7 +81,7 @@ pub fn record(
         &shadow_map_dst,
     );
 
-    draw(device, cmd, global_descriptor, lightning_pass_description);
+    draw(device, cmd, global_descriptor, lightning_pass_data);
 
     end(device, cmd);
 
@@ -218,21 +212,21 @@ fn draw(
     device: &Device,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
-    lightning_pass_description: &LightningPassDescription,
+    lightning_pass_data: &FullScreenPassData,
 ) {
     unsafe {
         device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::GRAPHICS,
-            lightning_pass_description.pipeline,
+            lightning_pass_data.pipeline,
         );
 
         device.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::GRAPHICS,
-            lightning_pass_description.pipeline_layout,
+            lightning_pass_data.pipeline_layout,
             0,
-            &[global_descriptor, lightning_pass_description.descriptor_set],
+            &[global_descriptor, lightning_pass_data.descriptor_set],
             &[],
         );
 

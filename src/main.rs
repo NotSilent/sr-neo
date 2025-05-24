@@ -21,6 +21,7 @@ mod descriptors;
 mod double_buffer;
 mod draw;
 mod forward_pass;
+mod fxaa_pass;
 mod geometry_pass;
 mod gltf_loader;
 mod images;
