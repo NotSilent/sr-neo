@@ -79,7 +79,6 @@ pub struct FrameBufferTargets {
 }
 
 pub struct FrameBufferWriteData<'a> {
-    pub uniforms_address: vk::DeviceAddress,
     pub uniforms: &'a mut [UniformData],
     pub draws_buffer: vk::Buffer,
     pub draws: &'a mut [vk::DrawIndexedIndirectCommand],
@@ -224,6 +223,7 @@ impl FrameBuffer {
         lightning_descriptor_layout: vk::DescriptorSetLayout,
         fxaa_descriptor_layout: vk::DescriptorSetLayout,
         default_sampler_linear: vk::Sampler,
+        vertex_buffer: &Buffer,
     ) -> Self {
         let targets = FrameBufferTargets::new(device, allocator, width, height);
 
@@ -283,7 +283,7 @@ impl FrameBuffer {
             device,
             allocator,
             uniform_alloc_size,
-            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
             gpu_allocator::MemoryLocation::CpuToGpu,
             "uniform_host_buffer",
         );
@@ -292,9 +292,7 @@ impl FrameBuffer {
             device,
             allocator,
             uniform_alloc_size,
-            vk::BufferUsageFlags::UNIFORM_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             gpu_allocator::MemoryLocation::GpuOnly,
             "uniform_device_buffer",
         );
@@ -327,13 +325,30 @@ impl FrameBuffer {
         let globals_descriptor_set =
             global_descriptor_allocator.allocate(device, globals_descriptor_set_layout);
 
+        // TODO: device?
         let mut writer = DescriptorWriter::default();
         writer.write_buffer(
             0,
-            globals_host_buffer.buffer,
-            size_of::<SceneData>() as u64,
+            globals_device_buffer.buffer,
+            vk::WHOLE_SIZE,
             0,
             vk::DescriptorType::UNIFORM_BUFFER,
+        );
+
+        writer.write_buffer(
+            1,
+            vertex_buffer.buffer,
+            vk::WHOLE_SIZE,
+            0,
+            vk::DescriptorType::STORAGE_BUFFER,
+        );
+
+        writer.write_buffer(
+            2,
+            uniform_device_buffer.buffer,
+            vk::WHOLE_SIZE,
+            0,
+            vk::DescriptorType::STORAGE_BUFFER,
         );
 
         writer.update_set(device, globals_descriptor_set);
@@ -506,9 +521,6 @@ impl FrameBuffer {
         // TODO: Struct
         let (_, uniforms, _) = unsafe { uniform_memory.align_to_mut::<UniformData>() };
 
-        let info = vk::BufferDeviceAddressInfo::default().buffer(self.uniform_device_buffer.buffer);
-        let uniforms_address = unsafe { device.get_buffer_device_address(&info) };
-
         let draw_memory = self
             .draw_host_buffer
             .allocation
@@ -520,7 +532,6 @@ impl FrameBuffer {
         let (_, draws, _) = unsafe { draw_memory.align_to_mut::<vk::DrawIndexedIndirectCommand>() };
 
         FrameBufferWriteData {
-            uniforms_address,
             uniforms,
             draws_buffer: self.draw_host_buffer.buffer,
             draws,
@@ -670,14 +681,20 @@ impl DoubleBuffer {
         globals_descriptor_set_layout: vk::DescriptorSetLayout,
         global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
         default_sampler_linear: vk::Sampler,
-        frame_layout: vk::DescriptorSetLayout,
         shader_manager: &mut ShaderManager,
+        vertex_buffer: &Buffer,
     ) -> Self {
-        let lightning_pass_description =
-            Self::create_lightning_pass_description(device, frame_layout, shader_manager);
+        let lightning_pass_description = Self::create_lightning_pass_description(
+            device,
+            globals_descriptor_set_layout,
+            shader_manager,
+        );
 
-        let fxaa_pass_description =
-            Self::create_fxaa_pass_description(device, frame_layout, shader_manager);
+        let fxaa_pass_description = Self::create_fxaa_pass_description(
+            device,
+            globals_descriptor_set_layout,
+            shader_manager,
+        );
 
         Self {
             current_frame: 0,
@@ -694,6 +711,7 @@ impl DoubleBuffer {
                     lightning_pass_description.descriptor_layout,
                     fxaa_pass_description.descriptor_layout,
                     default_sampler_linear,
+                    vertex_buffer,
                 ),
                 FrameBuffer::new(
                     device,
@@ -707,6 +725,7 @@ impl DoubleBuffer {
                     lightning_pass_description.descriptor_layout,
                     fxaa_pass_description.descriptor_layout,
                     default_sampler_linear,
+                    vertex_buffer,
                 ),
             ],
             lightning_pass_description,

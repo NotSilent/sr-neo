@@ -26,6 +26,7 @@ pub fn record(
     normal_src: RenderpassImageState,
     depth_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
+    index_buffer: vk::Buffer,
     records: &[IndexedIndirectRecord],
 ) -> GeometryPassOutput {
     let color_dst = RenderpassImageState {
@@ -65,7 +66,7 @@ pub fn record(
         &depth_dst,
     );
 
-    draw(device, cmd, global_descriptor, records);
+    draw(device, cmd, global_descriptor, index_buffer, records);
 
     end(device, cmd);
 
@@ -176,9 +177,10 @@ fn draw(
     device: &Device,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
+    index_buffer: vk::Buffer,
     records: &[IndexedIndirectRecord],
 ) {
-    DrawCommand::cmd_record_draw_commands(device, cmd, global_descriptor, records);
+    DrawCommand::cmd_record_draw_commands(device, cmd, global_descriptor, index_buffer, records);
 }
 
 fn end(device: &Device, cmd: vk::CommandBuffer) {

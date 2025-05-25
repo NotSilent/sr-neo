@@ -13,41 +13,15 @@ layout (location = 3) out vec3 out_light_direction_tbn;
 layout (location = 4) out float out_light_power;
 layout (location = 5) out vec3 out_view_position_tbn;
 
-struct Vertex 
-{
-	vec3 position;
-	float uv_x;
-	vec3 normal;
-	float uv_y;
-	vec4 color;
-	vec4 tangent;
-}; 
-
-struct UniformData
-{
-	mat4 world_matrix;
-};
-
-layout(buffer_reference, std430) readonly buffer UniformBuffer{
-	UniformData uniforms[];
-};
-
-layout(buffer_reference, std430) readonly buffer VertexBuffer{
-	Vertex vertices[];
-};
-
-//push constants block
 layout( push_constant ) uniform constants
 {
-	UniformBuffer uniform_buffer;
-	VertexBuffer vertexBuffer;
 	uint index;
 } PushConstants;
 
 void main() 
 {
-	UniformData uniform_data = PushConstants.uniform_buffer.uniforms[PushConstants.index + gl_DrawID];
-	Vertex v = PushConstants.vertexBuffer.vertices[gl_VertexIndex];
+	Uniform uniform_data = uniform_data.uniforms[PushConstants.index + gl_DrawID];
+	Vertex v = vertex_data.vertices[gl_VertexIndex];
 	
 	vec4 position = vec4(v.position, 1.0f);
 

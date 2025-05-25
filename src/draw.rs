@@ -16,8 +16,6 @@ pub struct RenderObject {
 
 #[repr(C)]
 pub struct GPUPushDrawConstant {
-    pub uniform_buffer: vk::DeviceAddress,
-    pub vertex_buffer: vk::DeviceAddress,
     pub index: u32,
 }
 
@@ -64,10 +62,7 @@ impl From<Vec<DrawCommand>> for DrawCommands {
             let lhs = &draw_commands[*lhs as usize];
             let rhs = &draw_commands[*rhs as usize];
 
-            match lhs.material_instance_set.cmp(&rhs.material_instance_set) {
-                std::cmp::Ordering::Equal => lhs.index_buffer.cmp(&rhs.index_buffer),
-                other => other,
-            }
+            lhs.material_instance_set.cmp(&rhs.material_instance_set)
         });
 
         DrawCommands {
@@ -115,8 +110,6 @@ pub struct DrawCommand {
     pub pipeline: vk::Pipeline,
     // TODO: Probably just index here and query + bind only when actualy before needed for drawing
     pub material_instance_set: vk::DescriptorSet,
-    pub index_buffer: vk::Buffer,
-    pub vertex_buffer_address: u64,
     pub world_matrix: Matrix4<f32>,
     pub surface_index_count: u32,
     pub surface_first_index: u32,
@@ -129,12 +122,6 @@ pub struct IndexedIndirectRecord {
     pub pipeline: vk::Pipeline,
     pub material_set: vk::DescriptorSet,
 
-    // TODO: Make sure there is only one?
-    pub index_buffer: vk::Buffer,
-    // TODO: Make sure there is only one and put in uniform?
-    pub vertex_address: vk::DeviceAddress,
-
-    pub uniforms_address: vk::DeviceAddress,
     pub draws_buffer: vk::Buffer,
 
     pub draw_offset: u32,
@@ -160,9 +147,6 @@ impl IndexedIndirectRecord {
                 pipeline_layout: first.pipeline_layout,
                 pipeline: first.pipeline,
                 material_set: first.material_instance_set,
-                index_buffer: first.index_buffer,
-                vertex_address: first.vertex_buffer_address,
-                uniforms_address: write_data.uniforms_address,
                 draws_buffer: write_data.draws_buffer,
                 draw_offset: 0,
                 batch_count: 0,
@@ -170,9 +154,7 @@ impl IndexedIndirectRecord {
 
             for command in commands {
                 let any_state_changed = new_record.batch_count != 0
-                    && (new_record.material_set != command.material_instance_set
-                        || new_record.index_buffer != command.index_buffer)
-                    || new_record.vertex_address != command.vertex_buffer_address;
+                    && new_record.material_set != command.material_instance_set;
 
                 if any_state_changed {
                     opaque_data.push(new_record.clone());
@@ -180,8 +162,6 @@ impl IndexedIndirectRecord {
                     new_record.pipeline = command.pipeline;
                     new_record.pipeline_layout = command.pipeline_layout;
                     new_record.material_set = command.material_instance_set;
-                    new_record.index_buffer = command.index_buffer;
-                    new_record.vertex_address = command.vertex_buffer_address;
                     new_record.draw_offset = draw_index;
                     new_record.batch_count = 0;
                 }
@@ -245,12 +225,11 @@ impl DrawCommand {
         device: &Device,
         cmd: vk::CommandBuffer,
         global_descriptor: vk::DescriptorSet,
-        // TODO: Return instead and add in caller?
+        index_buffer: vk::Buffer,
         records: &[IndexedIndirectRecord],
     ) {
         let mut last_material_set = vk::DescriptorSet::null();
         let mut last_pipeline = vk::Pipeline::null();
-        let mut last_index_buffer = vk::Buffer::null();
 
         for record in records {
             unsafe {
@@ -275,6 +254,8 @@ impl DrawCommand {
                             &[],
                         );
 
+                        device.cmd_bind_index_buffer(cmd, index_buffer, 0, vk::IndexType::UINT32);
+
                         // TODO: Dynamic state
                     }
 
@@ -288,30 +269,17 @@ impl DrawCommand {
                     );
                 }
 
-                if last_index_buffer != record.index_buffer {
-                    last_index_buffer = record.index_buffer;
+                let push_constants = GPUPushDrawConstant {
+                    index: record.draw_offset,
+                };
 
-                    let push_constants = GPUPushDrawConstant {
-                        uniform_buffer: record.uniforms_address,
-                        vertex_buffer: record.vertex_address,
-                        index: record.draw_offset,
-                    };
-
-                    device.cmd_push_constants(
-                        cmd,
-                        record.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        push_constants.as_bytes(),
-                    );
-
-                    device.cmd_bind_index_buffer(
-                        cmd,
-                        record.index_buffer,
-                        0,
-                        vk::IndexType::UINT32,
-                    );
-                }
+                device.cmd_push_constants(
+                    cmd,
+                    record.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    push_constants.as_bytes(),
+                );
 
                 device.cmd_draw_indexed_indirect(
                     cmd,
@@ -357,11 +325,6 @@ impl DrawRecord {
                 let pipeline_layout = master_material.pipeline_layout;
                 let pipeline = master_material.pipeline;
                 let material_instance_set = material.set;
-                let index_buffer = managed_resources
-                    .buffers
-                    .get(mesh.buffers.index_buffer_index)
-                    .buffer;
-                let vertex_buffer_address = mesh.buffers.vertex_buffer_address;
                 let world_matrix = draw.transform;
                 let surface_first_index = surface.start_index;
                 let surface_index_count = surface.count;
@@ -370,8 +333,6 @@ impl DrawRecord {
                     pipeline_layout,
                     pipeline,
                     material_instance_set,
-                    index_buffer,
-                    vertex_buffer_address,
                     world_matrix,
                     surface_index_count,
                     surface_first_index,

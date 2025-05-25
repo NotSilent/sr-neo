@@ -4,7 +4,7 @@ use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 use nalgebra::{Matrix4, Vector4, vector};
 
 use crate::{
-    buffers::{Buffer, BufferManager},
+    buffers::{Buffer, BufferIndex, BufferManager},
     descriptors::DescriptorAllocatorGrowable,
     draw::{DrawContext, RenderObject},
     images::Image,
@@ -13,7 +13,7 @@ use crate::{
     meshes::{Mesh, MeshIndex},
     resource_manager::VulkanResource,
     vk_util,
-    vulkan_engine::{DefaultResources, GPUMeshBuffers, GeoSurface, ManagedResources, Vertex},
+    vulkan_engine::{DefaultResources, GeoSurface, ManagedResources, Vertex},
 };
 
 pub struct Node {
@@ -45,6 +45,7 @@ pub struct CachedImage {
     data: Vec<u8>,
 }
 
+// TODO: Decouple this mess
 impl GLTFLoader {
     pub fn new(
         device: &Device,
@@ -54,7 +55,7 @@ impl GLTFLoader {
         managed_resources: &mut ManagedResources,
         default_resources: &DefaultResources,
         immediate_submit: &mut ImmediateSubmit,
-    ) -> Self {
+    ) -> (Self, BufferIndex, BufferIndex) {
         println!("Loading GLTF: {}", file_path.display());
 
         let time_now = std::time::Instant::now();
@@ -74,7 +75,7 @@ impl GLTFLoader {
             time_now.elapsed().as_secs_f64()
         );
 
-        let meshes = Self::load_gltf_meshes(
+        let (meshes, index_buffer, vertex_buffer) = Self::load_gltf_meshes(
             file_path,
             device,
             allocator,
@@ -87,25 +88,30 @@ impl GLTFLoader {
 
         let gltf_nodes = Self::load_gltf_nodes(&gltf_real, &meshes);
 
-        Self {
-            scenes: gltf_real
-                .scenes()
-                .map(|scene| scene.nodes().map(|node| node.index() as u32).collect())
-                .collect(),
-            nodes: gltf_nodes,
-        }
+        (
+            Self {
+                scenes: gltf_real
+                    .scenes()
+                    .map(|scene| scene.nodes().map(|node| node.index() as u32).collect())
+                    .collect(),
+                nodes: gltf_nodes,
+            },
+            index_buffer,
+            vertex_buffer,
+        )
     }
 
     // TODO: Background thread, reuse staging
     // TODO: Not necessarily part of gltf
-    fn upload_mesh(
+    // TODO: struct instead of random tuple
+    fn upload_buffers(
         device: &Device,
         allocator: &mut Allocator,
         buffer_manager: &mut BufferManager,
         immediate_submit: &ImmediateSubmit,
         indices: &[u32],
         vertices: &[Vertex],
-    ) -> GPUMeshBuffers {
+    ) -> (BufferIndex, BufferIndex) {
         let index_buffer_size = size_of_val(indices);
         let vertex_buffer_size = size_of_val(vertices);
 
@@ -122,15 +128,10 @@ impl GLTFLoader {
             device,
             allocator,
             vertex_buffer_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
             "vertex_buffer",
         );
-
-        let info = vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer.buffer);
-        let vertex_buffer_address = unsafe { device.get_buffer_device_address(&info) };
 
         // TODO: Allocation separate?
 
@@ -171,11 +172,7 @@ impl GLTFLoader {
         let index_buffer_index = buffer_manager.add(index_buffer);
         let vertex_buffer_index = buffer_manager.add(vertex_buffer);
 
-        GPUMeshBuffers {
-            index_buffer_index,
-            vertex_buffer_index,
-            vertex_buffer_address,
-        }
+        (index_buffer_index, vertex_buffer_index)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -191,7 +188,7 @@ impl GLTFLoader {
         default_resources: &DefaultResources,
         immediate_submit: &ImmediateSubmit,
         gltf_real: &gltf::Gltf,
-    ) -> Vec<MeshIndex> {
+    ) -> (Vec<MeshIndex>, BufferIndex, BufferIndex) {
         let mut mesh_assets = vec![];
         let mut indices: Vec<u32> = vec![];
         let mut vertices: Vec<Vertex> = vec![];
@@ -370,8 +367,6 @@ impl GLTFLoader {
         let time_now = std::time::Instant::now();
 
         for mesh in gltf_real.meshes() {
-            indices.clear();
-            vertices.clear();
             let mut surfaces: Vec<GeoSurface> = vec![];
 
             // TODO: Pack same vertexes
@@ -397,6 +392,8 @@ impl GLTFLoader {
                 // Load indexes
 
                 // TODO: Make sure indexes are in CCW order
+
+                // TODO: Check if indexes were already loaded
 
                 let indices_accessor = primitive.indices().unwrap();
                 let indices_view = indices_accessor.view().unwrap();
@@ -549,14 +546,6 @@ impl GLTFLoader {
             let mesh = Mesh {
                 _name: mesh.name().unwrap_or("GLTF_NAME_NONE").into(),
                 surfaces,
-                buffers: Self::upload_mesh(
-                    device,
-                    allocator,
-                    &mut managed_resources.buffers,
-                    immediate_submit,
-                    &indices,
-                    &vertices,
-                ),
             };
 
             let mesh_index = managed_resources.meshes.add(mesh);
@@ -566,7 +555,16 @@ impl GLTFLoader {
 
         println!("Loaded meshes: {:.2}s", time_now.elapsed().as_secs_f64());
 
-        mesh_assets
+        let (index_buffer, vertex_buffer) = Self::upload_buffers(
+            device,
+            allocator,
+            &mut managed_resources.buffers,
+            immediate_submit,
+            &indices,
+            &vertices,
+        );
+
+        (mesh_assets, index_buffer, vertex_buffer)
     }
 
     pub fn draw(&self, ctx: &mut DrawContext) {

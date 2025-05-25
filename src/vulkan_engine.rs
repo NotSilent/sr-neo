@@ -102,13 +102,6 @@ pub struct Vertex {
     pub tangent: Vector4<f32>,
 }
 
-// TODO: Probably can be part of Mesh
-pub struct GPUMeshBuffers {
-    pub index_buffer_index: BufferIndex,
-    pub vertex_buffer_index: BufferIndex,
-    pub vertex_buffer_address: vk::DeviceAddress,
-}
-
 pub struct ManagedResources {
     pub buffers: BufferManager,
     pub images: ImageManager,
@@ -175,6 +168,9 @@ pub struct VulkanEngine {
     main_camera: Camera, // TODO: Shouldn't be part of renderer
 
     gltf_loader: GLTFLoader,
+
+    index_buffer: BufferIndex,
+    _vertex_buffer: BufferIndex,
 }
 
 impl VulkanEngine {
@@ -243,6 +239,10 @@ impl VulkanEngine {
                 descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 ratio: 1,
             },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                ratio: 1,
+            },
         ];
 
         let mut descriptor_allocator = DescriptorAllocatorGrowable::new(&device, 10, pool_ratios);
@@ -273,6 +273,8 @@ impl VulkanEngine {
 
         let gpu_scene_data_descriptor_layout = DescriptorLayoutBuilder::default()
             .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
+            .add_binding(1, vk::DescriptorType::STORAGE_BUFFER)
+            .add_binding(2, vk::DescriptorType::STORAGE_BUFFER)
             .build(
                 &device,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -314,20 +316,6 @@ impl VulkanEngine {
         );
 
         let mut master_material_manager = MasterMaterialManager::new();
-
-        let double_buffer = DoubleBuffer::new(
-            &device,
-            &mut allocator,
-            graphics_queue_family_index,
-            width,
-            height,
-            properties.limits.timestamp_period,
-            gpu_scene_data_descriptor_layout,
-            &mut descriptor_allocator,
-            default_sampler_linear,
-            gpu_scene_data_descriptor_layout,
-            &mut shader_manager,
-        );
 
         let geometry_pass_shader =
             shader_manager.get_graphics_shader_combined(&device, "geometry_pass");
@@ -445,7 +433,7 @@ impl VulkanEngine {
             shadow_map_pass_material: shadow_map_pass_material_index,
         };
 
-        let gltf_loader = GLTFLoader::new(
+        let (gltf_loader, index_buffer_index, vertex_buffer_index) = GLTFLoader::new(
             &device,
             std::path::PathBuf::from(gltf_name).as_path(),
             &mut allocator,
@@ -453,6 +441,24 @@ impl VulkanEngine {
             &mut managed_resources,
             &default_resources,
             &mut immediate_submit,
+        );
+
+        // TODO: Split Engine initialization and loading of resources
+
+        let vertex_buffer = managed_resources.buffers.get(vertex_buffer_index);
+
+        let double_buffer = DoubleBuffer::new(
+            &device,
+            &mut allocator,
+            graphics_queue_family_index,
+            width,
+            height,
+            properties.limits.timestamp_period,
+            gpu_scene_data_descriptor_layout,
+            &mut descriptor_allocator,
+            default_sampler_linear,
+            &mut shader_manager,
+            vertex_buffer,
         );
 
         Self {
@@ -487,6 +493,9 @@ impl VulkanEngine {
             main_camera,
 
             gltf_loader,
+
+            index_buffer: index_buffer_index,
+            _vertex_buffer: vertex_buffer_index,
         }
     }
 
@@ -600,6 +609,8 @@ impl VulkanEngine {
                 &mut gpu_stats,
             );
 
+            let index_buffer = self.managed_resources.buffers.get(self.index_buffer).buffer;
+
             let geometry_pass_output = geometry_pass::record(
                 &self.device,
                 cmd,
@@ -608,6 +619,7 @@ impl VulkanEngine {
                 normal_src,
                 depth_src,
                 globals_descriptor_set,
+                index_buffer,
                 &indexed_indirect_data.opaque,
             );
 
@@ -622,6 +634,7 @@ impl VulkanEngine {
                 shadow_map_src,
                 shadow_pass_master_material,
                 globals_descriptor_set,
+                index_buffer,
                 &indexed_indirect_data.opaque,
             );
 
@@ -645,6 +658,7 @@ impl VulkanEngine {
                 lightning_pass_output.draw,
                 lightning_pass_output.depth,
                 globals_descriptor_set,
+                index_buffer,
                 &indexed_indirect_data.transparent,
             );
 
@@ -833,17 +847,6 @@ impl Drop for VulkanEngine {
         let allocator = &mut self.allocator;
 
         self.double_buffer.destroy(device, allocator);
-
-        let subresources = self.managed_resources.meshes.destroy(device, allocator);
-
-        for resouce in subresources {
-            self.managed_resources
-                .buffers
-                .remove(device, allocator, resouce.index_buffer_index);
-            self.managed_resources
-                .buffers
-                .remove(device, allocator, resouce.vertex_buffer_index);
-        }
 
         self.managed_resources
             .images

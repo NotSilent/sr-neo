@@ -24,6 +24,7 @@ pub fn record(
     shadow_map_src: RenderpassImageState,
     shadow_pass_master_material: &MasterMaterial,
     global_descriptor: vk::DescriptorSet,
+    index_buffer: vk::Buffer,
     records: &[IndexedIndirectRecord],
 ) -> ShaowMapPassOutput {
     let shadow_map_dst = RenderpassImageState {
@@ -41,6 +42,7 @@ pub fn record(
         device,
         cmd,
         global_descriptor,
+        index_buffer,
         shadow_pass_master_material,
         records,
     );
@@ -107,12 +109,11 @@ fn draw(
     device: &Device,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
+    index_buffer: vk::Buffer,
     shadow_pass_master_material: &MasterMaterial,
     records: &[IndexedIndirectRecord],
 ) {
     if !records.is_empty() {
-        let mut last_index_buffer = vk::Buffer::null();
-
         unsafe {
             device.cmd_bind_pipeline(
                 cmd,
@@ -128,34 +129,23 @@ fn draw(
                 &[global_descriptor],
                 &[],
             );
+
+            device.cmd_bind_index_buffer(cmd, index_buffer, 0, vk::IndexType::UINT32);
         }
 
         for record in records {
             unsafe {
-                if last_index_buffer != record.index_buffer {
-                    last_index_buffer = record.index_buffer;
+                let push_constants = GPUPushDrawConstant {
+                    index: record.draw_offset,
+                };
 
-                    let push_constants = GPUPushDrawConstant {
-                        uniform_buffer: record.uniforms_address,
-                        vertex_buffer: record.vertex_address,
-                        index: record.draw_offset,
-                    };
-
-                    device.cmd_push_constants(
-                        cmd,
-                        record.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        push_constants.as_bytes(),
-                    );
-
-                    device.cmd_bind_index_buffer(
-                        cmd,
-                        record.index_buffer,
-                        0,
-                        vk::IndexType::UINT32,
-                    );
-                }
+                device.cmd_push_constants(
+                    cmd,
+                    record.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    push_constants.as_bytes(),
+                );
 
                 device.cmd_draw_indexed_indirect(
                     cmd,
