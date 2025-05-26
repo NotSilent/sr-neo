@@ -34,6 +34,7 @@ pub struct MaterialData {
     pub color_tex_index: ImageIndex,
     pub normal_tex_index: ImageIndex,
     pub metal_rough_tex_index: ImageIndex,
+    pub padding: u32,
 }
 
 // TODO: Updates, removal
@@ -103,10 +104,12 @@ impl MaterialDataManager {
         index
     }
 
-    pub fn upload(&self, device: &Device, cmd: vk::CommandBuffer) {
+    pub fn upload(&mut self, device: &Device, cmd: vk::CommandBuffer) {
         if !self.dirty {
             return;
         }
+
+        self.dirty = false;
 
         let regions = [vk::BufferCopy::default()
             .src_offset(0)
@@ -130,7 +133,7 @@ impl MaterialDataManager {
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .buffer(self.device_buffer.buffer)
             .offset(0)
-            .size(vk::WHOLE_SIZE)];
+            .size(self.device_buffer.allocation.as_ref().unwrap().size())];
 
         let dependency_info =
             vk::DependencyInfo::default().buffer_memory_barriers(&buffer_barriers);
@@ -365,7 +368,7 @@ impl MasterMaterial {
         master_material_index: MasterMaterialIndex,
         material_data_index: MaterialDataIndex,
     ) -> MaterialInstance {
-        let set = descriptor_allocator.allocate(device, self.material_layout);
+        let set = descriptor_allocator.allocate(device, self.material_layout, false);
 
         self.writer.write_buffer(
             0,
@@ -377,6 +380,7 @@ impl MasterMaterial {
 
         self.writer.write_image(
             1,
+            0,
             resources.color_sampler,
             resources.color_image_view,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -385,6 +389,7 @@ impl MasterMaterial {
 
         self.writer.write_image(
             2,
+            0,
             resources.normal_sampler,
             resources.normal_image_view,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -393,6 +398,7 @@ impl MasterMaterial {
 
         self.writer.write_image(
             3,
+            0,
             resources.metal_rough_sampler,
             resources.metal_rough_image_view,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,

@@ -1,19 +1,26 @@
 #version 460
 
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
 
+#include "scene_data.glsl"
 #include "input_structures.glsl"
 
 layout (location = 0) in vec3 in_color;
 layout (location = 1) in vec2 in_uv;
 layout (location = 2) in mat3 in_tbn_to_view;
+layout (location = 5) flat in uint in_material_index;
 
 layout (location = 0) out vec4 out_color;  // color + metallic
 layout (location = 1) out vec4 out_normal; // normal + roughness
 
 void main()
 {
-	vec4 color = pow(texture(color_tex,in_uv), vec4(2.2));
+	//vec4 color = pow(texture(color_tex,in_uv), vec4(2.2));
+
+	Material material = material_data2.materials[nonuniformEXT(in_material_index)];
+
+	vec4 color = pow(texture(samplers[material.color_tex_index],in_uv), vec4(2.2));
 
 	//TODO: This is temp for master material, should be different shader for masked
 	if (color.w < 0.5) {

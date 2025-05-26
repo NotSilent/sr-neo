@@ -8,6 +8,7 @@ struct DescriptorBufferInfo {
 
 struct DescriptorImageInfo {
     binding: u32,
+    array_index: u32,
     descriptor_type: vk::DescriptorType,
     image_info: vk::DescriptorImageInfo,
 }
@@ -41,6 +42,7 @@ impl DescriptorWriter {
     pub fn write_image(
         &mut self,
         binding: u32,
+        array_index: u32,
         sampler: vk::Sampler,
         image_view: vk::ImageView,
         image_layout: vk::ImageLayout,
@@ -53,6 +55,7 @@ impl DescriptorWriter {
 
         self.image_infos.push(DescriptorImageInfo {
             binding,
+            array_index,
             descriptor_type,
             image_info,
         });
@@ -80,6 +83,7 @@ impl DescriptorWriter {
             let mut write = vk::WriteDescriptorSet::default()
                 .dst_binding(image_info.binding)
                 .dst_set(set)
+                .dst_array_element(image_info.array_index)
                 .descriptor_type(image_info.descriptor_type);
 
             write.descriptor_count = 1;
@@ -161,6 +165,7 @@ impl DescriptorAllocatorGrowable {
         &mut self,
         device: &Device,
         layout: vk::DescriptorSetLayout,
+        test: bool,
     ) -> vk::DescriptorSet {
         let pool = self.get_pool(device);
 
@@ -168,6 +173,13 @@ impl DescriptorAllocatorGrowable {
         let mut alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(pool)
             .set_layouts(&layouts);
+
+        let mut count = vk::DescriptorSetVariableDescriptorCountAllocateInfo::default()
+            .descriptor_counts(&[1024]);
+
+        if test {
+            alloc_info = alloc_info.push_next(&mut count);
+        }
 
         match unsafe { device.allocate_descriptor_sets(&alloc_info) } {
             Ok(set) => {
@@ -256,6 +268,7 @@ impl DescriptorLayoutBuilder<'_> {
     pub fn add_binding_indexed(
         mut self,
         binding: u32,
+        count: u32,
         descriptor_type: vk::DescriptorType,
     ) -> Self {
         let flags = vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT
@@ -266,7 +279,7 @@ impl DescriptorLayoutBuilder<'_> {
         self.bindings.push(
             vk::DescriptorSetLayoutBinding::default()
                 .binding(binding)
-                .descriptor_count(1)
+                .descriptor_count(count)
                 .descriptor_type(descriptor_type),
         );
 
@@ -287,14 +300,13 @@ impl DescriptorLayoutBuilder<'_> {
         let mut flags_create_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&self.flags);
 
-        let create_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .push_next(&mut flags_create_info)
-            .flags(if self.flags.is_empty() {
-                vk::DescriptorSetLayoutCreateFlags::empty()
-            } else {
-                vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL
-            })
-            .bindings(&self.bindings);
+        let mut create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&self.bindings);
+
+        if !self.flags.is_empty() {
+            create_info = create_info.push_next(&mut flags_create_info);
+            create_info =
+                create_info.flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL);
+        }
 
         unsafe {
             device

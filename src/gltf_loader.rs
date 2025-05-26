@@ -360,6 +360,7 @@ impl GLTFLoader {
                 color_tex_index: color_image_index,
                 normal_tex_index: normal_image_index,
                 metal_rough_tex_index: metal_rough_image_index,
+                padding: 0,
             };
 
             let material_data_index = managed_resources.material_datas.add(material_data);

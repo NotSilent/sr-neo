@@ -7,7 +7,7 @@ use crate::{
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
-    images::Image,
+    images::{Image, ImageManager},
     materials::MaterialDataIndex,
     pipeline_builder::PipelineBuilder,
     resource_manager::VulkanResource,
@@ -229,6 +229,7 @@ impl FrameBuffer {
         default_sampler_linear: vk::Sampler,
         vertex_buffer: &Buffer,
         material_data_buffer: &Buffer,
+        image_manager: &ImageManager,
     ) -> Self {
         let targets = FrameBufferTargets::new(device, allocator, width, height);
 
@@ -328,7 +329,7 @@ impl FrameBuffer {
         );
 
         let globals_descriptor_set =
-            global_descriptor_allocator.allocate(device, globals_descriptor_set_layout);
+            global_descriptor_allocator.allocate(device, globals_descriptor_set_layout, true);
 
         // TODO: device?
         let mut writer = DescriptorWriter::default();
@@ -363,6 +364,17 @@ impl FrameBuffer {
             0,
             vk::DescriptorType::STORAGE_BUFFER,
         );
+
+        for (index, image) in image_manager.dense().iter().enumerate() {
+            writer.write_image(
+                4,
+                index as u32,
+                default_sampler_linear,
+                image.image_view,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            );
+        }
 
         writer.update_set(device, globals_descriptor_set);
 
@@ -559,7 +571,7 @@ impl FrameBuffer {
         targets: &FrameBufferTargets,
     ) -> vk::DescriptorSet {
         let lightning_descriptor_set =
-            global_descriptor_allocator.allocate(device, lightning_descriptor_layout);
+            global_descriptor_allocator.allocate(device, lightning_descriptor_layout, false);
 
         let color_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -624,7 +636,7 @@ impl FrameBuffer {
         targets: &FrameBufferTargets,
     ) -> vk::DescriptorSet {
         let fxaa_descriptor_set =
-            global_descriptor_allocator.allocate(device, fxaa_descriptor_layout);
+            global_descriptor_allocator.allocate(device, fxaa_descriptor_layout, false);
 
         let color_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -697,6 +709,7 @@ impl DoubleBuffer {
         shader_manager: &mut ShaderManager,
         vertex_buffer: &Buffer,
         material_data_buffer: &Buffer,
+        image_manager: &ImageManager,
     ) -> Self {
         let lightning_pass_description = Self::create_lightning_pass_description(
             device,
@@ -727,6 +740,7 @@ impl DoubleBuffer {
                     default_sampler_linear,
                     vertex_buffer,
                     material_data_buffer,
+                    image_manager,
                 ),
                 FrameBuffer::new(
                     device,
@@ -742,6 +756,7 @@ impl DoubleBuffer {
                     default_sampler_linear,
                     vertex_buffer,
                     material_data_buffer,
+                    image_manager,
                 ),
             ],
             lightning_pass_description,

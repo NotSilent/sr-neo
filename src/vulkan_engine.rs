@@ -239,7 +239,7 @@ impl VulkanEngine {
             },
             PoolSizeRatio {
                 descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                ratio: 1,
+                ratio: 10000,
             },
             PoolSizeRatio {
                 descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
@@ -278,6 +278,7 @@ impl VulkanEngine {
             .add_binding(1, vk::DescriptorType::STORAGE_BUFFER)
             .add_binding(2, vk::DescriptorType::STORAGE_BUFFER)
             .add_binding(3, vk::DescriptorType::STORAGE_BUFFER)
+            .add_binding_indexed(4, 1024, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .build(
                 &device,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -466,6 +467,7 @@ impl VulkanEngine {
             &mut shader_manager,
             vertex_buffer,
             material_data_buffer,
+            &managed_resources.images,
         );
 
         Self {

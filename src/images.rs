@@ -11,11 +11,11 @@ use gpu_allocator::{
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ImageIndex(u16);
+pub struct ImageIndex(u32);
 
 impl From<usize> for ImageIndex {
     fn from(val: usize) -> Self {
-        ImageIndex(val as u16)
+        ImageIndex(val as u32)
     }
 }
 

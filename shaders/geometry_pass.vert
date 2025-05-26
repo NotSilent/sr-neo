@@ -9,6 +9,7 @@
 layout (location = 0) out vec3 out_color;
 layout (location = 1) out vec2 out_uv;
 layout (location = 2) out mat3 out_tbn_to_view;
+layout (location = 5) out uint out_material_index;
 
 //push constants block
 layout( push_constant ) uniform constants
@@ -26,6 +27,7 @@ void main()
 	out_color = v.color.xyz * material_data.color_factors.xyz;	
 	out_uv.x = v.uv_x;
 	out_uv.y = v.uv_y;
+	out_material_index = uniform_data.material_data_index;
 
 	vec3 T = normalize(mat3(uniform_data.world_matrix) * v.tangent.xyz);
 	vec3 N = normalize(mat3(uniform_data.world_matrix) * v.normal);

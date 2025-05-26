@@ -23,6 +23,7 @@ struct Material
 	uint color_tex_index;
 	uint normal_tex_index;
 	uint metal_rough_tex_index;
+	uint padding;
 };
 
 layout (set = 0, binding = 0) uniform SceneData {   
@@ -51,4 +52,4 @@ layout (set = 0, binding = 3) readonly buffer MaterialData2 {
 	Material materials[];
 } material_data2;
 
-// layout (set = 0, binding = 4) uniform sampler2D samplers[];
+layout (set = 0, binding = 4) uniform sampler2D samplers[];

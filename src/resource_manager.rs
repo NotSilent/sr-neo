@@ -96,4 +96,9 @@ where
 
         subresources
     }
+
+    // TODO: This is only for images for easy access for now
+    pub fn dense(&self) -> &Vec<T> {
+        &self.dense
+    }
 }
