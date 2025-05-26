@@ -72,7 +72,7 @@ where
         &self.dense[index.into()]
     }
 
-    pub fn get_mut(&mut self, index: I) -> &mut T {
+    pub fn _get_mut(&mut self, index: I) -> &mut T {
         &mut self.dense[index.into()]
     }
 

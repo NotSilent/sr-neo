@@ -4,7 +4,6 @@
 #extension GL_EXT_buffer_reference : require
 
 #include "scene_data.glsl"
-#include "input_structures.glsl"
 
 layout( push_constant ) uniform constants
 {

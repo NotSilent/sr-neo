@@ -5,11 +5,10 @@ use nalgebra::{Matrix4, Vector4, vector};
 
 use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
-    descriptors::DescriptorAllocatorGrowable,
     draw::{DrawContext, RenderObject},
     images::Image,
     immediate_submit::ImmediateSubmit,
-    materials::{MaterialConstants, MaterialData, MaterialResources},
+    materials::{MasterMaterial, MaterialData},
     meshes::{Mesh, MeshIndex},
     resource_manager::VulkanResource,
     vk_util,
@@ -51,7 +50,6 @@ impl GLTFLoader {
         device: &Device,
         file_path: &std::path::Path,
         allocator: &mut Allocator,
-        descriptor_allocator: &mut DescriptorAllocatorGrowable,
         managed_resources: &mut ManagedResources,
         default_resources: &DefaultResources,
         immediate_submit: &mut ImmediateSubmit,
@@ -79,7 +77,6 @@ impl GLTFLoader {
             file_path,
             device,
             allocator,
-            descriptor_allocator,
             managed_resources,
             default_resources,
             immediate_submit,
@@ -183,7 +180,6 @@ impl GLTFLoader {
         device: &Device,
         allocator: &mut Allocator,
         // TODO: Manage it better, what happens if it's cleared
-        descriptor_allocator: &mut DescriptorAllocatorGrowable,
         managed_resources: &mut ManagedResources,
         default_resources: &DefaultResources,
         immediate_submit: &ImmediateSubmit,
@@ -263,33 +259,9 @@ impl GLTFLoader {
         let time_now = std::time::Instant::now();
 
         for material in gltf_real.materials() {
-            let material_constants_buffer = Buffer::new(
-                device,
-                allocator,
-                size_of::<MaterialConstants>(),
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-                MemoryLocation::CpuToGpu,
-                material.name().unwrap_or("GLTF_NAME_NONE"),
-            );
-
             let pbr_metalic_roughness = material.pbr_metallic_roughness();
 
             let base_color_factor = pbr_metalic_roughness.base_color_factor();
-
-            let material_constants = MaterialConstants {
-                color_factors: base_color_factor.into(),
-                metal_rough_factors: vector![
-                    pbr_metalic_roughness.metallic_factor(),
-                    pbr_metalic_roughness.roughness_factor(),
-                    0.0,
-                    0.0
-                ],
-            };
-
-            vk_util::copy_data_to_allocation(
-                &[material_constants],
-                material_constants_buffer.allocation.as_ref().unwrap(),
-            );
 
             let color_image_index =
                 if let Some(color_tex) = pbr_metalic_roughness.base_color_texture() {
@@ -299,16 +271,12 @@ impl GLTFLoader {
                     default_resources.image_white
                 };
 
-            let color_image = managed_resources.images.get(color_image_index);
-
             let normal_image_index = if let Some(normal_tex) = material.normal_texture() {
                 // TODO: Load texture instead of image
                 images[normal_tex.texture().source().index()]
             } else {
                 default_resources.image_normal
             };
-
-            let normal_image = managed_resources.images.get(normal_image_index);
 
             let metal_rough_image_index = if let Some(metal_rough_tex) = material
                 .pbr_metallic_roughness()
@@ -320,23 +288,6 @@ impl GLTFLoader {
                 default_resources.image_white
             };
 
-            let metal_rough_image = managed_resources.images.get(metal_rough_image_index);
-
-            // TODO: Proper image
-            // TODO: Samplers (textures)
-            let resources = MaterialResources {
-                color_image_view: color_image.image_view,
-                color_sampler: default_resources.sampler_linear,
-                normal_image_view: normal_image.image_view,
-                normal_sampler: default_resources.sampler_linear,
-                metal_rough_image_view: metal_rough_image.image_view,
-                metal_rough_sampler: default_resources.sampler_linear,
-                data_buffer: material_constants_buffer.buffer,
-                data_buffer_offset: 0,
-            };
-
-            managed_resources.buffers.add(material_constants_buffer);
-
             // TODO: Mask, sponza uses
             let master_material_index = if material.alpha_mode() == gltf::material::AlphaMode::Blend
             {
@@ -344,10 +295,6 @@ impl GLTFLoader {
             } else {
                 default_resources.geometry_pass_material
             };
-
-            let master_material = managed_resources
-                .master_materials
-                .get_mut(master_material_index);
 
             let material_data = MaterialData {
                 color_factors: base_color_factor.into(),
@@ -365,13 +312,8 @@ impl GLTFLoader {
 
             let material_data_index = managed_resources.material_datas.add(material_data);
 
-            let material_instance = master_material.create_instance(
-                device,
-                &resources,
-                descriptor_allocator,
-                master_material_index,
-                material_data_index,
-            );
+            let material_instance =
+                MasterMaterial::create_instance(master_material_index, material_data_index);
 
             let material_instance_index =
                 managed_resources.material_instances.add(material_instance);

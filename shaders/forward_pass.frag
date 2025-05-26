@@ -1,8 +1,9 @@
 #version 460
 
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
 
-#include "input_structures.glsl"
+#include "scene_data.glsl"
 #include "pbr.glsl"
 
 layout (location = 0) in vec3 in_color;
@@ -11,6 +12,7 @@ layout (location = 2) in vec3 in_frag_position_tbn;
 layout (location = 3) in vec3 in_light_direction_tbn;
 layout (location = 4) in float in_light_power;
 layout (location = 5) in vec3 in_view_position_tbn;
+layout (location = 6) in flat uint in_material_index;
 
 layout (location = 0) out vec4 out_frag_color;
 
@@ -18,19 +20,21 @@ layout (location = 0) out vec4 out_frag_color;
 // Modified to be in TBH space
 void main()
 {
-	vec4 color = pow(texture(color_tex,in_uv), vec4(2.2));
+	Material material = material_data2.materials[nonuniformEXT(in_material_index)];
+
+	vec4 color = pow(texture(samplers[material.color_tex_index],in_uv), vec4(2.2));
 
 	//TODO: This is temp for master material, should be different shader for masked
 	if (color.w < 0.5) {
 		discard;
 	}
 
-	vec3 normal = texture(normal_tex,in_uv).xyz * 2.0 - 1.0;
-	vec3 albedo = color.rgb * in_color * material_data.color_factors.rgb;
-	vec4 metal_rough = texture(metal_rough_tex,in_uv);
+	vec3 normal = texture(samplers[material.normal_tex_index],in_uv).rgb * 2.0 - 1.0;
+	vec3 albedo = color.rgb * in_color * material.color_factors.rgb;
+	vec4 metal_rough = texture(samplers[material.metal_rough_tex_index],in_uv);
 
-	float metallic = metal_rough.b * material_data.metal_rough_factors.x;
-	float roughness = metal_rough.g * material_data.metal_rough_factors.y;
+	float metallic = metal_rough.b * material.metal_rough_factors.x;
+	float roughness = metal_rough.g * material.metal_rough_factors.y;
 
 	vec3 N = normal;
     vec3 V = normalize(in_view_position_tbn - in_frag_position_tbn);
@@ -89,5 +93,5 @@ void main()
     // gamma correct
     final_color = pow(final_color, vec3(1.0/2.2)); 
 
-    out_frag_color = vec4(final_color, color.a * in_color * material_data.color_factors.a);
+    out_frag_color = vec4(final_color, color.a * in_color * material.color_factors.a);
 }

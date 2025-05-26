@@ -165,7 +165,7 @@ impl DescriptorAllocatorGrowable {
         &mut self,
         device: &Device,
         layout: vk::DescriptorSetLayout,
-        test: bool,
+        indexed: bool, // TODO: Hack to bind images for now
     ) -> vk::DescriptorSet {
         let pool = self.get_pool(device);
 
@@ -177,7 +177,7 @@ impl DescriptorAllocatorGrowable {
         let mut count = vk::DescriptorSetVariableDescriptorCountAllocateInfo::default()
             .descriptor_counts(&[1024]);
 
-        if test {
+        if indexed {
             alloc_info = alloc_info.push_next(&mut count);
         }
 

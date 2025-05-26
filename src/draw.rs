@@ -35,81 +35,9 @@ pub struct DrawContext {
     pub render_objects: Vec<RenderObject>,
 }
 
-pub struct DrawCommands {
-    order: Vec<u16>,
-    draw_commands: Vec<DrawCommand>,
-}
-
-impl DrawCommands {
-    pub fn len(&self) -> usize {
-        self.order.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn first(&self) -> Option<&DrawCommand> {
-        self.draw_commands.first()
-    }
-}
-
-impl From<Vec<DrawCommand>> for DrawCommands {
-    fn from(draw_commands: Vec<DrawCommand>) -> Self {
-        let mut order: Vec<u16> = (0..draw_commands.len() as u16).collect();
-
-        order.sort_by(|lhs, rhs| {
-            let lhs = &draw_commands[*lhs as usize];
-            let rhs = &draw_commands[*rhs as usize];
-
-            lhs.material_instance_set.cmp(&rhs.material_instance_set)
-        });
-
-        DrawCommands {
-            order,
-            draw_commands,
-        }
-    }
-}
-
-pub struct DrawCommandsIter<'a> {
-    draw_commands: &'a DrawCommands,
-    index: usize,
-}
-
-impl<'a> Iterator for DrawCommandsIter<'a> {
-    type Item = &'a DrawCommand;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.draw_commands.order.len() {
-            let command_index = self.draw_commands.order[self.index] as usize;
-
-            self.index += 1;
-
-            self.draw_commands.draw_commands.get(command_index)
-        } else {
-            None
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a DrawCommands {
-    type Item = &'a DrawCommand;
-    type IntoIter = DrawCommandsIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        DrawCommandsIter {
-            draw_commands: self,
-            index: 0,
-        }
-    }
-}
-
 pub struct DrawCommand {
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
-    // TODO: Probably just index here and query + bind only when actualy before needed for drawing
-    pub material_instance_set: vk::DescriptorSet,
     pub material_data_index: MaterialDataIndex,
     pub world_matrix: Matrix4<f32>,
     pub surface_index_count: u32,
@@ -121,7 +49,6 @@ pub struct DrawCommand {
 pub struct IndexedIndirectRecord {
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
-    pub material_set: vk::DescriptorSet,
 
     pub draws_buffer: vk::Buffer,
 
@@ -132,7 +59,7 @@ pub struct IndexedIndirectRecord {
 impl IndexedIndirectRecord {
     fn prepare(
         write_data: &mut FrameBufferWriteData,
-        commands: &DrawCommands,
+        commands: &[DrawCommand],
         starting_draw_index: u32,
         gpu_stats: &mut GPUStats,
     ) -> (Vec<IndexedIndirectRecord>, u32) {
@@ -147,26 +74,12 @@ impl IndexedIndirectRecord {
                 // TODO: layout shouldn't really change
                 pipeline_layout: first.pipeline_layout,
                 pipeline: first.pipeline,
-                material_set: first.material_instance_set,
                 draws_buffer: write_data.draws_buffer,
                 draw_offset: 0,
                 batch_count: 0,
             };
 
             for command in commands {
-                let any_state_changed = new_record.batch_count != 0
-                    && new_record.material_set != command.material_instance_set;
-
-                if any_state_changed {
-                    opaque_data.push(new_record.clone());
-
-                    new_record.pipeline = command.pipeline;
-                    new_record.pipeline_layout = command.pipeline_layout;
-                    new_record.material_set = command.material_instance_set;
-                    new_record.draw_offset = draw_index;
-                    new_record.batch_count = 0;
-                }
-
                 new_record.batch_count += 1;
 
                 write_data.uniforms[draw_index as usize] = UniformData {
@@ -203,8 +116,8 @@ pub struct IndexedIndirectData {
 
 impl IndexedIndirectData {
     pub fn prepare(
-        opaque_commands: &DrawCommands,
-        transparent_commnads: &DrawCommands,
+        opaque_commands: &[DrawCommand],
+        transparent_commnads: &[DrawCommand],
         write_data: &mut FrameBufferWriteData,
         gpu_stats: &mut GPUStats,
     ) -> IndexedIndirectData {
@@ -231,45 +144,27 @@ impl DrawCommand {
         index_buffer: vk::Buffer,
         records: &[IndexedIndirectRecord],
     ) {
-        let mut last_material_set = vk::DescriptorSet::null();
         let mut last_pipeline = vk::Pipeline::null();
 
         for record in records {
             unsafe {
-                if last_material_set != record.material_set {
-                    last_material_set = record.material_set;
+                if last_pipeline != record.pipeline {
+                    last_pipeline = record.pipeline;
 
-                    if last_pipeline != record.pipeline {
-                        last_pipeline = record.pipeline;
-
-                        device.cmd_bind_pipeline(
-                            cmd,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            record.pipeline,
-                        );
-
-                        device.cmd_bind_descriptor_sets(
-                            cmd,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            record.pipeline_layout,
-                            0,
-                            &[global_descriptor],
-                            &[],
-                        );
-
-                        device.cmd_bind_index_buffer(cmd, index_buffer, 0, vk::IndexType::UINT32);
-
-                        // TODO: Dynamic state
-                    }
+                    device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, record.pipeline);
 
                     device.cmd_bind_descriptor_sets(
                         cmd,
                         vk::PipelineBindPoint::GRAPHICS,
                         record.pipeline_layout,
-                        1,
-                        &[record.material_set],
+                        0,
+                        &[global_descriptor],
                         &[],
                     );
+
+                    device.cmd_bind_index_buffer(cmd, index_buffer, 0, vk::IndexType::UINT32);
+
+                    // TODO: Dynamic state
                 }
 
                 let push_constants = GPUPushDrawConstant {
@@ -327,7 +222,6 @@ impl DrawRecord {
 
                 let pipeline_layout = master_material.pipeline_layout;
                 let pipeline = master_material.pipeline;
-                let material_instance_set = material.set;
                 let material_data_index = material.material_data_index;
                 let world_matrix = draw.transform;
                 let surface_first_index = surface.start_index;
@@ -336,7 +230,6 @@ impl DrawRecord {
                 let draw_command = DrawCommand {
                     pipeline_layout,
                     pipeline,
-                    material_instance_set,
                     material_data_index,
                     world_matrix,
                     surface_index_count,

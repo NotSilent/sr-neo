@@ -7,19 +7,19 @@ use ash::{
     vk,
 };
 
-use gpu_allocator::{MemoryLocation, vulkan::Allocator};
+use gpu_allocator::vulkan::Allocator;
 
 use nalgebra::{Matrix4, Vector2, Vector3, Vector4, vector};
 use thiserror::Error;
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
-    buffers::{Buffer, BufferIndex, BufferManager},
+    buffers::{BufferIndex, BufferManager},
     camera::{Camera, InputManager},
     default_resources,
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, PoolSizeRatio},
     double_buffer::{self, DoubleBuffer},
-    draw::{DrawCommands, DrawContext, DrawRecord, IndexedIndirectData},
+    draw::{DrawContext, DrawRecord, IndexedIndirectData},
     forward_pass::{self},
     fxaa_pass, geometry_pass,
     gltf_loader::GLTFLoader,
@@ -27,9 +27,8 @@ use crate::{
     immediate_submit::ImmediateSubmit,
     lightning_pass,
     materials::{
-        MasterMaterial, MasterMaterialIndex, MasterMaterialManager, MaterialConstants,
-        MaterialDataManager, MaterialInstanceIndex, MaterialInstanceManager, MaterialPass,
-        MaterialResources,
+        MasterMaterial, MasterMaterialIndex, MasterMaterialManager, MaterialDataManager,
+        MaterialInstanceIndex, MaterialInstanceManager, MaterialPass,
     },
     meshes::MeshManager,
     renderpass_common::RenderpassImageState,
@@ -287,7 +286,7 @@ impl VulkanEngine {
         let mut immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
 
-        let mut buffer_manager = BufferManager::new();
+        let buffer_manager = BufferManager::new();
 
         let mesh_manager = MeshManager::new();
 
@@ -360,44 +359,7 @@ impl VulkanEngine {
 
         let mut material_instance_manager = MaterialInstanceManager::new();
 
-        let material_constants_buffer = Buffer::new(
-            &device,
-            &mut allocator,
-            size_of::<MaterialConstants>(),
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
-            MemoryLocation::CpuToGpu,
-            "default_data_constants_buffer",
-        );
-
-        let material_constants = MaterialConstants {
-            color_factors: vector![1.0, 1.0, 1.0, 1.0],
-            metal_rough_factors: vector![1.0, 0.5, 0.0, 0.0],
-        };
-
-        vk_util::copy_data_to_allocation(
-            &[material_constants],
-            material_constants_buffer.allocation.as_ref().unwrap(),
-        );
-
-        let resources = MaterialResources {
-            color_image_view: image_white.image_view,
-            color_sampler: default_sampler_linear,
-            normal_image_view: image_white.image_view,
-            normal_sampler: default_sampler_linear,
-            metal_rough_image_view: image_white.image_view,
-            metal_rough_sampler: default_sampler_linear,
-            data_buffer: material_constants_buffer.buffer,
-            data_buffer_offset: 0,
-        };
-
-        buffer_manager.add(material_constants_buffer);
-
-        let geometry_pass_material = master_material_manager.get_mut(geometry_pass_material_index);
-
-        let geometry_pass_material_instance = geometry_pass_material.create_instance(
-            &device,
-            &resources,
-            &mut descriptor_allocator,
+        let geometry_pass_material_instance = MasterMaterial::create_instance(
             geometry_pass_material_index,
             0.into(), // TODO: Drop default instances
         );
@@ -443,7 +405,6 @@ impl VulkanEngine {
             &device,
             std::path::PathBuf::from(gltf_name).as_path(),
             &mut allocator,
-            &mut descriptor_allocator,
             &mut managed_resources,
             &default_resources,
             &mut immediate_submit,
@@ -599,9 +560,6 @@ impl VulkanEngine {
                 transparent_commands,
             } = DrawRecord::record_draw_commands(&self.main_draw_context, &self.managed_resources);
 
-            let opaque_commads = DrawCommands::from(opaque_commands);
-            let transparent_commads = DrawCommands::from(transparent_commands);
-
             self.double_buffer.set_globals(&Self::create_scene_data(
                 &self.main_camera,
                 self.frame_number,
@@ -615,8 +573,8 @@ impl VulkanEngine {
                 .upload(&self.device, cmd);
 
             let indexed_indirect_data = IndexedIndirectData::prepare(
-                &opaque_commads,
-                &transparent_commads,
+                &opaque_commands,
+                &transparent_commands,
                 &mut write_data,
                 &mut gpu_stats,
             );

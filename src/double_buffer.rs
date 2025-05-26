@@ -832,12 +832,6 @@ impl DoubleBuffer {
             .get(buffer_index)
     }
 
-    pub fn _get_buffer_mut(&mut self, buffer_index: BufferIndex) -> &mut Buffer {
-        self.frame_buffers[self.current_frame]
-            .buffer_manager
-            .get_mut(buffer_index)
-    }
-
     pub fn get_frame_targets(&self) -> &FrameBufferTargets {
         &self.frame_buffers[self.current_frame].targets
     }

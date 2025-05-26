@@ -4,7 +4,7 @@ use nalgebra::Vector4;
 
 use crate::{
     buffers::Buffer,
-    descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter},
+    descriptors::DescriptorLayoutBuilder,
     draw::GPUPushDrawConstant,
     images::ImageIndex,
     pipeline_builder::PipelineBuilder,
@@ -197,27 +197,6 @@ pub enum MaterialPass {
     Transparent,
 }
 
-// TODO: Verify if uniforms aligh to 256
-#[repr(C)]
-#[repr(align(256))]
-pub struct MaterialConstants {
-    pub color_factors: Vector4<f32>,
-    pub metal_rough_factors: Vector4<f32>,
-}
-
-// TODO: Normals
-pub struct MaterialResources {
-    pub color_image_view: vk::ImageView,
-    pub color_sampler: vk::Sampler,
-    pub normal_image_view: vk::ImageView,
-    pub normal_sampler: vk::Sampler,
-    // TODO: load metal texture
-    pub metal_rough_image_view: vk::ImageView,
-    pub metal_rough_sampler: vk::Sampler,
-    pub data_buffer: vk::Buffer,
-    pub data_buffer_offset: u32,
-}
-
 pub struct MasterMaterial {
     pub material_pass: MaterialPass,
 
@@ -226,8 +205,6 @@ pub struct MasterMaterial {
     pub pipeline: vk::Pipeline,
 
     material_layout: vk::DescriptorSetLayout,
-
-    writer: DescriptorWriter,
 }
 
 impl VulkanResource for MasterMaterial {
@@ -310,7 +287,6 @@ impl MasterMaterial {
             pipeline_layout,
             pipeline,
             material_layout,
-            writer: DescriptorWriter::default(),
         }
     }
 
@@ -355,61 +331,15 @@ impl MasterMaterial {
             pipeline_layout,
             pipeline,
             material_layout: vk::DescriptorSetLayout::null(),
-            writer: DescriptorWriter::default(),
         }
     }
 
     pub fn create_instance(
-        // TODO: &self
-        &mut self,
-        device: &Device,
-        resources: &MaterialResources,
-        descriptor_allocator: &mut DescriptorAllocatorGrowable,
         master_material_index: MasterMaterialIndex,
         material_data_index: MaterialDataIndex,
     ) -> MaterialInstance {
-        let set = descriptor_allocator.allocate(device, self.material_layout, false);
-
-        self.writer.write_buffer(
-            0,
-            resources.data_buffer,
-            size_of::<MaterialConstants>() as u64,
-            u64::from(resources.data_buffer_offset),
-            vk::DescriptorType::UNIFORM_BUFFER,
-        );
-
-        self.writer.write_image(
-            1,
-            0,
-            resources.color_sampler,
-            resources.color_image_view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-
-        self.writer.write_image(
-            2,
-            0,
-            resources.normal_sampler,
-            resources.normal_image_view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-
-        self.writer.write_image(
-            3,
-            0,
-            resources.metal_rough_sampler,
-            resources.metal_rough_image_view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-
-        self.writer.update_set(device, set);
-
         MaterialInstance {
             master_material_index,
-            set,
             material_data_index,
         }
     }
@@ -417,7 +347,6 @@ impl MasterMaterial {
 
 pub struct MaterialInstance {
     pub master_material_index: MasterMaterialIndex,
-    pub set: vk::DescriptorSet,
     pub material_data_index: MaterialDataIndex,
 }
 

@@ -4,7 +4,6 @@
 #extension GL_EXT_buffer_reference : require
 
 #include "scene_data.glsl"
-#include "input_structures.glsl"
 
 layout (location = 0) out vec3 out_color;
 layout (location = 1) out vec2 out_uv;
@@ -24,7 +23,7 @@ void main()
 	
 	vec4 position = vec4(v.position, 1.0f);
 
-	out_color = v.color.xyz * material_data.color_factors.xyz;	
+	out_color = v.color.xyz;	
 	out_uv.x = v.uv_x;
 	out_uv.y = v.uv_y;
 	out_material_index = uniform_data.material_data_index;
