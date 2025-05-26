@@ -9,7 +9,7 @@ use crate::{
     draw::{DrawContext, RenderObject},
     images::Image,
     immediate_submit::ImmediateSubmit,
-    materials::{MaterialConstants, MaterialResources},
+    materials::{MaterialConstants, MaterialData, MaterialResources},
     meshes::{Mesh, MeshIndex},
     resource_manager::VulkanResource,
     vk_util,
@@ -349,11 +349,27 @@ impl GLTFLoader {
                 .master_materials
                 .get_mut(master_material_index);
 
+            let material_data = MaterialData {
+                color_factors: base_color_factor.into(),
+                metal_rough_factors: vector![
+                    pbr_metalic_roughness.metallic_factor(),
+                    pbr_metalic_roughness.roughness_factor(),
+                    0.0,
+                    0.0
+                ],
+                color_tex_index: color_image_index,
+                normal_tex_index: normal_image_index,
+                metal_rough_tex_index: metal_rough_image_index,
+            };
+
+            let material_data_index = managed_resources.material_datas.add(material_data);
+
             let material_instance = master_material.create_instance(
                 device,
                 &resources,
                 descriptor_allocator,
                 master_material_index,
+                material_data_index,
             );
 
             let material_instance_index =

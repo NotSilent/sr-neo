@@ -22,7 +22,7 @@ void main()
 
 	vec3 albedo = color.rgb * in_color;
 	vec3 normal = texture(normal_tex,in_uv).rgb * 2.0 - 1.0;
-	vec4 metal_rough = pow(texture(metal_rough_tex,in_uv), vec4(2.2));
+	vec4 metal_rough = texture(metal_rough_tex,in_uv);
 	
 	vec3 view_space_normal = normalize(in_tbn_to_view * normal);
     

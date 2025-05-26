@@ -1,6 +1,6 @@
 use ash::{Device, vk};
 use gpu_allocator::vulkan::Allocator;
-use nalgebra::Matrix4;
+use nalgebra::{Matrix4, Vector3};
 
 use crate::{
     buffers::{Buffer, BufferIndex, BufferManager},
@@ -8,6 +8,7 @@ use crate::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
     images::Image,
+    materials::MaterialDataIndex,
     pipeline_builder::PipelineBuilder,
     resource_manager::VulkanResource,
     shader_manager::ShaderManager,
@@ -56,7 +57,7 @@ pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 pub const SHADOW_MAP_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
-pub const SHADOW_MAP_DIMENSION: u32 = 2000;
+pub const SHADOW_MAP_DIMENSION: u32 = 1024 * 4;
 
 const BUFFER_SIZE: usize = 2;
 
@@ -65,8 +66,11 @@ const BUFFER_SIZE: usize = 2;
 const FRAME_BUFFER_ELEMENTS: usize = 10000;
 
 #[allow(dead_code)] // UniformData is copied to inform buffer
+#[repr(C)]
 pub struct UniformData {
     pub world: Matrix4<f32>,
+    pub material_index: MaterialDataIndex,
+    pub padding: Vector3<f32>,
 }
 
 pub struct FrameBufferTargets {
@@ -224,6 +228,7 @@ impl FrameBuffer {
         fxaa_descriptor_layout: vk::DescriptorSetLayout,
         default_sampler_linear: vk::Sampler,
         vertex_buffer: &Buffer,
+        material_data_buffer: &Buffer,
     ) -> Self {
         let targets = FrameBufferTargets::new(device, allocator, width, height);
 
@@ -346,6 +351,14 @@ impl FrameBuffer {
         writer.write_buffer(
             2,
             uniform_device_buffer.buffer,
+            vk::WHOLE_SIZE,
+            0,
+            vk::DescriptorType::STORAGE_BUFFER,
+        );
+
+        writer.write_buffer(
+            3,
+            material_data_buffer.buffer,
             vk::WHOLE_SIZE,
             0,
             vk::DescriptorType::STORAGE_BUFFER,
@@ -683,6 +696,7 @@ impl DoubleBuffer {
         default_sampler_linear: vk::Sampler,
         shader_manager: &mut ShaderManager,
         vertex_buffer: &Buffer,
+        material_data_buffer: &Buffer,
     ) -> Self {
         let lightning_pass_description = Self::create_lightning_pass_description(
             device,
@@ -712,6 +726,7 @@ impl DoubleBuffer {
                     fxaa_pass_description.descriptor_layout,
                     default_sampler_linear,
                     vertex_buffer,
+                    material_data_buffer,
                 ),
                 FrameBuffer::new(
                     device,
@@ -726,6 +741,7 @@ impl DoubleBuffer {
                     fxaa_pass_description.descriptor_layout,
                     default_sampler_linear,
                     vertex_buffer,
+                    material_data_buffer,
                 ),
             ],
             lightning_pass_description,

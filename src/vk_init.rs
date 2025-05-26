@@ -137,7 +137,11 @@ pub fn create_device(
     let mut vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default()
         .buffer_device_address(true)
         .descriptor_indexing(true)
-        .host_query_reset(true);
+        .host_query_reset(true)
+        .descriptor_binding_storage_buffer_update_after_bind(true)
+        .descriptor_binding_update_unused_while_pending(true)
+        .descriptor_binding_partially_bound(true)
+        .descriptor_binding_variable_descriptor_count(true);
 
     let mut vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default()
         .dynamic_rendering(true)

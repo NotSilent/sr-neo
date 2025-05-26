@@ -35,6 +35,7 @@ Just another renderer built with Vulkan and Rust.
 - Variance Shadow Mapping or Moment Shadow Mapping
 - Managing index and vertex buffer memory, allow streaming nad reusing memory and deal with fragmentation
 - Remove per-frame render targets
+- Grass and wind
 
 ---
 

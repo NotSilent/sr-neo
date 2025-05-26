@@ -1,14 +1,152 @@
 use ash::{Device, vk};
-use gpu_allocator::vulkan::Allocator;
+use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 use nalgebra::Vector4;
 
 use crate::{
+    buffers::Buffer,
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter},
     draw::GPUPushDrawConstant,
+    images::ImageIndex,
     pipeline_builder::PipelineBuilder,
     resource_manager::{ResourceManager, VulkanResource},
     shader_manager::GraphicsShader,
 };
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct MaterialDataIndex(u32);
+
+impl From<usize> for MaterialDataIndex {
+    fn from(val: usize) -> Self {
+        MaterialDataIndex(val as u32)
+    }
+}
+
+impl From<MaterialDataIndex> for usize {
+    fn from(val: MaterialDataIndex) -> Self {
+        val.0 as usize
+    }
+}
+
+#[repr(C)]
+pub struct MaterialData {
+    pub color_factors: Vector4<f32>,
+    pub metal_rough_factors: Vector4<f32>,
+    pub color_tex_index: ImageIndex,
+    pub normal_tex_index: ImageIndex,
+    pub metal_rough_tex_index: ImageIndex,
+}
+
+// TODO: Updates, removal
+pub struct MaterialDataManager {
+    current_count: u32,
+    _max_count: u32,
+    host_buffer: Buffer,
+    device_buffer: Buffer,
+
+    dirty: bool,
+}
+
+impl MaterialDataManager {
+    pub fn new(device: &Device, allocator: &mut Allocator) -> Self {
+        let max_count = 1024;
+
+        let alloc_size = size_of::<MaterialData>() * max_count;
+
+        let host_buffer = Buffer::new(
+            device,
+            allocator,
+            alloc_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            MemoryLocation::CpuToGpu,
+            "materials_host",
+        );
+
+        let device_buffer = Buffer::new(
+            device,
+            allocator,
+            alloc_size,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
+            MemoryLocation::GpuOnly,
+            "materials_device",
+        );
+
+        Self {
+            current_count: 0,
+            _max_count: max_count as u32,
+            host_buffer,
+            device_buffer,
+            dirty: false,
+        }
+    }
+
+    pub fn add(&mut self, material_data: MaterialData) -> MaterialDataIndex {
+        self.dirty = true;
+
+        let (_prefix, data, _suffix) = unsafe {
+            self.host_buffer
+                .allocation
+                .as_mut()
+                .unwrap()
+                .mapped_slice_mut()
+                .unwrap()
+                .align_to_mut::<MaterialData>()
+        };
+
+        let index = self.current_count as usize;
+
+        data[index] = material_data;
+
+        let index = index.into();
+
+        self.current_count += 1;
+
+        index
+    }
+
+    pub fn upload(&self, device: &Device, cmd: vk::CommandBuffer) {
+        if !self.dirty {
+            return;
+        }
+
+        let regions = [vk::BufferCopy::default()
+            .src_offset(0)
+            .size(self.host_buffer.allocation.as_ref().unwrap().size())];
+
+        unsafe {
+            device.cmd_copy_buffer(
+                cmd,
+                self.host_buffer.buffer,
+                self.device_buffer.buffer,
+                &regions,
+            );
+        }
+
+        let buffer_barriers = [vk::BufferMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+            .src_access_mask(vk::AccessFlags2::NONE)
+            .dst_stage_mask(vk::PipelineStageFlags2::VERTEX_SHADER)
+            .dst_access_mask(vk::AccessFlags2::UNIFORM_READ)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(self.device_buffer.buffer)
+            .offset(0)
+            .size(vk::WHOLE_SIZE)];
+
+        let dependency_info =
+            vk::DependencyInfo::default().buffer_memory_barriers(&buffer_barriers);
+
+        unsafe { device.cmd_pipeline_barrier2(cmd, &dependency_info) };
+    }
+
+    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+        self.device_buffer.destroy(device, allocator);
+        self.host_buffer.destroy(device, allocator);
+    }
+
+    pub fn get(&self) -> &Buffer {
+        &self.device_buffer
+    }
+}
 
 // Resource Managers
 
@@ -28,6 +166,8 @@ impl From<MasterMaterialIndex> for usize {
 }
 
 pub type MasterMaterialManager = ResourceManager<MasterMaterial, (), MasterMaterialIndex>;
+
+//
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MaterialInstanceIndex(u16);
@@ -223,6 +363,7 @@ impl MasterMaterial {
         resources: &MaterialResources,
         descriptor_allocator: &mut DescriptorAllocatorGrowable,
         master_material_index: MasterMaterialIndex,
+        material_data_index: MaterialDataIndex,
     ) -> MaterialInstance {
         let set = descriptor_allocator.allocate(device, self.material_layout);
 
@@ -263,6 +404,7 @@ impl MasterMaterial {
         MaterialInstance {
             master_material_index,
             set,
+            material_data_index,
         }
     }
 }
@@ -270,6 +412,7 @@ impl MasterMaterial {
 pub struct MaterialInstance {
     pub master_material_index: MasterMaterialIndex,
     pub set: vk::DescriptorSet,
+    pub material_data_index: MaterialDataIndex,
 }
 
 impl VulkanResource for MaterialInstance {

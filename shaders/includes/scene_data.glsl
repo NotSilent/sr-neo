@@ -11,6 +11,18 @@ struct Vertex
 struct Uniform
 {
 	mat4 world_matrix;
+	uint material_data_index;
+	// vec3 padding;
+};
+
+struct Material
+{
+	vec4 color_factors;
+	vec4 metal_rough_factors;
+
+	uint color_tex_index;
+	uint normal_tex_index;
+	uint metal_rough_tex_index;
 };
 
 layout (set = 0, binding = 0) uniform SceneData {   
@@ -34,3 +46,9 @@ layout (set = 0, binding = 1) readonly buffer VertexData {
 layout (set = 0, binding = 2) readonly buffer UniformData {
 	Uniform uniforms[];
 } uniform_data;
+
+layout (set = 0, binding = 3) readonly buffer MaterialData2 {
+	Material materials[];
+} material_data2;
+
+// layout (set = 0, binding = 4) uniform sampler2D samplers[];

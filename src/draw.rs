@@ -1,9 +1,9 @@
 use ash::{Device, vk};
-use nalgebra::Matrix4;
+use nalgebra::{Matrix4, Vector3};
 
 use crate::{
     double_buffer::{FrameBufferWriteData, UniformData},
-    materials::MaterialPass,
+    materials::{MaterialDataIndex, MaterialPass},
     meshes::MeshIndex,
     vulkan_engine::{GPUStats, ManagedResources},
 };
@@ -110,6 +110,7 @@ pub struct DrawCommand {
     pub pipeline: vk::Pipeline,
     // TODO: Probably just index here and query + bind only when actualy before needed for drawing
     pub material_instance_set: vk::DescriptorSet,
+    pub material_data_index: MaterialDataIndex,
     pub world_matrix: Matrix4<f32>,
     pub surface_index_count: u32,
     pub surface_first_index: u32,
@@ -170,6 +171,8 @@ impl IndexedIndirectRecord {
 
                 write_data.uniforms[draw_index as usize] = UniformData {
                     world: command.world_matrix,
+                    material_index: command.material_data_index,
+                    padding: Vector3::zeros(),
                 };
 
                 write_data.draws[draw_index as usize] = vk::DrawIndexedIndirectCommand::default()
@@ -325,6 +328,7 @@ impl DrawRecord {
                 let pipeline_layout = master_material.pipeline_layout;
                 let pipeline = master_material.pipeline;
                 let material_instance_set = material.set;
+                let material_data_index = material.material_data_index;
                 let world_matrix = draw.transform;
                 let surface_first_index = surface.start_index;
                 let surface_index_count = surface.count;
@@ -333,6 +337,7 @@ impl DrawRecord {
                     pipeline_layout,
                     pipeline,
                     material_instance_set,
+                    material_data_index,
                     world_matrix,
                     surface_index_count,
                     surface_first_index,

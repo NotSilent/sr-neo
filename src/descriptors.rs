@@ -224,6 +224,7 @@ impl DescriptorAllocatorGrowable {
         }
 
         let create_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
             .max_sets(set_count)
             .pool_sizes(&pool_sizes);
 
@@ -234,6 +235,7 @@ impl DescriptorAllocatorGrowable {
 #[derive(Default)]
 pub struct DescriptorLayoutBuilder<'a> {
     bindings: Vec<vk::DescriptorSetLayoutBinding<'a>>,
+    flags: Vec<vk::DescriptorBindingFlags>,
 }
 
 impl DescriptorLayoutBuilder<'_> {
@@ -245,6 +247,30 @@ impl DescriptorLayoutBuilder<'_> {
                 .descriptor_count(1)
                 .descriptor_type(descriptor_type),
         );
+
+        self.flags.push(vk::DescriptorBindingFlags::empty());
+
+        self
+    }
+
+    pub fn add_binding_indexed(
+        mut self,
+        binding: u32,
+        descriptor_type: vk::DescriptorType,
+    ) -> Self {
+        let flags = vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT
+            | vk::DescriptorBindingFlags::PARTIALLY_BOUND
+            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+            | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING;
+
+        self.bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(binding)
+                .descriptor_count(1)
+                .descriptor_type(descriptor_type),
+        );
+
+        self.flags.push(flags);
 
         self
     }
@@ -258,7 +284,17 @@ impl DescriptorLayoutBuilder<'_> {
             binding.stage_flags |= shader_stages;
         }
 
-        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&self.bindings);
+        let mut flags_create_info =
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&self.flags);
+
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .push_next(&mut flags_create_info)
+            .flags(if self.flags.is_empty() {
+                vk::DescriptorSetLayoutCreateFlags::empty()
+            } else {
+                vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL
+            })
+            .bindings(&self.bindings);
 
         unsafe {
             device

@@ -28,7 +28,8 @@ use crate::{
     lightning_pass,
     materials::{
         MasterMaterial, MasterMaterialIndex, MasterMaterialManager, MaterialConstants,
-        MaterialInstanceIndex, MaterialInstanceManager, MaterialPass, MaterialResources,
+        MaterialDataManager, MaterialInstanceIndex, MaterialInstanceManager, MaterialPass,
+        MaterialResources,
     },
     meshes::MeshManager,
     renderpass_common::RenderpassImageState,
@@ -109,6 +110,7 @@ pub struct ManagedResources {
     pub meshes: MeshManager,
     pub master_materials: MasterMaterialManager,
     pub material_instances: MaterialInstanceManager,
+    pub material_datas: MaterialDataManager,
 }
 
 impl ManagedResources {
@@ -275,6 +277,7 @@ impl VulkanEngine {
             .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
             .add_binding(1, vk::DescriptorType::STORAGE_BUFFER)
             .add_binding(2, vk::DescriptorType::STORAGE_BUFFER)
+            .add_binding(3, vk::DescriptorType::STORAGE_BUFFER)
             .build(
                 &device,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -395,6 +398,7 @@ impl VulkanEngine {
             &resources,
             &mut descriptor_allocator,
             geometry_pass_material_index,
+            0.into(), // TODO: Drop default instances
         );
 
         let geometry_pass_material_instance_index =
@@ -418,6 +422,7 @@ impl VulkanEngine {
             meshes: mesh_manager,
             master_materials: master_material_manager,
             material_instances: material_instance_manager,
+            material_datas: MaterialDataManager::new(&device, &mut allocator),
         };
 
         let default_resources = DefaultResources {
@@ -446,6 +451,7 @@ impl VulkanEngine {
         // TODO: Split Engine initialization and loading of resources
 
         let vertex_buffer = managed_resources.buffers.get(vertex_buffer_index);
+        let material_data_buffer = managed_resources.material_datas.get();
 
         let double_buffer = DoubleBuffer::new(
             &device,
@@ -459,6 +465,7 @@ impl VulkanEngine {
             default_sampler_linear,
             &mut shader_manager,
             vertex_buffer,
+            material_data_buffer,
         );
 
         Self {
@@ -601,6 +608,9 @@ impl VulkanEngine {
             ));
 
             let mut write_data = self.double_buffer.upload_buffers(&self.device, cmd);
+            self.managed_resources
+                .material_datas
+                .upload(&self.device, cmd);
 
             let indexed_indirect_data = IndexedIndirectData::prepare(
                 &opaque_commads,
@@ -865,6 +875,10 @@ impl Drop for VulkanEngine {
 
         self.managed_resources
             .master_materials
+            .destroy(device, allocator);
+
+        self.managed_resources
+            .material_datas
             .destroy(device, allocator);
         // ~Shouldn't be needed if all resources are removed properly
 

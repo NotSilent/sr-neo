@@ -27,7 +27,7 @@ void main()
 
 	vec3 normal = texture(normal_tex,in_uv).xyz * 2.0 - 1.0;
 	vec3 albedo = color.rgb * in_color * material_data.color_factors.rgb;
-	vec4 metal_rough = pow(texture(metal_rough_tex,in_uv), vec4(2.2));
+	vec4 metal_rough = texture(metal_rough_tex,in_uv);
 
 	float metallic = metal_rough.b * material_data.metal_rough_factors.x;
 	float roughness = metal_rough.g * material_data.metal_rough_factors.y;
