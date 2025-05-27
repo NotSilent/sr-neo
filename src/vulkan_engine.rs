@@ -16,7 +16,7 @@ use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use crate::{
     buffers::{BufferIndex, BufferManager},
     camera::{Camera, InputManager},
-    default_resources,
+    default_resources, depth_pre_pass,
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, PoolSizeRatio},
     double_buffer::{self, DoubleBuffer},
     draw::{DrawContext, DrawRecord, IndexedIndirectData},
@@ -126,6 +126,7 @@ pub struct DefaultResources {
     pub sampler_nearest: vk::Sampler,
     pub sampler_linear: vk::Sampler,
 
+    pub depth_pre_pass_material: MasterMaterialIndex,
     pub geometry_pass_material: MasterMaterialIndex,
     pub shadow_map_pass_material: MasterMaterialIndex,
     pub transparent_material: MasterMaterialIndex,
@@ -320,11 +321,21 @@ impl VulkanEngine {
 
         let mut master_material_manager = MasterMaterialManager::new();
 
+        let depth_pre_pass_shader =
+            shader_manager.get_graphics_shader_combined(&device, "depth_pre_pass");
         let geometry_pass_shader =
             shader_manager.get_graphics_shader_combined(&device, "geometry_pass");
         let shadow_map_pass_shader =
             shader_manager.get_graphics_shader_combined(&device, "shadow_map_pass");
         let shader = shader_manager.get_graphics_shader_combined(&device, "forward_pass");
+
+        let depth_pre_pass_material = MasterMaterial::new_shadow_map(
+            &device,
+            gpu_scene_data_descriptor_layout,
+            double_buffer::DEPTH_FORMAT,
+            MaterialPass::Opaque,
+            &depth_pre_pass_shader,
+        );
 
         let geometry_pass_material = MasterMaterial::new(
             &device,
@@ -352,6 +363,7 @@ impl VulkanEngine {
             &shader,
         );
 
+        let depth_pre_pass_material_index = master_material_manager.add(depth_pre_pass_material);
         let geometry_pass_material_index = master_material_manager.add(geometry_pass_material);
         let shadow_map_pass_material_index = master_material_manager.add(shadow_map_pass_material);
         let default_transparent_material_index =
@@ -395,6 +407,7 @@ impl VulkanEngine {
             image_normal: image_normal_index,
             sampler_nearest: default_sampler_nearest,
             sampler_linear: default_sampler_linear,
+            depth_pre_pass_material: depth_pre_pass_material_index,
             geometry_pass_material: geometry_pass_material_index,
             transparent_material: default_transparent_material_index,
             geometry_pass_material_instance: geometry_pass_material_instance_index,
@@ -581,13 +594,29 @@ impl VulkanEngine {
 
             let index_buffer = self.managed_resources.buffers.get(self.index_buffer).buffer;
 
+            let depth_pre_pass_master_material = self
+                .managed_resources
+                .master_materials
+                .get(self.default_resources.depth_pre_pass_material);
+
+            let depth_pre_pass_output = depth_pre_pass::record(
+                &self.device,
+                cmd,
+                render_area,
+                depth_src,
+                depth_pre_pass_master_material,
+                globals_descriptor_set,
+                index_buffer,
+                &indexed_indirect_data.opaque,
+            );
+
             let geometry_pass_output = geometry_pass::record(
                 &self.device,
                 cmd,
                 render_area,
                 color_src,
                 normal_src,
-                depth_src,
+                depth_pre_pass_output.depth,
                 globals_descriptor_set,
                 index_buffer,
                 &indexed_indirect_data.opaque,

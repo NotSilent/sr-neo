@@ -49,8 +49,7 @@ pub fn record(
         image: depth_src.image,
         image_view: depth_src.image_view,
         layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-        stage_mask: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-            | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+        stage_mask: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
         access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
     };
 
@@ -148,7 +147,7 @@ fn begin(
 
     let color_attachments = [color_attachment, normal_attachment];
 
-    let depth_attachment = vk_util::depth_attachment_info_write(
+    let depth_attachment = vk_util::depth_attachment_info_read(
         depth_src.image_view,
         vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
     );

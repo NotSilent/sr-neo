@@ -17,6 +17,7 @@ use winit::{
 mod buffers;
 mod camera;
 mod default_resources;
+mod depth_pre_pass;
 mod descriptors;
 mod double_buffer;
 mod draw;

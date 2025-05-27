@@ -5,6 +5,8 @@
 #include "scene_data.glsl"
 #include "pbr.glsl"
 
+layout (early_fragment_tests) in;
+
 layout (set = 1, binding = 0) uniform sampler2D color_tex;  // color + metallic
 layout (set = 1, binding = 1) uniform sampler2D normal_tex; // normal + roughness
 layout (set = 1, binding = 2) uniform sampler2D depth_tex;

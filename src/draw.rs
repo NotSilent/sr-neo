@@ -14,6 +14,7 @@ pub struct RenderObject {
     pub transform: Matrix4<f32>,
 }
 
+// TODO: Can be removed?
 #[repr(C)]
 pub struct GPUPushDrawConstant {
     pub index: u32,
