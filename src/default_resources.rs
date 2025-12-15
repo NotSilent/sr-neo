@@ -1,9 +1,10 @@
 use crate::{images::Image, immediate_submit::ImmediateSubmit, vk_util};
-use ash::{Device, vk};
+use ash::{Device, ext::debug_utils, vk};
 use gpu_allocator::vulkan::Allocator;
 
 pub fn image_white(
     device: &Device,
+    debug_device: &debug_utils::Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
     access_flags: vk::AccessFlags2,
@@ -12,6 +13,7 @@ pub fn image_white(
 
     Image::with_data(
         device,
+        debug_device,
         allocator,
         immediate_submit,
         vk::Extent3D::default().width(1).height(1).depth(1),
@@ -27,6 +29,7 @@ pub fn image_white(
 
 pub fn image_black(
     device: &Device,
+    debug_device: &debug_utils::Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
     access_mask: vk::AccessFlags2,
@@ -35,6 +38,7 @@ pub fn image_black(
 
     Image::with_data(
         device,
+        debug_device,
         allocator,
         immediate_submit,
         vk::Extent3D::default().width(1).height(1).depth(1),
@@ -50,6 +54,7 @@ pub fn image_black(
 
 pub fn image_error(
     device: &Device,
+    debug_device: &debug_utils::Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
     access_mask: vk::AccessFlags2,
@@ -72,6 +77,7 @@ pub fn image_error(
 
     Image::with_data(
         device,
+        debug_device,
         allocator,
         immediate_submit,
         vk::Extent3D::default().width(16).height(16).depth(1),
@@ -87,6 +93,7 @@ pub fn image_error(
 
 pub fn image_normal(
     device: &Device,
+    debug_device: &debug_utils::Device,
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
     access_mask: vk::AccessFlags2,
@@ -95,6 +102,7 @@ pub fn image_normal(
 
     Image::with_data(
         device,
+        debug_device,
         allocator,
         immediate_submit,
         vk::Extent3D::default().width(1).height(1).depth(1),

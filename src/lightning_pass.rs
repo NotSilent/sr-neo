@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::{Device, ext::debug_utils, vk};
 
 use crate::{double_buffer::FullScreenPassData, renderpass_common::RenderpassImageState, vk_util};
 
@@ -15,6 +15,7 @@ pub struct LightningPassOutput {
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
     device: &Device,
+    debug_device: &debug_utils::Device,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     draw_src: RenderpassImageState,
@@ -67,6 +68,7 @@ pub fn record(
 
     begin(
         device,
+        debug_device,
         cmd,
         render_area,
         &draw_src,
@@ -94,6 +96,7 @@ pub fn record(
 #[allow(clippy::too_many_arguments)]
 fn begin(
     device: &Device,
+    debug_device: &debug_utils::Device,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     draw_src: &RenderpassImageState,
@@ -109,6 +112,7 @@ fn begin(
 ) {
     vk_util::transition_image(
         device,
+        debug_device,
         cmd,
         draw_src.image,
         draw_src.layout,
@@ -118,10 +122,13 @@ fn begin(
         draw_dst.stage_mask,
         draw_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
+        #[cfg(debug_assertions)]
+        c"LightningPass::Draw",
     );
 
     vk_util::transition_image(
         device,
+        debug_device,
         cmd,
         color_src.image,
         color_src.layout,
@@ -131,10 +138,13 @@ fn begin(
         color_dst.stage_mask,
         color_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
+        #[cfg(debug_assertions)]
+        c"LightningPass::Color",
     );
 
     vk_util::transition_image(
         device,
+        debug_device,
         cmd,
         normal_src.image,
         normal_src.layout,
@@ -144,10 +154,13 @@ fn begin(
         normal_dst.stage_mask,
         normal_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
+        #[cfg(debug_assertions)]
+        c"LightningPass::Normal",
     );
 
     vk_util::transition_image(
         device,
+        debug_device,
         cmd,
         depth_src.image,
         depth_src.layout,
@@ -157,10 +170,13 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
+        #[cfg(debug_assertions)]
+        c"LightningPass::Depth",
     );
 
     vk_util::transition_image(
         device,
+        debug_device,
         cmd,
         shadow_map_src.image,
         shadow_map_src.layout,
@@ -170,6 +186,8 @@ fn begin(
         shadow_map_dst.stage_mask,
         shadow_map_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
+        #[cfg(debug_assertions)]
+        c"LightningPass::ShadowMap",
     );
 
     let clear_color = Some(vk::ClearValue {
@@ -200,7 +218,20 @@ fn begin(
     let scissors = [render_area];
 
     unsafe {
+        #[cfg(debug_assertions)]
+        {
+            use ash::vk::DebugUtilsLabelEXT;
+
+            let label = DebugUtilsLabelEXT::default().label_name(c"BeginRendering::LightningPass");
+            debug_device.cmd_begin_debug_utils_label(cmd, &label);
+        }
+
         device.cmd_begin_rendering(cmd, &rendering_info);
+
+        #[cfg(debug_assertions)]
+        {
+            debug_device.cmd_end_debug_utils_label(cmd);
+        }
 
         device.cmd_set_viewport(cmd, 0, &viewports);
         device.cmd_set_scissor(cmd, 0, &scissors);

@@ -11,34 +11,32 @@ fn main() -> io::Result<()> {
     for entry in fs::read_dir(shader_src)? {
         let entry = entry?;
         let path = entry.path();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if ["vert", "frag", "comp"].contains(&ext) {
-                //let filename = path.file_name().unwrap();
+        if let Some(ext) = entry.path().extension().and_then(|e| e.to_str())
+            && ["vert", "frag", "comp"].contains(&ext)
+        {
+            // Compile with glslangValidator
+            let output_spv = path.with_extension(format!("{ext}.spv"));
+            let status = Command::new("glslangValidator")
+                .args([
+                    "-V",
+                    "--target-env",
+                    "vulkan1.3",
+                    path.to_str().unwrap(),
+                    "-o",
+                    output_spv.to_str().unwrap(),
+                    r"-I/home/silent/Desktop/sr-neo/shaders/includes",
+                    //"-gVs",
+                ])
+                .status()
+                .expect("Failed to run glslangValidator");
 
-                // Compile with glslangValidator
-                let output_spv = path.with_extension(format!("{ext}.spv"));
-                let status = Command::new("glslangValidator")
-                    .args([
-                        "-V",
-                        "--target-env",
-                        "vulkan1.3",
-                        path.to_str().unwrap(),
-                        "-o",
-                        output_spv.to_str().unwrap(),
-                        r"-I/home/silent/Desktop/sr-neo/shaders/includes",
-                        //"-gVs",
-                    ])
-                    .status()
-                    .expect("Failed to run glslangValidator");
+            assert!(
+                status.success(),
+                "Shader compilation failed for {}",
+                path.to_str().unwrap()
+            );
 
-                assert!(
-                    status.success(),
-                    "Shader compilation failed for {}",
-                    path.to_str().unwrap()
-                );
-
-                //println!("cargo:warning=Compiled {}", filename.display());
-            }
+            //println!("cargo:warning=Compiled {}", filename.display());
         }
     }
 

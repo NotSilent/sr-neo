@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::{Device, ext::debug_utils, vk};
 use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 use nalgebra::Vector4;
 
@@ -104,7 +104,12 @@ impl MaterialDataManager {
         index
     }
 
-    pub fn upload(&mut self, device: &Device, cmd: vk::CommandBuffer) {
+    pub fn upload(
+        &mut self,
+        device: &Device,
+        debug_device: &debug_utils::Device,
+        cmd: vk::CommandBuffer,
+    ) {
         if !self.dirty {
             return;
         }
@@ -138,7 +143,19 @@ impl MaterialDataManager {
         let dependency_info =
             vk::DependencyInfo::default().buffer_memory_barriers(&buffer_barriers);
 
-        unsafe { device.cmd_pipeline_barrier2(cmd, &dependency_info) };
+        unsafe {
+            #[cfg(debug_assertions)]
+            {
+                use ash::vk::DebugUtilsLabelEXT;
+
+                let label = DebugUtilsLabelEXT::default().label_name(c"This one?");
+                debug_device.cmd_begin_debug_utils_label(cmd, &label);
+            }
+            device.cmd_pipeline_barrier2(cmd, &dependency_info);
+
+            #[cfg(debug_assertions)]
+            debug_device.cmd_end_debug_utils_label(cmd);
+        }
     }
 
     pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {

@@ -4,7 +4,7 @@ use crate::{
     resource_manager::{ResourceManager, VulkanResource},
     vk_util,
 };
-use ash::{Device, vk};
+use ash::{Device, ext::debug_utils, vk};
 use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
@@ -100,6 +100,7 @@ impl Image {
     #[allow(clippy::too_many_arguments)]
     pub fn with_data<T>(
         device: &Device,
+        debug_device: &debug_utils::Device,
         allocator: &mut Allocator,
         immediate_submit: &ImmediateSubmit, // TODO: Allocations should come from ImageManager or sth
         extent: vk::Extent3D,
@@ -137,6 +138,7 @@ impl Image {
         immediate_submit.submit(device, |cmd| {
             vk_util::transition_image(
                 device,
+                debug_device,
                 cmd,
                 new_image.image,
                 vk::ImageLayout::UNDEFINED,
@@ -146,6 +148,8 @@ impl Image {
                 vk::PipelineStageFlags2::COPY,
                 vk::AccessFlags2::TRANSFER_WRITE,
                 access_mask,
+                #[cfg(debug_assertions)]
+                c"Invalid",
             );
 
             let copy_regions = [vk::BufferImageCopy::default()
@@ -173,6 +177,7 @@ impl Image {
 
             vk_util::transition_image(
                 device,
+                debug_device,
                 cmd,
                 new_image.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -182,6 +187,8 @@ impl Image {
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
                 access_flags,
                 access_mask,
+                #[cfg(debug_assertions)]
+                c"Invalid",
             );
         });
 

@@ -1,4 +1,11 @@
-use ash::{Device, vk};
+#[cfg(debug_assertions)]
+use std::ffi::CStr;
+
+use ash::{
+    Device,
+    ext::debug_utils,
+    vk::{self},
+};
 use gpu_allocator::vulkan::Allocation;
 
 pub fn _extent_2d_from_3d(extent: &vk::Extent3D) -> vk::Extent2D {
@@ -57,6 +64,7 @@ pub fn allocate_command_buffer(
 #[allow(clippy::too_many_arguments)]
 pub fn transition_image(
     device: &Device,
+    debug_device: &debug_utils::Device,
     cmd: vk::CommandBuffer,
     image: vk::Image,
     src_layout: vk::ImageLayout,
@@ -66,6 +74,7 @@ pub fn transition_image(
     dst_stage_mask: vk::PipelineStageFlags2,
     dst_access_mask: vk::AccessFlags2,
     aspect_mask: vk::ImageAspectFlags,
+    #[cfg(debug_assertions)] debug_cmd_label: &CStr,
 ) {
     let image_barrier = vk::ImageMemoryBarrier2::default()
         .src_stage_mask(src_stage_mask)
@@ -83,7 +92,20 @@ pub fn transition_image(
     let binding = [image_barrier];
     let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&binding);
 
-    unsafe { device.cmd_pipeline_barrier2(cmd, &dependency_info) };
+    unsafe {
+        #[cfg(debug_assertions)]
+        {
+            use ash::vk::DebugUtilsLabelEXT;
+
+            let label = DebugUtilsLabelEXT::default().label_name(debug_cmd_label);
+            debug_device.cmd_begin_debug_utils_label(cmd, &label);
+        }
+
+        device.cmd_pipeline_barrier2(cmd, &dependency_info);
+
+        #[cfg(debug_assertions)]
+        debug_device.cmd_end_debug_utils_label(cmd);
+    }
 }
 
 pub fn image_subresource_range(aspect_mask: vk::ImageAspectFlags) -> vk::ImageSubresourceRange {

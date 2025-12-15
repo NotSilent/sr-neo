@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::{Device, ext::debug_utils, vk};
 use gltf::Document;
 use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 use nalgebra::{Matrix4, Vector4, vector};
@@ -48,6 +48,7 @@ pub struct CachedImage {
 impl GLTFLoader {
     pub fn new(
         device: &Device,
+        debug_device: &debug_utils::Device,
         file_path: &std::path::Path,
         allocator: &mut Allocator,
         managed_resources: &mut ManagedResources,
@@ -76,6 +77,7 @@ impl GLTFLoader {
         let (meshes, index_buffer, vertex_buffer) = Self::load_gltf_meshes(
             file_path,
             device,
+            debug_device,
             allocator,
             managed_resources,
             default_resources,
@@ -178,6 +180,7 @@ impl GLTFLoader {
     fn load_gltf_meshes(
         file_path: &std::path::Path,
         device: &Device,
+        debug_device: &debug_utils::Device,
         allocator: &mut Allocator,
         // TODO: Manage it better, what happens if it's cleared
         managed_resources: &mut ManagedResources,
@@ -237,6 +240,7 @@ impl GLTFLoader {
 
             let new_image = Image::with_data(
                 device,
+                debug_device,
                 allocator,
                 immediate_submit,
                 extent,

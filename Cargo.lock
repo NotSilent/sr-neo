@@ -2293,6 +2293,7 @@ dependencies = [
  "gpu-allocator",
  "image",
  "nalgebra",
+ "raw-window-handle",
  "thiserror 2.0.12",
  "winit",
 ]

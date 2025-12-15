@@ -1,9 +1,9 @@
-use std::env;
+use std::{env, f32};
 
 use camera::{InputManager, KeyEvent};
 use egui_winit::egui::{ViewportBuilder, ViewportInfo};
 use egui_winit::{State, egui};
-use nalgebra::vector;
+use nalgebra::{Vector3, vector};
 use vulkan_engine::VulkanEngine;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -13,6 +13,8 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
+
+use crate::camera::Camera;
 
 mod buffers;
 mod camera;
@@ -53,10 +55,19 @@ struct App<'a> {
     input_manager: InputManager,
 
     cpu_time: std::time::Instant,
+
+    main_camera: Camera,
 }
 
 impl Default for App<'_> {
     fn default() -> Self {
+        let main_camera = Camera {
+            position: vector![-6.0, 4.0, 0.0],
+            velocity: Vector3::from_element(0.0),
+            pitch: f32::consts::PI / -10.0,
+            yaw: f32::consts::FRAC_PI_2,
+        };
+
         Self {
             state: None,
             window: None,
@@ -67,6 +78,7 @@ impl Default for App<'_> {
             gltf_name: None,
             input_manager: InputManager::default(),
             cpu_time: std::time::Instant::now(),
+            main_camera,
         }
     }
 }
@@ -183,15 +195,17 @@ impl ApplicationHandler for App<'_> {
                         let time_now = std::time::Instant::now();
 
                         let gpu_stats = if let Some(engine) = &mut self.vulkan_engine {
-                            engine.update(&self.input_manager);
-                            match engine.draw(1.0) {
+                            self.main_camera.process_winit_events(&self.input_manager);
+                            match engine.draw(&mut self.main_camera, 1.0) {
                                 Ok(gpu_stats) => gpu_stats,
                                 Err(error) => match error {
                                     vulkan_engine::DrawError::Swapchain(_swapchain_error) => {
                                         let size = self.window.as_mut().unwrap().inner_size();
                                         engine.recreate_swapchain(size.width, size.height);
 
-                                        if let Ok(gpu_stats) = engine.draw(1.0) {
+                                        if let Ok(gpu_stats) =
+                                            engine.draw(&mut self.main_camera, 1.0)
+                                        {
                                             gpu_stats
                                         } else {
                                             println!("Swapchain broken beyond repair");
@@ -238,14 +252,14 @@ impl ApplicationHandler for App<'_> {
                     });
                 }
 
-                if let PhysicalKey::Code(key_code) = event.physical_key {
-                    if key_code == KeyCode::Escape {
-                        self.is_closing = true;
+                if let PhysicalKey::Code(key_code) = event.physical_key
+                    && key_code == KeyCode::Escape
+                {
+                    self.is_closing = true;
 
-                        self.vulkan_engine.take();
+                    self.vulkan_engine.take();
 
-                        event_loop.exit();
-                    }
+                    event_loop.exit();
                 }
             }
             _ => {}

@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::{Device, ext::debug_utils, vk};
 use gpu_allocator::vulkan::Allocator;
 use nalgebra::{Matrix4, Vector3};
 
@@ -456,8 +456,13 @@ impl FrameBuffer {
         }
     }
 
-    // TODO: Don;t upload whole buffers, just the data that will be actually used
-    fn upload_buffers(&mut self, device: &Device, cmd: vk::CommandBuffer) -> FrameBufferWriteData {
+    // TODO: Don't upload whole buffers, just the data that will be actually used
+    fn upload_buffers<'a>(
+        &'a mut self,
+        device: &Device,
+        debug_device: &debug_utils::Device,
+        cmd: vk::CommandBuffer,
+    ) -> FrameBufferWriteData<'a> {
         let globals_regions = [vk::BufferCopy::default()
             .src_offset(0)
             .size(size_of::<SceneData>() as u64)];
@@ -533,7 +538,19 @@ impl FrameBuffer {
         let dependency_info =
             vk::DependencyInfo::default().buffer_memory_barriers(&buffer_barriers);
 
-        unsafe { device.cmd_pipeline_barrier2(cmd, &dependency_info) };
+        unsafe {
+            #[cfg(debug_assertions)]
+            {
+                use ash::vk::DebugUtilsLabelEXT;
+
+                let label = DebugUtilsLabelEXT::default().label_name(c"This one?");
+                debug_device.cmd_begin_debug_utils_label(cmd, &label);
+            }
+            device.cmd_pipeline_barrier2(cmd, &dependency_info);
+
+            #[cfg(debug_assertions)]
+            debug_device.cmd_end_debug_utils_label(cmd);
+        }
 
         let uniform_memory = self
             .uniform_host_buffer
@@ -798,12 +815,13 @@ impl DoubleBuffer {
         current_buffer.reset(device, allocator)
     }
 
-    pub fn upload_buffers(
-        &mut self,
+    pub fn upload_buffers<'a>(
+        &'a mut self,
         device: &Device,
+        debug_device: &debug_utils::Device,
         cmd: vk::CommandBuffer,
-    ) -> FrameBufferWriteData {
-        self.frame_buffers[self.current_frame].upload_buffers(device, cmd)
+    ) -> FrameBufferWriteData<'a> {
+        self.frame_buffers[self.current_frame].upload_buffers(device, debug_device, cmd)
     }
 
     pub fn get_synchronization_resources(&self) -> FrameBufferSynchronizationResources {

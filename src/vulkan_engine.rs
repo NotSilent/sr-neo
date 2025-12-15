@@ -10,12 +10,12 @@ use ash::{
 use gpu_allocator::vulkan::Allocator;
 
 use nalgebra::{Matrix4, Vector2, Vector3, Vector4, vector};
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use thiserror::Error;
-use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{
     buffers::{BufferIndex, BufferManager},
-    camera::{Camera, InputManager},
+    camera::Camera,
     default_resources, depth_pre_pass,
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, PoolSizeRatio},
     double_buffer::{self, DoubleBuffer},
@@ -140,6 +140,7 @@ pub struct VulkanEngine {
     _entry: Entry,
     instance: Instance,
     debug_utils: debug_utils::Instance,
+    debug_device: debug_utils::Device,
     debug_utils_messenger: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
     device: Device,
@@ -167,8 +168,6 @@ pub struct VulkanEngine {
 
     main_draw_context: DrawContext,
 
-    main_camera: Camera, // TODO: Shouldn't be part of renderer
-
     gltf_loader: GLTFLoader,
 
     index_buffer: BufferIndex,
@@ -190,8 +189,8 @@ impl VulkanEngine {
     ) -> Self {
         let entry = Entry::linked();
         let instance = vk_init::create_instance(&entry, display_handle);
-        let debug_utils = debug_utils::Instance::new(&entry, &instance);
-        let debug_utils_messenger = vk_init::create_debug_utils_messenger(&debug_utils);
+        let debug_utils_instance = debug_utils::Instance::new(&entry, &instance);
+        let debug_utils_messenger = vk_init::create_debug_utils_messenger(&debug_utils_instance);
         let physical_device = vk_init::select_physical_device(&instance);
 
         let queue_families =
@@ -207,6 +206,8 @@ impl VulkanEngine {
                     .queue_index(0), // TODO: 0?
             )
         };
+
+        let debug_device = debug_utils::Device::new(&instance, &device);
 
         let surface_instance = surface::Instance::new(&entry, &instance);
         let swapchain_device = swapchain::Device::new(&instance, &device);
@@ -293,6 +294,7 @@ impl VulkanEngine {
 
         let image_white = default_resources::image_white(
             &device,
+            &debug_device,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
@@ -300,6 +302,7 @@ impl VulkanEngine {
 
         let image_black = default_resources::image_black(
             &device,
+            &debug_device,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
@@ -307,6 +310,7 @@ impl VulkanEngine {
 
         let image_error = default_resources::image_error(
             &device,
+            &debug_device,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
@@ -314,6 +318,7 @@ impl VulkanEngine {
 
         let image_normal = default_resources::image_normal(
             &device,
+            &debug_device,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
@@ -379,13 +384,6 @@ impl VulkanEngine {
         let geometry_pass_material_instance_index =
             material_instance_manager.add(geometry_pass_material_instance);
 
-        let main_camera = Camera {
-            position: vector![-6.0, 4.0, 0.0],
-            velocity: Vector3::from_element(0.0),
-            pitch: f32::consts::PI / -10.0,
-            yaw: f32::consts::FRAC_PI_2,
-        };
-
         let image_white_index = image_manager.add(image_white);
         let image_black_index = image_manager.add(image_black);
         let image_error_index = image_manager.add(image_error);
@@ -416,6 +414,7 @@ impl VulkanEngine {
 
         let (gltf_loader, index_buffer_index, vertex_buffer_index) = GLTFLoader::new(
             &device,
+            &debug_device,
             std::path::PathBuf::from(gltf_name).as_path(),
             &mut allocator,
             &mut managed_resources,
@@ -449,7 +448,8 @@ impl VulkanEngine {
 
             _entry: entry,
             instance,
-            debug_utils,
+            debug_utils: debug_utils_instance,
+            debug_device,
             debug_utils_messenger,
             physical_device,
             device,
@@ -473,8 +473,6 @@ impl VulkanEngine {
 
             main_draw_context: DrawContext::default(),
 
-            main_camera,
-
             gltf_loader,
 
             index_buffer: index_buffer_index,
@@ -482,13 +480,12 @@ impl VulkanEngine {
         }
     }
 
-    // TODO: Shouldn't be part of renderer
-    pub fn update(&mut self, input_manager: &InputManager) {
-        self.main_camera.process_winit_events(input_manager);
-    }
-
     #[allow(clippy::too_many_lines)]
-    pub fn draw(&mut self, render_scale: f32) -> Result<GPUStats, DrawError> {
+    pub fn draw(
+        &mut self,
+        main_camera: &mut Camera,
+        render_scale: f32,
+    ) -> Result<GPUStats, DrawError> {
         let mut gpu_stats = GPUStats::default();
 
         let render_scale = render_scale.clamp(0.25, 1.0);
@@ -496,7 +493,7 @@ impl VulkanEngine {
         let width = self.swapchain.extent.width as f32;
         let height = self.swapchain.extent.height as f32;
 
-        self.update_scene();
+        self.update_scene(main_camera);
 
         unsafe {
             let query_results = self
@@ -574,16 +571,18 @@ impl VulkanEngine {
             } = DrawRecord::record_draw_commands(&self.main_draw_context, &self.managed_resources);
 
             self.double_buffer.set_globals(&Self::create_scene_data(
-                &self.main_camera,
+                main_camera,
                 self.frame_number,
                 width,
                 height,
             ));
 
-            let mut write_data = self.double_buffer.upload_buffers(&self.device, cmd);
+            let mut write_data =
+                self.double_buffer
+                    .upload_buffers(&self.device, &self.debug_device, cmd);
             self.managed_resources
                 .material_datas
-                .upload(&self.device, cmd);
+                .upload(&self.device, &self.debug_device, cmd);
 
             let indexed_indirect_data = IndexedIndirectData::prepare(
                 &opaque_commands,
@@ -601,6 +600,7 @@ impl VulkanEngine {
 
             let depth_pre_pass_output = depth_pre_pass::record(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 render_area,
                 depth_src,
@@ -612,6 +612,7 @@ impl VulkanEngine {
 
             let geometry_pass_output = geometry_pass::record(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 render_area,
                 color_src,
@@ -629,6 +630,7 @@ impl VulkanEngine {
 
             let shadow_map_pass_output = shadow_map_pass::record(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 shadow_map_src,
                 shadow_pass_master_material,
@@ -639,6 +641,7 @@ impl VulkanEngine {
 
             let lightning_pass_output = lightning_pass::record(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 render_area,
                 draw_src,
@@ -652,6 +655,7 @@ impl VulkanEngine {
 
             let draw_image_state = forward_pass::record(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 render_area,
                 lightning_pass_output.draw,
@@ -663,6 +667,7 @@ impl VulkanEngine {
 
             let fxaa_pass_output = fxaa_pass::record(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 render_area,
                 draw_image_state,
@@ -671,8 +676,10 @@ impl VulkanEngine {
                 &fxaa_pass_data,
             );
 
+            // TODO: Part of FXAAPass?
             vk_util::transition_image(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 fxaa_pass_output.fxaa.image,
                 fxaa_pass_output.fxaa.layout,
@@ -682,10 +689,13 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::TRANSFER,
                 vk::AccessFlags2::TRANSFER_READ,
                 vk::ImageAspectFlags::COLOR,
+                #[cfg(debug_assertions)]
+                c"FXAAPass::?",
             );
 
             vk_util::transition_image(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 acquired_swapchain.image,
                 vk::ImageLayout::UNDEFINED,
@@ -695,6 +705,8 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
                 vk::AccessFlags2::TRANSFER_WRITE,
                 vk::ImageAspectFlags::COLOR,
+                #[cfg(debug_assertions)]
+                c"FXAAPass::2?",
             );
 
             vk_util::blit_image(
@@ -708,6 +720,7 @@ impl VulkanEngine {
 
             vk_util::transition_image(
                 &self.device,
+                &self.debug_device,
                 cmd,
                 acquired_swapchain.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -717,6 +730,8 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::NONE,
                 vk::AccessFlags2::NONE,
                 vk::ImageAspectFlags::COLOR,
+                #[cfg(debug_assertions)]
+                c"Invalid",
             );
 
             self.device.cmd_write_timestamp(
@@ -782,9 +797,9 @@ impl VulkanEngine {
         let inv_proj = proj.try_inverse().unwrap();
         let view_proj = proj * view;
 
-        let sin_x = f32::sin(frame_number as f32 / 200.0);
-        let cos_z = f32::cos(frame_number as f32 / 200.0);
-        let sunlight_direction = vector![sin_x, 4.0, cos_z].normalize().insert_row(3, 3.0);
+        let _sin_x = f32::sin(frame_number as f32 / 200.0);
+        let _cos_z = f32::cos(frame_number as f32 / 200.0);
+        let sunlight_direction = vector![1.0, 4.0, 1.0].normalize().insert_row(3, 3.0);
 
         let light_view = Matrix4::look_at_rh(
             &From::from(
@@ -824,8 +839,8 @@ impl VulkanEngine {
         }
     }
 
-    fn update_scene(&mut self) {
-        self.main_camera.update();
+    fn update_scene(&mut self, main_camera: &mut Camera) {
+        main_camera.update();
 
         self.main_draw_context.render_objects.clear();
 

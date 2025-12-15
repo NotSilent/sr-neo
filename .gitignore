@@ -24,3 +24,5 @@ imgui.ini
 .cache/*
 
 .zed/*
+
+*.sh

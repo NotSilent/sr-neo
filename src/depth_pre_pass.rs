@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::{Device, ext::debug_utils, vk};
 
 use crate::{
     draw::{GPUPushDrawConstant, IndexedIndirectRecord},
@@ -19,6 +19,7 @@ pub struct DepthPrePassOutput {
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
     device: &Device,
+    debug_device: &debug_utils::Device,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     depth_src: RenderpassImageState,
@@ -36,7 +37,14 @@ pub fn record(
         access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
     };
 
-    begin(device, cmd, render_area, &depth_src, &depth_dst);
+    begin(
+        device,
+        debug_device,
+        cmd,
+        render_area,
+        &depth_src,
+        &depth_dst,
+    );
 
     draw(
         device,
@@ -55,6 +63,7 @@ pub fn record(
 #[allow(clippy::too_many_arguments)]
 fn begin(
     device: &Device,
+    debug_device: &debug_utils::Device,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     depth_src: &RenderpassImageState,
@@ -62,6 +71,7 @@ fn begin(
 ) {
     vk_util::transition_image(
         device,
+        debug_device,
         cmd,
         depth_src.image,
         depth_src.layout,
@@ -71,6 +81,8 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
+        #[cfg(debug_assertions)]
+        c"Depth_Pre Pass",
     );
 
     let depth_attachment = vk_util::depth_attachment_info_write(
@@ -89,7 +101,20 @@ fn begin(
     let scissors = [render_area];
 
     unsafe {
+        #[cfg(debug_assertions)]
+        {
+            use ash::vk::DebugUtilsLabelEXT;
+
+            let label = DebugUtilsLabelEXT::default().label_name(c"BeginRendering::FepthPrePass");
+            debug_device.cmd_begin_debug_utils_label(cmd, &label);
+        }
+
         device.cmd_begin_rendering(cmd, &rendering_info);
+
+        #[cfg(debug_assertions)]
+        {
+            debug_device.cmd_end_debug_utils_label(cmd);
+        }
 
         device.cmd_set_viewport(cmd, 0, &viewports);
         device.cmd_set_scissor(cmd, 0, &scissors);
