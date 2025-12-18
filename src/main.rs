@@ -92,8 +92,8 @@ impl<'a> App<'a> {
 impl ApplicationHandler for App<'_> {
     // This is a common indicator that you can create a window.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let width = 1920;
-        let height = 1080;
+        let width = 1600;
+        let height = 900;
 
         let egui_ctx = egui::Context::default();
 
@@ -128,8 +128,8 @@ impl ApplicationHandler for App<'_> {
         let vulkan_engine = VulkanEngine::new(
             window.display_handle().unwrap().as_raw(),
             window.window_handle().unwrap().as_raw(),
-            width,
-            height,
+            window.inner_size().width,
+            window.inner_size().height,
             self.gltf_name.unwrap(),
         );
 
