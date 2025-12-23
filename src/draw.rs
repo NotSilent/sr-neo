@@ -36,6 +36,7 @@ pub struct DrawContext {
     pub render_objects: Vec<RenderObject>,
 }
 
+#[derive(Debug)]
 pub struct DrawCommand {
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
@@ -193,6 +194,7 @@ impl DrawCommand {
     }
 }
 
+#[derive(Debug)]
 pub struct DrawRecord {
     pub opaque_commands: Vec<DrawCommand>,
     pub transparent_commands: Vec<DrawCommand>,

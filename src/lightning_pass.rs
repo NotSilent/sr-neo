@@ -122,7 +122,6 @@ fn begin(
         draw_dst.stage_mask,
         draw_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        #[cfg(debug_assertions)]
         c"LightningPass::Draw",
     );
 
@@ -138,7 +137,6 @@ fn begin(
         color_dst.stage_mask,
         color_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        #[cfg(debug_assertions)]
         c"LightningPass::Color",
     );
 
@@ -154,7 +152,6 @@ fn begin(
         normal_dst.stage_mask,
         normal_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        #[cfg(debug_assertions)]
         c"LightningPass::Normal",
     );
 
@@ -170,7 +167,6 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        #[cfg(debug_assertions)]
         c"LightningPass::Depth",
     );
 
@@ -186,7 +182,6 @@ fn begin(
         shadow_map_dst.stage_mask,
         shadow_map_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        #[cfg(debug_assertions)]
         c"LightningPass::ShadowMap",
     );
 

@@ -75,7 +75,6 @@ fn begin(
         shadow_map_dst.stage_mask,
         shadow_map_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        #[cfg(debug_assertions)]
         c"ShadowMapPass::ShadowMap",
     );
 

@@ -80,7 +80,6 @@ fn begin(
         draw_dst.stage_mask,
         draw_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        #[cfg(debug_assertions)]
         c"ForwardPass::Draw",
     );
 
@@ -96,7 +95,6 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        #[cfg(debug_assertions)]
         c"ForwardPass::Depth",
     );
 

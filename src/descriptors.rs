@@ -1,4 +1,6 @@
-use ash::{Device, vk};
+use std::ffi::CStr;
+
+use ash::{Device, ext::debug_utils, vk};
 
 struct DescriptorBufferInfo {
     binding: u32,
@@ -164,8 +166,10 @@ impl DescriptorAllocatorGrowable {
     pub fn allocate(
         &mut self,
         device: &Device,
+        debug_device: &debug_utils::Device,
         layout: vk::DescriptorSetLayout,
         indexed: bool, // TODO: Hack to bind images for now
+        debug_cmd_label: &CStr,
     ) -> vk::DescriptorSet {
         let pool = self.get_pool(device);
 
@@ -181,7 +185,7 @@ impl DescriptorAllocatorGrowable {
             alloc_info = alloc_info.push_next(&mut count);
         }
 
-        match unsafe { device.allocate_descriptor_sets(&alloc_info) } {
+        let descriptor_set = match unsafe { device.allocate_descriptor_sets(&alloc_info) } {
             Ok(set) => {
                 self.ready_pools.push(pool);
                 *set.first().unwrap()
@@ -208,7 +212,19 @@ impl DescriptorAllocatorGrowable {
                     panic!();
                 }
             }
+        };
+
+        let name_info = vk::DebugUtilsObjectNameInfoEXT::default()
+            .object_handle(descriptor_set)
+            .object_name(debug_cmd_label);
+
+        unsafe {
+            debug_device
+                .set_debug_utils_object_name(&name_info)
+                .unwrap();
         }
+
+        descriptor_set
     }
 
     fn get_pool(&mut self, device: &Device) -> vk::DescriptorPool {

@@ -1,4 +1,3 @@
-#[cfg(debug_assertions)]
 use std::ffi::CStr;
 
 use ash::{
@@ -74,7 +73,7 @@ pub fn transition_image(
     dst_stage_mask: vk::PipelineStageFlags2,
     dst_access_mask: vk::AccessFlags2,
     aspect_mask: vk::ImageAspectFlags,
-    #[cfg(debug_assertions)] debug_cmd_label: &CStr,
+    debug_cmd_label: &CStr,
 ) {
     let image_barrier = vk::ImageMemoryBarrier2::default()
         .src_stage_mask(src_stage_mask)

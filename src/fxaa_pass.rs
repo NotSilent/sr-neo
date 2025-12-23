@@ -80,7 +80,6 @@ fn begin(
         color_dst.stage_mask,
         color_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        #[cfg(debug_assertions)]
         c"FXAAPass::Color",
     );
 
@@ -96,7 +95,6 @@ fn begin(
         fxaa_dst.stage_mask,
         fxaa_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        #[cfg(debug_assertions)]
         c"FXAAPass::Fxaa",
     );
 

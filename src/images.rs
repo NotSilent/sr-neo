@@ -148,7 +148,6 @@ impl Image {
                 vk::PipelineStageFlags2::COPY,
                 vk::AccessFlags2::TRANSFER_WRITE,
                 access_mask,
-                #[cfg(debug_assertions)]
                 c"Invalid",
             );
 
@@ -187,7 +186,6 @@ impl Image {
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
                 access_flags,
                 access_mask,
-                #[cfg(debug_assertions)]
                 c"Invalid",
             );
         });

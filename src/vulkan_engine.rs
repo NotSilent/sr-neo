@@ -7,14 +7,14 @@ use ash::{
     vk,
 };
 
-use gpu_allocator::vulkan::Allocator;
+use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 
 use nalgebra::{Matrix4, Vector2, Vector3, Vector4, vector};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use thiserror::Error;
 
 use crate::{
-    buffers::{BufferIndex, BufferManager},
+    buffers::{Buffer, BufferIndex, BufferManager},
     camera::Camera,
     default_resources, depth_pre_pass,
     descriptors::{DescriptorAllocatorGrowable, DescriptorLayoutBuilder, PoolSizeRatio},
@@ -22,8 +22,7 @@ use crate::{
     draw::{DrawContext, DrawRecord, IndexedIndirectData},
     forward_pass::{self},
     fxaa_pass, geometry_pass,
-    gltf_loader::GLTFLoader,
-    images::{ImageIndex, ImageManager},
+    images::{Image, ImageIndex, ImageManager},
     immediate_submit::ImmediateSubmit,
     lightning_pass,
     materials::{
@@ -32,6 +31,7 @@ use crate::{
     },
     meshes::MeshManager,
     renderpass_common::RenderpassImageState,
+    resource_manager::VulkanResource,
     shader_manager::ShaderManager,
     shadow_map_pass,
     swapchain::{Swapchain, SwapchainError},
@@ -45,6 +45,7 @@ pub struct GPUStats {
     pub triangles: u64,
 }
 
+#[derive(Debug)]
 pub struct GeoSurface {
     pub start_index: u32,
     pub count: u32,
@@ -163,15 +164,11 @@ pub struct VulkanEngine {
 
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
-    managed_resources: ManagedResources,
-    default_resources: DefaultResources,
-
-    main_draw_context: DrawContext,
-
-    gltf_loader: GLTFLoader,
+    pub managed_resources: ManagedResources,
+    pub default_resources: DefaultResources,
 
     index_buffer: BufferIndex,
-    _vertex_buffer: BufferIndex,
+    vertex_buffer: BufferIndex,
 }
 
 impl VulkanEngine {
@@ -185,7 +182,6 @@ impl VulkanEngine {
         window_handle: RawWindowHandle,
         width: u32,
         height: u32,
-        gltf_name: &str,
     ) -> Self {
         let entry = Entry::linked();
         let instance = vk_init::create_instance(&entry, display_handle);
@@ -285,7 +281,7 @@ impl VulkanEngine {
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             );
 
-        let mut immediate_submit =
+        let immediate_submit =
             ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
 
         let buffer_manager = BufferManager::new();
@@ -412,23 +408,32 @@ impl VulkanEngine {
             shadow_map_pass_material: shadow_map_pass_material_index,
         };
 
-        let (gltf_loader, index_buffer_index, vertex_buffer_index) = GLTFLoader::new(
+        // TODO: Temp untill buddy implemented for buffer management
+        const BUFFER_SIZE: usize = 258 * 1024 * 1024;
+
+        let index_buffer = Buffer::new(
             &device,
-            &debug_device,
-            std::path::PathBuf::from(gltf_name).as_path(),
             &mut allocator,
-            &mut managed_resources,
-            &default_resources,
-            &mut immediate_submit,
+            BUFFER_SIZE,
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+            "index_buffer",
         );
 
-        // TODO: Split Engine initialization and loading of resources
+        let vertex_buffer = Buffer::new(
+            &device,
+            &mut allocator,
+            BUFFER_SIZE,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+            "vertex_buffer",
+        );
 
-        let vertex_buffer = managed_resources.buffers.get(vertex_buffer_index);
         let material_data_buffer = managed_resources.material_datas.get();
 
         let double_buffer = DoubleBuffer::new(
             &device,
+            &debug_device,
             &mut allocator,
             graphics_queue_family_index,
             width,
@@ -438,10 +443,13 @@ impl VulkanEngine {
             &mut descriptor_allocator,
             default_sampler_linear,
             &mut shader_manager,
-            vertex_buffer,
+            &vertex_buffer,
             material_data_buffer,
             &managed_resources.images,
         );
+
+        let index_buffer_index = managed_resources.buffers.add(index_buffer);
+        let vertex_buffer_index = managed_resources.buffers.add(vertex_buffer);
 
         Self {
             frame_number: 0,
@@ -471,19 +479,16 @@ impl VulkanEngine {
             managed_resources,
             default_resources,
 
-            main_draw_context: DrawContext::default(),
-
-            gltf_loader,
-
             index_buffer: index_buffer_index,
-            _vertex_buffer: vertex_buffer_index,
+            vertex_buffer: vertex_buffer_index,
         }
     }
 
     #[allow(clippy::too_many_lines)]
     pub fn draw(
         &mut self,
-        main_camera: &mut Camera,
+        main_camera: &Camera,
+        draw_context: &DrawContext,
         render_scale: f32,
     ) -> Result<GPUStats, DrawError> {
         let mut gpu_stats = GPUStats::default();
@@ -492,8 +497,6 @@ impl VulkanEngine {
 
         let width = self.swapchain.extent.width as f32;
         let height = self.swapchain.extent.height as f32;
-
-        self.update_scene(main_camera);
 
         unsafe {
             let query_results = self
@@ -568,7 +571,7 @@ impl VulkanEngine {
             let DrawRecord {
                 opaque_commands,
                 transparent_commands,
-            } = DrawRecord::record_draw_commands(&self.main_draw_context, &self.managed_resources);
+            } = DrawRecord::record_draw_commands(draw_context, &self.managed_resources);
 
             self.double_buffer.set_globals(&Self::create_scene_data(
                 main_camera,
@@ -689,7 +692,6 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::TRANSFER,
                 vk::AccessFlags2::TRANSFER_READ,
                 vk::ImageAspectFlags::COLOR,
-                #[cfg(debug_assertions)]
                 c"FXAAPass::?",
             );
 
@@ -705,7 +707,6 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
                 vk::AccessFlags2::TRANSFER_WRITE,
                 vk::ImageAspectFlags::COLOR,
-                #[cfg(debug_assertions)]
                 c"FXAAPass::2?",
             );
 
@@ -730,7 +731,6 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::NONE,
                 vk::AccessFlags2::NONE,
                 vk::ImageAspectFlags::COLOR,
-                #[cfg(debug_assertions)]
                 c"Invalid",
             );
 
@@ -839,17 +839,100 @@ impl VulkanEngine {
         }
     }
 
-    fn update_scene(&mut self, main_camera: &mut Camera) {
-        main_camera.update();
-
-        self.main_draw_context.render_objects.clear();
-
-        self.gltf_loader.draw(&mut self.main_draw_context);
-    }
-
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
         self.swapchain
             .recreate_swapchain(&self.device, self.physical_device, width, height);
+    }
+
+    pub fn upload_image<T>(
+        &mut self,
+        extent: vk::Extent3D,
+        format: vk::Format,
+        image_usage: vk::ImageUsageFlags,
+        access_flags: vk::AccessFlags2,
+        access_mask: vk::ImageAspectFlags,
+        mipmapped: bool,
+        data: &[T],
+        name: &str,
+    ) -> ImageIndex {
+        let image = Image::with_data(
+            &self.device,
+            &self.debug_device,
+            &mut self.allocator,
+            &self.immediate_submit,
+            extent,
+            format,
+            image_usage,
+            access_flags,
+            access_mask,
+            mipmapped,
+            data,
+            name,
+        );
+
+        self.managed_resources.images.add(image)
+    }
+
+    pub fn upload_buffers(&mut self, indices: &[u32], vertices: &[Vertex]) {
+        let index_buffer_size = size_of_val(indices);
+        let vertex_buffer_size = size_of_val(vertices);
+
+        // TODO: Allocation separate?
+
+        let mut staging = Buffer::new(
+            &self.device,
+            &mut self.allocator,
+            index_buffer_size + vertex_buffer_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            MemoryLocation::CpuToGpu,
+            "staging",
+        );
+
+        vk_util::copy_data_to_allocation(indices, staging.allocation.as_ref().unwrap());
+        vk_util::copy_data_to_allocation_with_byte_offset(
+            vertices,
+            staging.allocation.as_ref().unwrap(),
+            index_buffer_size,
+        );
+
+        self.immediate_submit.submit(&self.device, |cmd| {
+            let index_regions = [vk::BufferCopy::default().size(index_buffer_size as u64)];
+
+            unsafe {
+                let index_buffer = &self.managed_resources.buffers.get(self.index_buffer);
+                self.device.cmd_copy_buffer(
+                    cmd,
+                    staging.buffer,
+                    index_buffer.buffer,
+                    &index_regions,
+                );
+            };
+
+            let vertex_regions: [vk::BufferCopy; 1] = [vk::BufferCopy::default()
+                .src_offset(index_buffer_size as u64)
+                .size(vertex_buffer_size as u64)];
+
+            unsafe {
+                let vertex_buffer = &self.managed_resources.buffers.get(self.vertex_buffer);
+
+                self.device.cmd_copy_buffer(
+                    cmd,
+                    staging.buffer,
+                    vertex_buffer.buffer,
+                    &vertex_regions,
+                );
+            }
+        });
+
+        staging.destroy(&self.device, &mut self.allocator);
+    }
+
+    pub fn update_images(&mut self) {
+        self.double_buffer.update_images(
+            &self.device,
+            &self.default_resources,
+            &self.managed_resources.images,
+        );
     }
 }
 

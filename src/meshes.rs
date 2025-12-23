@@ -23,6 +23,7 @@ impl From<MeshIndex> for usize {
 
 pub type MeshManager = ResourceManager<Mesh, (), MeshIndex>;
 
+#[derive(Debug)]
 pub struct Mesh {
     pub _name: String,
     pub surfaces: Vec<GeoSurface>,

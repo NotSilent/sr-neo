@@ -15,6 +15,8 @@ use winit::{
 };
 
 use crate::camera::Camera;
+use crate::draw::DrawContext;
+use crate::gltf_loader::GLTFLoader;
 
 mod buffers;
 mod camera;
@@ -57,6 +59,8 @@ struct App<'a> {
     cpu_time: std::time::Instant,
 
     main_camera: Camera,
+    draw_context: DrawContext,
+    gltf_loader: GLTFLoader,
 }
 
 impl Default for App<'_> {
@@ -79,6 +83,8 @@ impl Default for App<'_> {
             input_manager: InputManager::default(),
             cpu_time: std::time::Instant::now(),
             main_camera,
+            draw_context: DrawContext::default(),
+            gltf_loader: GLTFLoader::default(),
         }
     }
 }
@@ -86,6 +92,13 @@ impl Default for App<'_> {
 impl<'a> App<'a> {
     fn set_gltf_to_load(&mut self, gltf_name: &'a str) {
         self.gltf_name = Some(gltf_name);
+    }
+
+    fn update_scene(&mut self) {
+        self.main_camera.update();
+        self.draw_context.render_objects.clear();
+
+        self.gltf_loader.draw(&mut self.draw_context);
     }
 }
 
@@ -125,13 +138,20 @@ impl ApplicationHandler for App<'_> {
 
         egui_winit::update_viewport_info(&mut viewport_info, state.egui_ctx(), &window, true);
 
-        let vulkan_engine = VulkanEngine::new(
+        let mut vulkan_engine = VulkanEngine::new(
             window.display_handle().unwrap().as_raw(),
             window.window_handle().unwrap().as_raw(),
             window.inner_size().width,
             window.inner_size().height,
-            self.gltf_name.unwrap(),
         );
+
+        // TODO: drop unwrap
+        self.gltf_loader.load(
+            &mut vulkan_engine,
+            std::path::PathBuf::from(&self.gltf_name.unwrap()).as_path(),
+        );
+
+        vulkan_engine.update_images();
 
         self.state = Some(state);
         self.window = Some(window);
@@ -164,39 +184,14 @@ impl ApplicationHandler for App<'_> {
             WindowEvent::RedrawRequested => {
                 if !self.is_closing {
                     if !self.is_minimized {
-                        // let viewport_info = self.viewport_info.as_mut().unwrap();
-                        // let state = self.state.as_mut().unwrap();
-                        // let window = self.window.as_ref().unwrap();
-
-                        // egui_winit::update_viewport_info(
-                        //     viewport_info,
-                        //     state.egui_ctx(),
-                        //     window,
-                        //     false,
-                        // );
-
-                        // let raw_input = state.take_egui_input(window);
-
-                        // let full_output = state.egui_ctx().run(raw_input, |ctx| {
-                        //     egui::CentralPanel::default().show(ctx, |ui| {
-                        //         ui.label("Hello world!");
-                        //         if ui.button("Click me").clicked() {
-                        //             // take some action here
-                        //         }
-                        //     });
-                        // });
-
-                        // state.handle_platform_output(window, full_output.platform_output);
-
-                        // let _clipped_primitives = state
-                        //     .egui_ctx()
-                        //     .tessellate(full_output.shapes, full_output.pixels_per_point);
-
                         let time_now = std::time::Instant::now();
+
+                        self.update_scene();
 
                         let gpu_stats = if let Some(engine) = &mut self.vulkan_engine {
                             self.main_camera.process_winit_events(&self.input_manager);
-                            match engine.draw(&mut self.main_camera, 1.0) {
+
+                            match engine.draw(&self.main_camera, &self.draw_context, 1.0) {
                                 Ok(gpu_stats) => gpu_stats,
                                 Err(error) => match error {
                                     vulkan_engine::DrawError::Swapchain(_swapchain_error) => {
@@ -204,7 +199,7 @@ impl ApplicationHandler for App<'_> {
                                         engine.recreate_swapchain(size.width, size.height);
 
                                         if let Ok(gpu_stats) =
-                                            engine.draw(&mut self.main_camera, 1.0)
+                                            engine.draw(&self.main_camera, &self.draw_context, 1.0)
                                         {
                                             gpu_stats
                                         } else {

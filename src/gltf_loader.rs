@@ -1,18 +1,13 @@
-use ash::{Device, ext::debug_utils, vk};
+use ash::vk;
 use gltf::Document;
-use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 use nalgebra::{Matrix4, Vector4, vector};
 
+use crate::draw::DrawContext;
 use crate::{
-    buffers::{Buffer, BufferIndex, BufferManager},
-    draw::{DrawContext, RenderObject},
-    images::Image,
-    immediate_submit::ImmediateSubmit,
+    draw::RenderObject,
     materials::{MasterMaterial, MaterialData},
     meshes::{Mesh, MeshIndex},
-    resource_manager::VulkanResource,
-    vk_util,
-    vulkan_engine::{DefaultResources, GeoSurface, ManagedResources, Vertex},
+    vulkan_engine::{GeoSurface, Vertex, VulkanEngine},
 };
 
 pub struct Node {
@@ -31,6 +26,7 @@ pub enum GLTFNode {
     Mesh(MeshNode),
 }
 
+#[derive(Default)]
 pub struct GLTFLoader {
     scenes: Vec<Vec<u32>>,
     nodes: Vec<GLTFNode>,
@@ -44,17 +40,8 @@ pub struct CachedImage {
     data: Vec<u8>,
 }
 
-// TODO: Decouple this mess
 impl GLTFLoader {
-    pub fn new(
-        device: &Device,
-        debug_device: &debug_utils::Device,
-        file_path: &std::path::Path,
-        allocator: &mut Allocator,
-        managed_resources: &mut ManagedResources,
-        default_resources: &DefaultResources,
-        immediate_submit: &mut ImmediateSubmit,
-    ) -> (Self, BufferIndex, BufferIndex) {
+    pub fn load(&mut self, vulkan_engine: &mut VulkanEngine, file_path: &std::path::Path) {
         println!("Loading GLTF: {}", file_path.display());
 
         let time_now = std::time::Instant::now();
@@ -74,120 +61,25 @@ impl GLTFLoader {
             time_now.elapsed().as_secs_f64()
         );
 
-        let (meshes, index_buffer, vertex_buffer) = Self::load_gltf_meshes(
-            file_path,
-            device,
-            debug_device,
-            allocator,
-            managed_resources,
-            default_resources,
-            immediate_submit,
-            &gltf_real,
-        );
+        let meshes = Self::load_gltf_meshes(vulkan_engine, file_path, &gltf_real);
 
         let gltf_nodes = Self::load_gltf_nodes(&gltf_real, &meshes);
 
-        (
-            Self {
-                scenes: gltf_real
-                    .scenes()
-                    .map(|scene| scene.nodes().map(|node| node.index() as u32).collect())
-                    .collect(),
-                nodes: gltf_nodes,
-            },
-            index_buffer,
-            vertex_buffer,
-        )
-    }
-
-    // TODO: Background thread, reuse staging
-    // TODO: Not necessarily part of gltf
-    // TODO: struct instead of random tuple
-    fn upload_buffers(
-        device: &Device,
-        allocator: &mut Allocator,
-        buffer_manager: &mut BufferManager,
-        immediate_submit: &ImmediateSubmit,
-        indices: &[u32],
-        vertices: &[Vertex],
-    ) -> (BufferIndex, BufferIndex) {
-        let index_buffer_size = size_of_val(indices);
-        let vertex_buffer_size = size_of_val(vertices);
-
-        let index_buffer = Buffer::new(
-            device,
-            allocator,
-            index_buffer_size,
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            MemoryLocation::GpuOnly,
-            "index_buffer",
-        );
-
-        let vertex_buffer = Buffer::new(
-            device,
-            allocator,
-            vertex_buffer_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            MemoryLocation::GpuOnly,
-            "vertex_buffer",
-        );
-
-        // TODO: Allocation separate?
-
-        let mut staging = Buffer::new(
-            device,
-            allocator,
-            index_buffer_size + vertex_buffer_size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            MemoryLocation::CpuToGpu,
-            "staging",
-        );
-
-        vk_util::copy_data_to_allocation(indices, staging.allocation.as_ref().unwrap());
-        vk_util::copy_data_to_allocation_with_byte_offset(
-            vertices,
-            staging.allocation.as_ref().unwrap(),
-            index_buffer_size,
-        );
-
-        immediate_submit.submit(device, |cmd| {
-            let index_regions = [vk::BufferCopy::default().size(index_buffer_size as u64)];
-
-            unsafe {
-                device.cmd_copy_buffer(cmd, staging.buffer, index_buffer.buffer, &index_regions);
-            };
-
-            let vertex_regions: [vk::BufferCopy; 1] = [vk::BufferCopy::default()
-                .src_offset(index_buffer_size as u64)
-                .size(vertex_buffer_size as u64)];
-
-            unsafe {
-                device.cmd_copy_buffer(cmd, staging.buffer, vertex_buffer.buffer, &vertex_regions);
-            }
-        });
-
-        staging.destroy(device, allocator);
-
-        let index_buffer_index = buffer_manager.add(index_buffer);
-        let vertex_buffer_index = buffer_manager.add(vertex_buffer);
-
-        (index_buffer_index, vertex_buffer_index)
+        self.scenes = gltf_real
+            .scenes()
+            .map(|scene| scene.nodes().map(|node| node.index() as u32).collect())
+            .collect();
+        self.nodes = gltf_nodes;
     }
 
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::too_many_lines)]
     fn load_gltf_meshes(
+        vulkan_engine: &mut VulkanEngine,
         file_path: &std::path::Path,
-        device: &Device,
-        debug_device: &debug_utils::Device,
-        allocator: &mut Allocator,
-        // TODO: Manage it better, what happens if it's cleared
-        managed_resources: &mut ManagedResources,
-        default_resources: &DefaultResources,
-        immediate_submit: &ImmediateSubmit,
         gltf_real: &gltf::Gltf,
-    ) -> (Vec<MeshIndex>, BufferIndex, BufferIndex) {
+    ) -> Vec<MeshIndex> {
         let mut mesh_assets = vec![];
         let mut indices: Vec<u32> = vec![];
         let mut vertices: Vec<Vertex> = vec![];
@@ -238,11 +130,7 @@ impl GLTFLoader {
                 }
             };
 
-            let new_image = Image::with_data(
-                device,
-                debug_device,
-                allocator,
-                immediate_submit,
+            let image_index = vulkan_engine.upload_image(
                 extent,
                 format,
                 vk::ImageUsageFlags::SAMPLED,
@@ -253,12 +141,14 @@ impl GLTFLoader {
                 "GLTF_IMAGE_NAME_NONE",
             );
 
-            let image_index = managed_resources.images.add(new_image);
-
             images.push(image_index);
         }
 
-        println!("Loaded images: {:.2}s", time_now.elapsed().as_secs_f64());
+        println!(
+            "Loaded images [{}]: {:.2}s",
+            images.len(),
+            time_now.elapsed().as_secs_f64()
+        );
 
         let time_now = std::time::Instant::now();
 
@@ -272,14 +162,14 @@ impl GLTFLoader {
                     // TODO: Load texture instead of image
                     images[color_tex.texture().source().index()]
                 } else {
-                    default_resources.image_white
+                    vulkan_engine.default_resources.image_white
                 };
 
             let normal_image_index = if let Some(normal_tex) = material.normal_texture() {
                 // TODO: Load texture instead of image
                 images[normal_tex.texture().source().index()]
             } else {
-                default_resources.image_normal
+                vulkan_engine.default_resources.image_normal
             };
 
             let metal_rough_image_index = if let Some(metal_rough_tex) = material
@@ -289,15 +179,15 @@ impl GLTFLoader {
                 // TODO: Load texture instead of image
                 images[metal_rough_tex.texture().source().index()]
             } else {
-                default_resources.image_white
+                vulkan_engine.default_resources.image_white
             };
 
             // TODO: Mask, sponza uses
             let master_material_index = if material.alpha_mode() == gltf::material::AlphaMode::Blend
             {
-                default_resources.transparent_material
+                vulkan_engine.default_resources.transparent_material
             } else {
-                default_resources.geometry_pass_material
+                vulkan_engine.default_resources.geometry_pass_material
             };
 
             let material_data = MaterialData {
@@ -314,18 +204,27 @@ impl GLTFLoader {
                 padding: 0,
             };
 
-            let material_data_index = managed_resources.material_datas.add(material_data);
+            let material_data_index = vulkan_engine
+                .managed_resources
+                .material_datas
+                .add(material_data);
 
             let material_instance =
                 MasterMaterial::create_instance(master_material_index, material_data_index);
 
-            let material_instance_index =
-                managed_resources.material_instances.add(material_instance);
+            let material_instance_index = vulkan_engine
+                .managed_resources
+                .material_instances
+                .add(material_instance);
 
             materials.push(material_instance_index);
         }
 
-        println!("Loaded materials: {:.2}s", time_now.elapsed().as_secs_f64());
+        println!(
+            "Loaded materials [{}]: {:.2}s",
+            materials.len(),
+            time_now.elapsed().as_secs_f64()
+        );
 
         let time_now = std::time::Instant::now();
 
@@ -344,7 +243,9 @@ impl GLTFLoader {
                         materials[material]
                     } else {
                         // TODO: What exactly would default material be for GLTF?
-                        default_resources.geometry_pass_material_instance
+                        vulkan_engine
+                            .default_resources
+                            .geometry_pass_material_instance
                     },
                 });
 
@@ -510,24 +411,24 @@ impl GLTFLoader {
                 _name: mesh.name().unwrap_or("GLTF_NAME_NONE").into(),
                 surfaces,
             };
+            // println!("{mesh:#?}");
 
-            let mesh_index = managed_resources.meshes.add(mesh);
+            let mesh_index = vulkan_engine.managed_resources.meshes.add(mesh);
 
             mesh_assets.push(mesh_index);
         }
 
-        println!("Loaded meshes: {:.2}s", time_now.elapsed().as_secs_f64());
-
-        let (index_buffer, vertex_buffer) = Self::upload_buffers(
-            device,
-            allocator,
-            &mut managed_resources.buffers,
-            immediate_submit,
-            &indices,
-            &vertices,
+        println!(
+            "Loaded meshes [{}]: {:.2}s",
+            mesh_assets.len(),
+            time_now.elapsed().as_secs_f64()
         );
 
-        (mesh_assets, index_buffer, vertex_buffer)
+        // println!("{mesh_assets:#?}");
+
+        vulkan_engine.upload_buffers(&indices, &vertices);
+
+        mesh_assets
     }
 
     pub fn draw(&self, ctx: &mut DrawContext) {

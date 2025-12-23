@@ -27,6 +27,7 @@ impl From<MaterialDataIndex> for usize {
     }
 }
 
+#[derive(Debug)]
 #[repr(C)]
 pub struct MaterialData {
     pub color_factors: Vector4<f32>,

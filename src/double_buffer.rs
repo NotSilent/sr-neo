@@ -1,4 +1,8 @@
-use ash::{Device, ext::debug_utils, vk};
+use ash::{
+    Device,
+    ext::debug_utils,
+    vk::{self},
+};
 use gpu_allocator::vulkan::Allocator;
 use nalgebra::{Matrix4, Vector3};
 
@@ -13,7 +17,7 @@ use crate::{
     resource_manager::VulkanResource,
     shader_manager::ShaderManager,
     vk_util,
-    vulkan_engine::SceneData,
+    vulkan_engine::{DefaultResources, SceneData},
 };
 
 pub struct FullScreenPassDescription {
@@ -217,6 +221,7 @@ impl FrameBuffer {
     #[allow(clippy::too_many_lines)]
     fn new(
         device: &Device,
+        debug_device: &debug_utils::Device,
         allocator: &mut Allocator,
         graphics_queue_family_index: u32,
         width: u32,
@@ -249,6 +254,7 @@ impl FrameBuffer {
 
         let lightning_descriptor_set = Self::create_lightning_descriptor_set(
             device,
+            debug_device,
             global_descriptor_allocator,
             lightning_descriptor_layout,
             default_sampler_linear,
@@ -257,6 +263,7 @@ impl FrameBuffer {
 
         let fxaa_descriptor_set = Self::create_fxaa_descriptor_set(
             device,
+            debug_device,
             global_descriptor_allocator,
             fxaa_descriptor_layout,
             default_sampler_linear,
@@ -328,8 +335,13 @@ impl FrameBuffer {
             "draw_device_buffer",
         );
 
-        let globals_descriptor_set =
-            global_descriptor_allocator.allocate(device, globals_descriptor_set_layout, true);
+        let globals_descriptor_set = global_descriptor_allocator.allocate(
+            device,
+            debug_device,
+            globals_descriptor_set_layout,
+            true,
+            c"globals_descriptor_set",
+        );
 
         // TODO: device?
         let mut writer = DescriptorWriter::default();
@@ -365,6 +377,7 @@ impl FrameBuffer {
             vk::DescriptorType::STORAGE_BUFFER,
         );
 
+        // TODO: Iamge manager? Duplicated in update_images() currently
         for (index, image) in image_manager.dense().iter().enumerate() {
             writer.write_image(
                 4,
@@ -404,6 +417,29 @@ impl FrameBuffer {
             draw_device_buffer,
             fxaa_descriptor_set,
         }
+    }
+
+    // TODO: ImageManager?
+    fn update_images(
+        &mut self,
+        device: &Device,
+        default_resources: &DefaultResources,
+        image_manager: &ImageManager,
+    ) {
+        let mut writer = DescriptorWriter::default();
+
+        for (index, image) in image_manager.dense().iter().enumerate() {
+            writer.write_image(
+                4,
+                index as u32,
+                default_resources.sampler_linear,
+                image.image_view,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            );
+        }
+
+        writer.update_set(device, self.globals_descriptor_set);
     }
 
     fn reset(&mut self, device: &Device, allocator: &mut Allocator) -> QueryResults {
@@ -582,13 +618,19 @@ impl FrameBuffer {
 
     fn create_lightning_descriptor_set(
         device: &Device,
+        debug_device: &debug_utils::Device,
         global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
         lightning_descriptor_layout: vk::DescriptorSetLayout,
         default_sampler_linear: vk::Sampler,
         targets: &FrameBufferTargets,
     ) -> vk::DescriptorSet {
-        let lightning_descriptor_set =
-            global_descriptor_allocator.allocate(device, lightning_descriptor_layout, false);
+        let lightning_descriptor_set = global_descriptor_allocator.allocate(
+            device,
+            debug_device,
+            lightning_descriptor_layout,
+            false,
+            c"lightning_descriptor_set",
+        );
 
         let color_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -647,13 +689,19 @@ impl FrameBuffer {
 
     fn create_fxaa_descriptor_set(
         device: &Device,
+        debug_device: &debug_utils::Device,
         global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
         fxaa_descriptor_layout: vk::DescriptorSetLayout,
         default_sampler_linear: vk::Sampler,
         targets: &FrameBufferTargets,
     ) -> vk::DescriptorSet {
-        let fxaa_descriptor_set =
-            global_descriptor_allocator.allocate(device, fxaa_descriptor_layout, false);
+        let fxaa_descriptor_set = global_descriptor_allocator.allocate(
+            device,
+            debug_device,
+            fxaa_descriptor_layout,
+            false,
+            c"globals_descriptor_set",
+        );
 
         let color_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -715,6 +763,7 @@ impl DoubleBuffer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &Device,
+        debug_device: &debug_utils::Device,
         allocator: &mut Allocator,
         graphics_queue_family_index: u32,
         width: u32,
@@ -745,6 +794,7 @@ impl DoubleBuffer {
             frame_buffers: [
                 FrameBuffer::new(
                     device,
+                    debug_device,
                     allocator,
                     graphics_queue_family_index,
                     width,
@@ -761,6 +811,7 @@ impl DoubleBuffer {
                 ),
                 FrameBuffer::new(
                     device,
+                    debug_device,
                     allocator,
                     graphics_queue_family_index,
                     width,
@@ -788,6 +839,17 @@ impl DoubleBuffer {
 
         self.lightning_pass_description.destroy(device);
         self.fxaa_pass_description.destroy(device);
+    }
+
+    pub fn update_images(
+        &mut self,
+        device: &Device,
+        default_resources: &DefaultResources,
+        image_manager: &ImageManager,
+    ) {
+        for buffer in &mut self.frame_buffers {
+            buffer.update_images(device, default_resources, image_manager);
+        }
     }
 
     pub fn swap_buffer(&mut self, device: &Device, allocator: &mut Allocator) -> QueryResults {

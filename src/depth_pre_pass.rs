@@ -81,7 +81,6 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        #[cfg(debug_assertions)]
         c"Depth_Pre Pass",
     );
 

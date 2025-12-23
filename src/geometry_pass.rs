@@ -70,7 +70,7 @@ pub fn record(
 
     draw(device, cmd, global_descriptor, index_buffer, records);
 
-    end(device, cmd);
+    end(device, debug_device, cmd);
 
     GeometryPassOutput {
         color: color_dst,
@@ -92,6 +92,14 @@ fn begin(
     depth_src: &RenderpassImageState,
     depth_dst: &RenderpassImageState,
 ) {
+    #[cfg(debug_assertions)]
+    {
+        use ash::vk::DebugUtilsLabelEXT;
+
+        let label = DebugUtilsLabelEXT::default().label_name(c"GeometryPass");
+        unsafe { debug_device.cmd_begin_debug_utils_label(cmd, &label) };
+    }
+
     vk_util::transition_image(
         device,
         debug_device,
@@ -104,7 +112,6 @@ fn begin(
         color_dst.stage_mask,
         color_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        #[cfg(debug_assertions)]
         c"GeometryPass::Color",
     );
 
@@ -120,7 +127,6 @@ fn begin(
         normal_dst.stage_mask,
         normal_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        #[cfg(debug_assertions)]
         c"GeometryPass::Normal",
     );
 
@@ -136,7 +142,6 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        #[cfg(debug_assertions)]
         c"GeometryPass::Depth",
     );
 
@@ -177,20 +182,7 @@ fn begin(
     let scissors = [render_area];
 
     unsafe {
-        #[cfg(debug_assertions)]
-        {
-            use ash::vk::DebugUtilsLabelEXT;
-
-            let label = DebugUtilsLabelEXT::default().label_name(c"BeginRendering::GeometryPass");
-            debug_device.cmd_begin_debug_utils_label(cmd, &label);
-        }
-
         device.cmd_begin_rendering(cmd, &rendering_info);
-
-        #[cfg(debug_assertions)]
-        {
-            debug_device.cmd_end_debug_utils_label(cmd);
-        }
 
         device.cmd_set_viewport(cmd, 0, &viewports);
         device.cmd_set_scissor(cmd, 0, &scissors);
@@ -208,6 +200,13 @@ fn draw(
     DrawCommand::cmd_record_draw_commands(device, cmd, global_descriptor, index_buffer, records);
 }
 
-fn end(device: &Device, cmd: vk::CommandBuffer) {
-    unsafe { device.cmd_end_rendering(cmd) }
+fn end(device: &Device, debug_device: &debug_utils::Device, cmd: vk::CommandBuffer) {
+    unsafe {
+        device.cmd_end_rendering(cmd);
+
+        #[cfg(debug_assertions)]
+        {
+            debug_device.cmd_end_debug_utils_label(cmd);
+        }
+    }
 }
