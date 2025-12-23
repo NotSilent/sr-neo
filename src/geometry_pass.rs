@@ -1,9 +1,10 @@
-use ash::{Device, ext::debug_utils, vk};
+use ash::{Device, vk};
 
 use crate::{
     draw::{DrawCommand, IndexedIndirectRecord},
     renderpass_common::RenderpassImageState,
     vk_util,
+    vulkan_engine::VulkanContext,
 };
 
 pub struct GeometryPassOutput {
@@ -19,8 +20,7 @@ pub struct GeometryPassOutput {
 // they will be provided as an output.
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     color_src: RenderpassImageState,
@@ -55,9 +55,10 @@ pub fn record(
         access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
     };
 
+    let _debug_label = ctx.create_debug_utils_label(cmd, c"Geometry Pass");
+
     begin(
-        device,
-        debug_device,
+        ctx,
         cmd,
         render_area,
         &color_src,
@@ -68,9 +69,9 @@ pub fn record(
         &depth_dst,
     );
 
-    draw(device, cmd, global_descriptor, index_buffer, records);
+    draw(ctx, cmd, global_descriptor, index_buffer, records);
 
-    end(device, debug_device, cmd);
+    end(ctx, cmd);
 
     GeometryPassOutput {
         color: color_dst,
@@ -81,8 +82,7 @@ pub fn record(
 
 #[allow(clippy::too_many_arguments)]
 fn begin(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     color_src: &RenderpassImageState,
@@ -92,17 +92,8 @@ fn begin(
     depth_src: &RenderpassImageState,
     depth_dst: &RenderpassImageState,
 ) {
-    #[cfg(debug_assertions)]
-    {
-        use ash::vk::DebugUtilsLabelEXT;
-
-        let label = DebugUtilsLabelEXT::default().label_name(c"GeometryPass");
-        unsafe { debug_device.cmd_begin_debug_utils_label(cmd, &label) };
-    }
-
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         color_src.image,
         color_src.layout,
@@ -112,12 +103,10 @@ fn begin(
         color_dst.stage_mask,
         color_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        c"GeometryPass::Color",
     );
 
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         normal_src.image,
         normal_src.layout,
@@ -127,12 +116,10 @@ fn begin(
         normal_dst.stage_mask,
         normal_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        c"GeometryPass::Normal",
     );
 
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         depth_src.image,
         depth_src.layout,
@@ -142,7 +129,6 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        c"GeometryPass::Depth",
     );
 
     let clear_color = Some(vk::ClearValue {
@@ -182,10 +168,10 @@ fn begin(
     let scissors = [render_area];
 
     unsafe {
-        device.cmd_begin_rendering(cmd, &rendering_info);
+        ctx.cmd_begin_rendering(cmd, &rendering_info);
 
-        device.cmd_set_viewport(cmd, 0, &viewports);
-        device.cmd_set_scissor(cmd, 0, &scissors);
+        ctx.cmd_set_viewport(cmd, 0, &viewports);
+        ctx.cmd_set_scissor(cmd, 0, &scissors);
     };
 }
 
@@ -200,13 +186,8 @@ fn draw(
     DrawCommand::cmd_record_draw_commands(device, cmd, global_descriptor, index_buffer, records);
 }
 
-fn end(device: &Device, debug_device: &debug_utils::Device, cmd: vk::CommandBuffer) {
+fn end(device: &Device, cmd: vk::CommandBuffer) {
     unsafe {
         device.cmd_end_rendering(cmd);
-
-        #[cfg(debug_assertions)]
-        {
-            debug_device.cmd_end_debug_utils_label(cmd);
-        }
     }
 }

@@ -1,4 +1,4 @@
-use ash::{Device, ext::debug_utils, vk};
+use ash::{Device, vk};
 
 use crate::{
     double_buffer::{self},
@@ -6,6 +6,7 @@ use crate::{
     materials::MasterMaterial,
     renderpass_common::RenderpassImageState,
     vk_util,
+    vulkan_engine::VulkanContext,
 };
 
 pub struct ShaowMapPassOutput {
@@ -19,8 +20,7 @@ pub struct ShaowMapPassOutput {
 // they will be provided as an output.
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     shadow_map_src: RenderpassImageState,
     shadow_pass_master_material: &MasterMaterial,
@@ -37,10 +37,12 @@ pub fn record(
         access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
     };
 
-    begin(device, debug_device, cmd, &shadow_map_src, &shadow_map_dst);
+    let _debug_label = ctx.create_debug_utils_label(cmd, c"Shadow Map Pass");
+
+    begin(ctx, cmd, &shadow_map_src, &shadow_map_dst);
 
     draw(
-        device,
+        ctx,
         cmd,
         global_descriptor,
         index_buffer,
@@ -48,7 +50,7 @@ pub fn record(
         records,
     );
 
-    end(device, cmd);
+    end(ctx, cmd);
 
     ShaowMapPassOutput {
         shadow_map: shadow_map_dst,
@@ -57,15 +59,13 @@ pub fn record(
 
 #[allow(clippy::too_many_arguments)]
 fn begin(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     shadow_map_src: &RenderpassImageState,
     shadow_map_dst: &RenderpassImageState,
 ) {
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         shadow_map_src.image,
         shadow_map_src.layout,
@@ -75,7 +75,6 @@ fn begin(
         shadow_map_dst.stage_mask,
         shadow_map_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        c"ShadowMapPass::ShadowMap",
     );
 
     let depth_attachment = vk_util::depth_attachment_info_write(
@@ -100,24 +99,10 @@ fn begin(
     let scissors = [render_area];
 
     unsafe {
-        #[cfg(debug_assertions)]
-        {
-            use ash::vk::DebugUtilsLabelEXT;
+        ctx.cmd_begin_rendering(cmd, &rendering_info);
 
-            let label =
-                DebugUtilsLabelEXT::default().label_name(c"BeginRendering::ShadowMapPrePass");
-            debug_device.cmd_begin_debug_utils_label(cmd, &label);
-        }
-
-        device.cmd_begin_rendering(cmd, &rendering_info);
-
-        #[cfg(debug_assertions)]
-        {
-            debug_device.cmd_end_debug_utils_label(cmd);
-        }
-
-        device.cmd_set_viewport(cmd, 0, &viewports);
-        device.cmd_set_scissor(cmd, 0, &scissors);
+        ctx.cmd_set_viewport(cmd, 0, &viewports);
+        ctx.cmd_set_scissor(cmd, 0, &scissors);
     };
 }
 

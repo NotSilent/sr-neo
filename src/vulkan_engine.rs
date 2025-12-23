@@ -1,7 +1,7 @@
-use std::{f32, mem::ManuallyDrop};
+use std::{f32, ffi::CStr, mem::ManuallyDrop, ops::Deref};
 
 use ash::{
-    Device, Entry, Instance,
+    Entry,
     ext::debug_utils,
     khr::{surface, swapchain},
     vk,
@@ -135,18 +135,135 @@ pub struct DefaultResources {
     pub geometry_pass_material_instance: MaterialInstanceIndex,
 }
 
+pub struct DebugLabel<'a> {
+    #[cfg(debug_assertions)]
+    ctx: &'a VulkanContext,
+    #[cfg(debug_assertions)]
+    cmd: vk::CommandBuffer,
+}
+
+impl<'a> DebugLabel<'a> {
+    pub fn new(
+        ctx: &'a VulkanContext,
+        cmd: vk::CommandBuffer,
+        label_name: &std::ffi::CStr,
+    ) -> Self {
+        #[cfg(debug_assertions)]
+        {
+            let label = vk::DebugUtilsLabelEXT::default().label_name(label_name);
+
+            unsafe {
+                ctx.debug_device.cmd_begin_debug_utils_label(cmd, &label);
+            }
+
+            Self { ctx, cmd }
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (device, cmd, label_name, color);
+            Self {}
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for DebugLabel<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            self.ctx.debug_device.cmd_end_debug_utils_label(self.cmd);
+        }
+    }
+}
+
+pub type VulkanResult<T> = Result<T, vk::Result>;
+
+pub struct VulkanContext {
+    pub entry: ash::Entry,
+    pub instance: ash::Instance,
+
+    #[cfg(debug_assertions)]
+    pub debug_instance: ash::ext::debug_utils::Instance,
+    #[cfg(debug_assertions)]
+    pub debug_device: ash::ext::debug_utils::Device,
+    #[cfg(debug_assertions)]
+    pub debug_utils_messenger: vk::DebugUtilsMessengerEXT,
+
+    pub physical_device: vk::PhysicalDevice,
+    pub device: ash::Device,
+
+    pub graphics_queue: vk::Queue,
+    pub graphics_queue_index: u32,
+}
+
+impl Deref for VulkanContext {
+    type Target = ash::Device;
+
+    fn deref(&self) -> &Self::Target {
+        &self.device
+    }
+}
+
+impl VulkanContext {
+    fn new(display_handle: RawDisplayHandle) -> Option<Self> {
+        let entry = Entry::linked();
+        let instance = vk_init::create_instance(&entry, display_handle).ok()?;
+
+        #[cfg(debug_assertions)]
+        let debug_instance = debug_utils::Instance::new(&entry, &instance);
+        #[cfg(debug_assertions)]
+        let debug_utils_messenger = vk_init::create_debug_utils_messenger(&debug_instance);
+
+        let physical_device = vk_init::select_physical_device(&instance);
+
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+        let graphics_queue_index =
+            vk_init::get_graphics_queue_family_index(&queue_families).unwrap();
+        let device = vk_init::create_device(physical_device, &instance, graphics_queue_index);
+
+        let graphics_queue = unsafe {
+            device.get_device_queue2(
+                &vk::DeviceQueueInfo2::default()
+                    .queue_family_index(graphics_queue_index)
+                    .queue_index(0), // TODO: 0?
+            )
+        };
+
+        #[cfg(debug_assertions)]
+        let debug_device = debug_utils::Device::new(&instance, &device);
+
+        Some(Self {
+            entry,
+            instance,
+
+            #[cfg(debug_assertions)]
+            debug_instance,
+            #[cfg(debug_assertions)]
+            debug_device,
+            #[cfg(debug_assertions)]
+            debug_utils_messenger,
+
+            physical_device,
+            device,
+            graphics_queue,
+            graphics_queue_index,
+        })
+    }
+
+    pub fn create_debug_utils_label(
+        &'_ self,
+        cmd: vk::CommandBuffer,
+        label_name: &CStr,
+    ) -> DebugLabel<'_> {
+        DebugLabel::new(self, cmd, label_name)
+    }
+}
+
 pub struct VulkanEngine {
     frame_number: u64,
 
-    _entry: Entry,
-    instance: Instance,
-    debug_utils: debug_utils::Instance,
-    debug_device: debug_utils::Device,
-    debug_utils_messenger: vk::DebugUtilsMessengerEXT,
-    physical_device: vk::PhysicalDevice,
-    device: Device,
-    _graphics_queue_family_index: u32,
-    graphics_queue: vk::Queue,
+    ctx: VulkanContext,
 
     swapchain: Swapchain,
 
@@ -183,46 +300,28 @@ impl VulkanEngine {
         width: u32,
         height: u32,
     ) -> Self {
-        let entry = Entry::linked();
-        let instance = vk_init::create_instance(&entry, display_handle);
-        let debug_utils_instance = debug_utils::Instance::new(&entry, &instance);
-        let debug_utils_messenger = vk_init::create_debug_utils_messenger(&debug_utils_instance);
-        let physical_device = vk_init::select_physical_device(&instance);
+        let ctx = VulkanContext::new(display_handle).unwrap();
 
-        let queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
-        let graphics_queue_family_index =
-            vk_init::get_graphics_queue_family_index(&queue_families).unwrap();
-        let device =
-            vk_init::create_device(physical_device, &instance, graphics_queue_family_index);
-        let graphics_queue = unsafe {
-            device.get_device_queue2(
-                &vk::DeviceQueueInfo2::default()
-                    .queue_family_index(graphics_queue_family_index)
-                    .queue_index(0), // TODO: 0?
-            )
-        };
+        let surface_instance = surface::Instance::new(&ctx.entry, &ctx.instance);
+        let swapchain_device = swapchain::Device::new(&ctx.instance, &ctx.device);
 
-        let debug_device = debug_utils::Device::new(&instance, &device);
-
-        let surface_instance = surface::Instance::new(&entry, &instance);
-        let swapchain_device = swapchain::Device::new(&instance, &device);
-
-        let surface = vk_init::create_surface(&entry, &instance, display_handle, window_handle);
+        let surface = vk_init::create_surface(&ctx, display_handle, window_handle).unwrap();
 
         let swapchain = Swapchain::new(
             surface_instance,
             swapchain_device,
-            physical_device,
-            &device,
+            &ctx,
             surface,
             vk::Extent2D::default().width(width).height(height),
         );
 
-        let mut allocator =
-            vk_init::create_allocator(instance.clone(), device.clone(), physical_device);
+        let mut allocator = vk_init::create_allocator(&ctx);
 
-        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        // TODO: Move into context?
+        let properties = unsafe {
+            ctx.instance
+                .get_physical_device_properties(ctx.physical_device)
+        };
 
         // init descriptors
         let pool_ratios = vec![
@@ -244,7 +343,7 @@ impl VulkanEngine {
             },
         ];
 
-        let mut descriptor_allocator = DescriptorAllocatorGrowable::new(&device, 10, pool_ratios);
+        let mut descriptor_allocator = DescriptorAllocatorGrowable::new(&ctx, 10, pool_ratios);
 
         let sampler_nearest_create_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::NEAREST)
@@ -255,14 +354,12 @@ impl VulkanEngine {
             .min_filter(vk::Filter::LINEAR);
 
         let default_sampler_nearest = unsafe {
-            device
-                .create_sampler(&sampler_nearest_create_info, None)
+            ctx.create_sampler(&sampler_nearest_create_info, None)
                 .unwrap()
         };
 
         let default_sampler_linear = unsafe {
-            device
-                .create_sampler(&sampler_linear_create_info, None)
+            ctx.create_sampler(&sampler_linear_create_info, None)
                 .unwrap()
         };
 
@@ -277,44 +374,39 @@ impl VulkanEngine {
             .add_binding(3, vk::DescriptorType::STORAGE_BUFFER)
             .add_binding_indexed(4, 1024, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .build(
-                &device,
+                &ctx,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             );
 
-        let immediate_submit =
-            ImmediateSubmit::new(&device, graphics_queue, graphics_queue_family_index);
+        let immediate_submit = ImmediateSubmit::new(&ctx);
 
         let buffer_manager = BufferManager::new();
 
         let mesh_manager = MeshManager::new();
 
         let image_white = default_resources::image_white(
-            &device,
-            &debug_device,
+            &ctx,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
         );
 
         let image_black = default_resources::image_black(
-            &device,
-            &debug_device,
+            &ctx,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
         );
 
         let image_error = default_resources::image_error(
-            &device,
-            &debug_device,
+            &ctx,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
         );
 
         let image_normal = default_resources::image_normal(
-            &device,
-            &debug_device,
+            &ctx,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
@@ -323,15 +415,15 @@ impl VulkanEngine {
         let mut master_material_manager = MasterMaterialManager::new();
 
         let depth_pre_pass_shader =
-            shader_manager.get_graphics_shader_combined(&device, "depth_pre_pass");
+            shader_manager.get_graphics_shader_combined(&ctx, "depth_pre_pass");
         let geometry_pass_shader =
-            shader_manager.get_graphics_shader_combined(&device, "geometry_pass");
+            shader_manager.get_graphics_shader_combined(&ctx, "geometry_pass");
         let shadow_map_pass_shader =
-            shader_manager.get_graphics_shader_combined(&device, "shadow_map_pass");
-        let shader = shader_manager.get_graphics_shader_combined(&device, "forward_pass");
+            shader_manager.get_graphics_shader_combined(&ctx, "shadow_map_pass");
+        let shader = shader_manager.get_graphics_shader_combined(&ctx, "forward_pass");
 
         let depth_pre_pass_material = MasterMaterial::new_shadow_map(
-            &device,
+            &ctx,
             gpu_scene_data_descriptor_layout,
             double_buffer::DEPTH_FORMAT,
             MaterialPass::Opaque,
@@ -339,7 +431,7 @@ impl VulkanEngine {
         );
 
         let geometry_pass_material = MasterMaterial::new(
-            &device,
+            &ctx,
             gpu_scene_data_descriptor_layout,
             &[double_buffer::COLOR_FORMAT, double_buffer::NORMAL_FORMAT],
             double_buffer::DEPTH_FORMAT,
@@ -348,7 +440,7 @@ impl VulkanEngine {
         );
 
         let shadow_map_pass_material = MasterMaterial::new_shadow_map(
-            &device,
+            &ctx,
             gpu_scene_data_descriptor_layout,
             double_buffer::SHADOW_MAP_FORMAT,
             MaterialPass::Opaque,
@@ -356,7 +448,7 @@ impl VulkanEngine {
         );
 
         let default_transparent_material = MasterMaterial::new(
-            &device,
+            &ctx,
             gpu_scene_data_descriptor_layout,
             &[double_buffer::DRAW_FORMAT],
             double_buffer::DEPTH_FORMAT,
@@ -391,7 +483,7 @@ impl VulkanEngine {
             meshes: mesh_manager,
             master_materials: master_material_manager,
             material_instances: material_instance_manager,
-            material_datas: MaterialDataManager::new(&device, &mut allocator),
+            material_datas: MaterialDataManager::new(&ctx, &mut allocator),
         };
 
         let default_resources = DefaultResources {
@@ -412,7 +504,7 @@ impl VulkanEngine {
         const BUFFER_SIZE: usize = 258 * 1024 * 1024;
 
         let index_buffer = Buffer::new(
-            &device,
+            &ctx,
             &mut allocator,
             BUFFER_SIZE,
             vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
@@ -421,7 +513,7 @@ impl VulkanEngine {
         );
 
         let vertex_buffer = Buffer::new(
-            &device,
+            &ctx,
             &mut allocator,
             BUFFER_SIZE,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
@@ -432,10 +524,8 @@ impl VulkanEngine {
         let material_data_buffer = managed_resources.material_datas.get();
 
         let double_buffer = DoubleBuffer::new(
-            &device,
-            &debug_device,
+            &ctx,
             &mut allocator,
-            graphics_queue_family_index,
             width,
             height,
             properties.limits.timestamp_period,
@@ -454,15 +544,7 @@ impl VulkanEngine {
         Self {
             frame_number: 0,
 
-            _entry: entry,
-            instance,
-            debug_utils: debug_utils_instance,
-            debug_device,
-            debug_utils_messenger,
-            physical_device,
-            device,
-            _graphics_queue_family_index: graphics_queue_family_index,
-            graphics_queue,
+            ctx,
 
             swapchain,
             double_buffer,
@@ -501,7 +583,7 @@ impl VulkanEngine {
         unsafe {
             let query_results = self
                 .double_buffer
-                .swap_buffer(&self.device, &mut self.allocator);
+                .swap_buffer(&self.ctx, &mut self.allocator);
 
             gpu_stats.draw_time = query_results.draw_time;
 
@@ -546,7 +628,7 @@ impl VulkanEngine {
                     .height(draw_height as u32),
             );
 
-            self.device
+            self.ctx
                 .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
                 .expect("Failed to reset command buffer");
 
@@ -555,11 +637,11 @@ impl VulkanEngine {
 
             // Begin command buffer
 
-            self.device
+            self.ctx
                 .begin_command_buffer(cmd, &cmd_begin_info)
                 .expect("Failed to begin command buffer");
 
-            self.device.cmd_write_timestamp(
+            self.ctx.cmd_write_timestamp(
                 cmd,
                 vk::PipelineStageFlags::BOTTOM_OF_PIPE,
                 query_pool,
@@ -580,12 +662,8 @@ impl VulkanEngine {
                 height,
             ));
 
-            let mut write_data =
-                self.double_buffer
-                    .upload_buffers(&self.device, &self.debug_device, cmd);
-            self.managed_resources
-                .material_datas
-                .upload(&self.device, &self.debug_device, cmd);
+            let mut write_data = self.double_buffer.upload_buffers(&self.ctx, cmd);
+            self.managed_resources.material_datas.upload(&self.ctx, cmd);
 
             let indexed_indirect_data = IndexedIndirectData::prepare(
                 &opaque_commands,
@@ -602,8 +680,7 @@ impl VulkanEngine {
                 .get(self.default_resources.depth_pre_pass_material);
 
             let depth_pre_pass_output = depth_pre_pass::record(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 render_area,
                 depth_src,
@@ -614,8 +691,7 @@ impl VulkanEngine {
             );
 
             let geometry_pass_output = geometry_pass::record(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 render_area,
                 color_src,
@@ -632,8 +708,7 @@ impl VulkanEngine {
                 .get(self.default_resources.shadow_map_pass_material);
 
             let shadow_map_pass_output = shadow_map_pass::record(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 shadow_map_src,
                 shadow_pass_master_material,
@@ -643,8 +718,7 @@ impl VulkanEngine {
             );
 
             let lightning_pass_output = lightning_pass::record(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 render_area,
                 draw_src,
@@ -657,8 +731,7 @@ impl VulkanEngine {
             );
 
             let draw_image_state = forward_pass::record(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 render_area,
                 lightning_pass_output.draw,
@@ -669,8 +742,7 @@ impl VulkanEngine {
             );
 
             let fxaa_pass_output = fxaa_pass::record(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 render_area,
                 draw_image_state,
@@ -681,8 +753,7 @@ impl VulkanEngine {
 
             // TODO: Part of FXAAPass?
             vk_util::transition_image(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 fxaa_pass_output.fxaa.image,
                 fxaa_pass_output.fxaa.layout,
@@ -692,12 +763,10 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::TRANSFER,
                 vk::AccessFlags2::TRANSFER_READ,
                 vk::ImageAspectFlags::COLOR,
-                c"FXAAPass::?",
             );
 
             vk_util::transition_image(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 acquired_swapchain.image,
                 vk::ImageLayout::UNDEFINED,
@@ -707,11 +776,10 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::TRANSFER | vk::PipelineStageFlags2::BLIT,
                 vk::AccessFlags2::TRANSFER_WRITE,
                 vk::ImageAspectFlags::COLOR,
-                c"FXAAPass::2?",
             );
 
             vk_util::blit_image(
-                &self.device,
+                &self.ctx,
                 cmd,
                 fxaa_pass_output.fxaa.image,
                 acquired_swapchain.image,
@@ -720,8 +788,7 @@ impl VulkanEngine {
             );
 
             vk_util::transition_image(
-                &self.device,
-                &self.debug_device,
+                &self.ctx,
                 cmd,
                 acquired_swapchain.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -731,17 +798,16 @@ impl VulkanEngine {
                 vk::PipelineStageFlags2::NONE,
                 vk::AccessFlags2::NONE,
                 vk::ImageAspectFlags::COLOR,
-                c"Invalid",
             );
 
-            self.device.cmd_write_timestamp(
+            self.ctx.cmd_write_timestamp(
                 cmd,
                 vk::PipelineStageFlags::BOTTOM_OF_PIPE,
                 query_pool,
                 1,
             );
 
-            self.device
+            self.ctx
                 .end_command_buffer(cmd)
                 .expect("Failed to end command buffer");
 
@@ -768,9 +834,9 @@ impl VulkanEngine {
                 .signal_semaphore_infos(&signal_infos)
                 .command_buffer_infos(&cmd_infos);
 
-            self.device
+            self.ctx
                 .queue_submit2(
-                    self.graphics_queue,
+                    self.ctx.graphics_queue,
                     &[submit_info],
                     synchronization_resources.fence,
                 )
@@ -778,7 +844,7 @@ impl VulkanEngine {
 
             self.swapchain.queue_present(
                 acquired_swapchain.index,
-                self.graphics_queue,
+                self.ctx.graphics_queue,
                 acquired_swapchain.semaphore,
             )?;
 
@@ -840,8 +906,7 @@ impl VulkanEngine {
     }
 
     pub fn recreate_swapchain(&mut self, width: u32, height: u32) {
-        self.swapchain
-            .recreate_swapchain(&self.device, self.physical_device, width, height);
+        self.swapchain.recreate_swapchain(&self.ctx, width, height);
     }
 
     pub fn upload_image<T>(
@@ -856,8 +921,7 @@ impl VulkanEngine {
         name: &str,
     ) -> ImageIndex {
         let image = Image::with_data(
-            &self.device,
-            &self.debug_device,
+            &self.ctx,
             &mut self.allocator,
             &self.immediate_submit,
             extent,
@@ -880,7 +944,7 @@ impl VulkanEngine {
         // TODO: Allocation separate?
 
         let mut staging = Buffer::new(
-            &self.device,
+            &self.ctx,
             &mut self.allocator,
             index_buffer_size + vertex_buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
@@ -895,17 +959,13 @@ impl VulkanEngine {
             index_buffer_size,
         );
 
-        self.immediate_submit.submit(&self.device, |cmd| {
+        self.immediate_submit.submit(&self.ctx, |cmd| {
             let index_regions = [vk::BufferCopy::default().size(index_buffer_size as u64)];
 
             unsafe {
                 let index_buffer = &self.managed_resources.buffers.get(self.index_buffer);
-                self.device.cmd_copy_buffer(
-                    cmd,
-                    staging.buffer,
-                    index_buffer.buffer,
-                    &index_regions,
-                );
+                self.ctx
+                    .cmd_copy_buffer(cmd, staging.buffer, index_buffer.buffer, &index_regions);
             };
 
             let vertex_regions: [vk::BufferCopy; 1] = [vk::BufferCopy::default()
@@ -915,7 +975,7 @@ impl VulkanEngine {
             unsafe {
                 let vertex_buffer = &self.managed_resources.buffers.get(self.vertex_buffer);
 
-                self.device.cmd_copy_buffer(
+                self.ctx.cmd_copy_buffer(
                     cmd,
                     staging.buffer,
                     vertex_buffer.buffer,
@@ -924,12 +984,12 @@ impl VulkanEngine {
             }
         });
 
-        staging.destroy(&self.device, &mut self.allocator);
+        staging.destroy(&self.ctx, &mut self.allocator);
     }
 
     pub fn update_images(&mut self) {
         self.double_buffer.update_images(
-            &self.device,
+            &self.ctx,
             &self.default_resources,
             &self.managed_resources.images,
         );
@@ -938,50 +998,50 @@ impl VulkanEngine {
 
 impl Drop for VulkanEngine {
     fn drop(&mut self) {
-        unsafe { self.device.queue_wait_idle(self.graphics_queue).unwrap() };
-
-        let device = &self.device;
+        let ctx = &self.ctx;
         let allocator = &mut self.allocator;
 
-        self.double_buffer.destroy(device, allocator);
+        unsafe { ctx.queue_wait_idle(self.ctx.graphics_queue).unwrap() };
+
+        self.double_buffer.destroy(ctx, allocator);
 
         self.managed_resources
             .images
-            .remove(device, allocator, self.default_resources.image_white);
+            .remove(ctx, allocator, self.default_resources.image_white);
         self.managed_resources
             .images
-            .remove(device, allocator, self.default_resources.image_black);
+            .remove(ctx, allocator, self.default_resources.image_black);
         self.managed_resources
             .images
-            .remove(device, allocator, self.default_resources.image_error);
+            .remove(ctx, allocator, self.default_resources.image_error);
 
         // TODO: Shouldn't be needed if all resources are removed properly
-        self.managed_resources.images.destroy(device, allocator);
+        self.managed_resources.images.destroy(ctx, allocator);
 
-        self.managed_resources.buffers.destroy(device, allocator);
+        self.managed_resources.buffers.destroy(ctx, allocator);
 
         self.managed_resources
             .master_materials
-            .destroy(device, allocator);
+            .destroy(ctx, allocator);
 
         self.managed_resources
             .material_datas
-            .destroy(device, allocator);
+            .destroy(ctx, allocator);
         // ~Shouldn't be needed if all resources are removed properly
 
-        self.shader_manager.destroy(device);
+        self.shader_manager.destroy(ctx);
 
-        self.descriptor_allocator.destroy(device);
+        self.descriptor_allocator.destroy(ctx);
 
-        self.immediate_submit.destroy(device);
+        self.immediate_submit.destroy(ctx);
 
         unsafe {
-            device.destroy_descriptor_set_layout(self.gpu_scene_data_descriptor_layout, None);
+            ctx.destroy_descriptor_set_layout(self.gpu_scene_data_descriptor_layout, None);
         };
 
         unsafe {
-            device.destroy_sampler(self.default_resources.sampler_linear, None);
-            device.destroy_sampler(self.default_resources.sampler_nearest, None);
+            ctx.destroy_sampler(self.default_resources.sampler_linear, None);
+            ctx.destroy_sampler(self.default_resources.sampler_nearest, None);
         }
 
         dbg!(allocator.generate_report());
@@ -989,11 +1049,13 @@ impl Drop for VulkanEngine {
         unsafe { ManuallyDrop::drop(allocator) };
 
         unsafe {
-            self.swapchain.destroy(device);
-            device.destroy_device(None);
-            self.debug_utils
-                .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
-            self.instance.destroy_instance(None);
+            self.swapchain.destroy(ctx);
+            ctx.destroy_device(None);
+
+            // TODO: Context
+            ctx.debug_instance
+                .destroy_debug_utils_messenger(ctx.debug_utils_messenger, None);
+            ctx.instance.destroy_instance(None);
         };
     }
 }

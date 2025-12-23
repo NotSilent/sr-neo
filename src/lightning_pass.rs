@@ -1,6 +1,9 @@
-use ash::{Device, ext::debug_utils, vk};
+use ash::{Device, vk};
 
-use crate::{double_buffer::FullScreenPassData, renderpass_common::RenderpassImageState, vk_util};
+use crate::{
+    double_buffer::FullScreenPassData, renderpass_common::RenderpassImageState, vk_util,
+    vulkan_engine::VulkanContext,
+};
 
 pub struct LightningPassOutput {
     pub draw: RenderpassImageState,
@@ -14,8 +17,7 @@ pub struct LightningPassOutput {
 // they will be provided as an output.
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     draw_src: RenderpassImageState,
@@ -66,9 +68,10 @@ pub fn record(
         access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
     };
 
+    let _debug_label = ctx.create_debug_utils_label(cmd, c"Lightning Pass");
+
     begin(
-        device,
-        debug_device,
+        ctx,
         cmd,
         render_area,
         &draw_src,
@@ -83,9 +86,9 @@ pub fn record(
         &shadow_map_dst,
     );
 
-    draw(device, cmd, global_descriptor, lightning_pass_data);
+    draw(ctx, cmd, global_descriptor, lightning_pass_data);
 
-    end(device, cmd);
+    end(ctx, cmd);
 
     LightningPassOutput {
         draw: draw_dst,
@@ -95,8 +98,7 @@ pub fn record(
 
 #[allow(clippy::too_many_arguments)]
 fn begin(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     draw_src: &RenderpassImageState,
@@ -111,8 +113,7 @@ fn begin(
     shadow_map_dst: &RenderpassImageState,
 ) {
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         draw_src.image,
         draw_src.layout,
@@ -122,12 +123,10 @@ fn begin(
         draw_dst.stage_mask,
         draw_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        c"LightningPass::Draw",
     );
 
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         color_src.image,
         color_src.layout,
@@ -137,12 +136,10 @@ fn begin(
         color_dst.stage_mask,
         color_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        c"LightningPass::Color",
     );
 
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         normal_src.image,
         normal_src.layout,
@@ -152,12 +149,10 @@ fn begin(
         normal_dst.stage_mask,
         normal_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        c"LightningPass::Normal",
     );
 
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         depth_src.image,
         depth_src.layout,
@@ -167,12 +162,10 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        c"LightningPass::Depth",
     );
 
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         shadow_map_src.image,
         shadow_map_src.layout,
@@ -182,7 +175,6 @@ fn begin(
         shadow_map_dst.stage_mask,
         shadow_map_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        c"LightningPass::ShadowMap",
     );
 
     let clear_color = Some(vk::ClearValue {
@@ -213,23 +205,10 @@ fn begin(
     let scissors = [render_area];
 
     unsafe {
-        #[cfg(debug_assertions)]
-        {
-            use ash::vk::DebugUtilsLabelEXT;
+        ctx.cmd_begin_rendering(cmd, &rendering_info);
 
-            let label = DebugUtilsLabelEXT::default().label_name(c"BeginRendering::LightningPass");
-            debug_device.cmd_begin_debug_utils_label(cmd, &label);
-        }
-
-        device.cmd_begin_rendering(cmd, &rendering_info);
-
-        #[cfg(debug_assertions)]
-        {
-            debug_device.cmd_end_debug_utils_label(cmd);
-        }
-
-        device.cmd_set_viewport(cmd, 0, &viewports);
-        device.cmd_set_scissor(cmd, 0, &scissors);
+        ctx.cmd_set_viewport(cmd, 0, &viewports);
+        ctx.cmd_set_scissor(cmd, 0, &scissors);
     };
 }
 

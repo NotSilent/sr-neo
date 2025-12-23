@@ -1,6 +1,9 @@
-use ash::{Device, ext::debug_utils, vk};
+use ash::{Device, vk};
 
-use crate::{double_buffer::FullScreenPassData, renderpass_common::RenderpassImageState, vk_util};
+use crate::{
+    double_buffer::FullScreenPassData, renderpass_common::RenderpassImageState, vk_util,
+    vulkan_engine::VulkanContext,
+};
 
 pub struct FxaaPassOutput {
     pub fxaa: RenderpassImageState,
@@ -13,8 +16,7 @@ pub struct FxaaPassOutput {
 // they will be provided as an output.
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     color_src: RenderpassImageState,
@@ -39,9 +41,10 @@ pub fn record(
             | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE, // Read shouldn't be needef with load_op_dont_care
     };
 
+    let _debug_label = ctx.create_debug_utils_label(cmd, c"FXAA Pass");
+
     begin(
-        device,
-        debug_device,
+        ctx,
         cmd,
         render_area,
         &color_src,
@@ -50,17 +53,16 @@ pub fn record(
         &fxaa_dst,
     );
 
-    draw(device, cmd, global_descriptor, fxaa_pass_data);
+    draw(ctx, cmd, global_descriptor, fxaa_pass_data);
 
-    end(device, cmd);
+    end(ctx, cmd);
 
     FxaaPassOutput { fxaa: fxaa_dst }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn begin(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     color_src: &RenderpassImageState,
@@ -69,8 +71,7 @@ fn begin(
     fxaa_dst: &RenderpassImageState,
 ) {
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         color_src.image,
         color_src.layout,
@@ -80,12 +81,10 @@ fn begin(
         color_dst.stage_mask,
         color_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        c"FXAAPass::Color",
     );
 
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         fxaa_src.image,
         fxaa_src.layout,
@@ -95,7 +94,6 @@ fn begin(
         fxaa_dst.stage_mask,
         fxaa_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        c"FXAAPass::Fxaa",
     );
 
     let color_attachment = vk_util::attachment_info(
@@ -120,23 +118,10 @@ fn begin(
     let scissors = [render_area];
 
     unsafe {
-        #[cfg(debug_assertions)]
-        {
-            use ash::vk::DebugUtilsLabelEXT;
+        ctx.cmd_begin_rendering(cmd, &rendering_info);
 
-            let label = DebugUtilsLabelEXT::default().label_name(c"BeginRendering::FXAAPass");
-            debug_device.cmd_begin_debug_utils_label(cmd, &label);
-        }
-
-        device.cmd_begin_rendering(cmd, &rendering_info);
-
-        #[cfg(debug_assertions)]
-        {
-            debug_device.cmd_end_debug_utils_label(cmd);
-        }
-
-        device.cmd_set_viewport(cmd, 0, &viewports);
-        device.cmd_set_scissor(cmd, 0, &scissors);
+        ctx.cmd_set_viewport(cmd, 0, &viewports);
+        ctx.cmd_set_scissor(cmd, 0, &scissors);
     };
 }
 

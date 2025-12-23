@@ -1,6 +1,8 @@
 use std::ffi::CStr;
 
-use ash::{Device, ext::debug_utils, vk};
+use ash::{Device, vk};
+
+use crate::vulkan_engine::VulkanContext;
 
 struct DescriptorBufferInfo {
     binding: u32,
@@ -116,8 +118,8 @@ pub struct DescriptorAllocatorGrowable {
     sets_per_pool: u32,
 }
 impl DescriptorAllocatorGrowable {
-    pub fn new(device: &Device, max_sets: u32, pool_ratios: Vec<PoolSizeRatio>) -> Self {
-        let new_pool = Self::create_pool(device, max_sets, &pool_ratios);
+    pub fn new(ctx: &VulkanContext, max_sets: u32, pool_ratios: Vec<PoolSizeRatio>) -> Self {
+        let new_pool = Self::create_pool(ctx, max_sets, &pool_ratios);
 
         Self {
             ratios: pool_ratios,
@@ -165,13 +167,12 @@ impl DescriptorAllocatorGrowable {
 
     pub fn allocate(
         &mut self,
-        device: &Device,
-        debug_device: &debug_utils::Device,
+        ctx: &VulkanContext,
         layout: vk::DescriptorSetLayout,
         indexed: bool, // TODO: Hack to bind images for now
         debug_cmd_label: &CStr,
     ) -> vk::DescriptorSet {
-        let pool = self.get_pool(device);
+        let pool = self.get_pool(ctx);
 
         let layouts = [layout];
         let mut alloc_info = vk::DescriptorSetAllocateInfo::default()
@@ -185,7 +186,7 @@ impl DescriptorAllocatorGrowable {
             alloc_info = alloc_info.push_next(&mut count);
         }
 
-        let descriptor_set = match unsafe { device.allocate_descriptor_sets(&alloc_info) } {
+        let descriptor_set = match unsafe { ctx.allocate_descriptor_sets(&alloc_info) } {
             Ok(set) => {
                 self.ready_pools.push(pool);
                 *set.first().unwrap()
@@ -196,14 +197,13 @@ impl DescriptorAllocatorGrowable {
                 {
                     self.full_pools.push(pool);
 
-                    let pool = self.get_pool(device);
+                    let pool = self.get_pool(ctx);
                     self.ready_pools.push(pool);
 
                     alloc_info.descriptor_pool = pool;
 
                     unsafe {
-                        *device
-                            .allocate_descriptor_sets(&alloc_info)
+                        *ctx.allocate_descriptor_sets(&alloc_info)
                             .unwrap()
                             .first()
                             .unwrap()
@@ -219,7 +219,7 @@ impl DescriptorAllocatorGrowable {
             .object_name(debug_cmd_label);
 
         unsafe {
-            debug_device
+            ctx.debug_device
                 .set_debug_utils_object_name(&name_info)
                 .unwrap();
         }
@@ -227,18 +227,18 @@ impl DescriptorAllocatorGrowable {
         descriptor_set
     }
 
-    fn get_pool(&mut self, device: &Device) -> vk::DescriptorPool {
+    fn get_pool(&mut self, ctx: &VulkanContext) -> vk::DescriptorPool {
         if let Some(pool) = self.ready_pools.pop() {
             return pool;
         }
 
         self.sets_per_pool = (self.sets_per_pool * 2).min(4092);
 
-        Self::create_pool(device, self.sets_per_pool, &self.ratios)
+        Self::create_pool(ctx, self.sets_per_pool, &self.ratios)
     }
 
     fn create_pool(
-        device: &Device,
+        ctx: &VulkanContext,
         set_count: u32,
         pool_ratios: &[PoolSizeRatio],
     ) -> vk::DescriptorPool {
@@ -256,7 +256,7 @@ impl DescriptorAllocatorGrowable {
             .max_sets(set_count)
             .pool_sizes(&pool_sizes);
 
-        unsafe { device.create_descriptor_pool(&create_info, None).unwrap() }
+        unsafe { ctx.create_descriptor_pool(&create_info, None).unwrap() }
     }
 }
 

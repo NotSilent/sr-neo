@@ -1,9 +1,10 @@
-use ash::{Device, ext::debug_utils, vk};
+use ash::{Device, vk};
 
 use crate::{
     draw::{DrawCommand, IndexedIndirectRecord},
     renderpass_common::RenderpassImageState,
     vk_util,
+    vulkan_engine::VulkanContext,
 };
 
 // TODO:
@@ -13,8 +14,7 @@ use crate::{
 // they will be provided as an output.
 #[allow(clippy::needless_pass_by_value)]
 pub fn record(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     draw_src: RenderpassImageState,
@@ -40,9 +40,10 @@ pub fn record(
             | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
     };
 
+    let _debug_label = ctx.create_debug_utils_label(cmd, c"Forward Pass");
+
     begin(
-        device,
-        debug_device,
+        ctx,
         cmd,
         render_area,
         &draw_src,
@@ -51,16 +52,15 @@ pub fn record(
         &depth_dst,
     );
 
-    draw(device, cmd, global_descriptor, index_buffer, records);
+    draw(ctx, cmd, global_descriptor, index_buffer, records);
 
-    end(device, cmd);
+    end(ctx, cmd);
 
     draw_dst
 }
 
 fn begin(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     render_area: vk::Rect2D,
     draw_src: &RenderpassImageState,
@@ -69,8 +69,7 @@ fn begin(
     depth_dst: &RenderpassImageState,
 ) {
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         draw_src.image,
         draw_src.layout,
@@ -80,12 +79,10 @@ fn begin(
         draw_dst.stage_mask,
         draw_dst.access_mask,
         vk::ImageAspectFlags::COLOR,
-        c"ForwardPass::Draw",
     );
 
     vk_util::transition_image(
-        device,
-        debug_device,
+        ctx,
         cmd,
         depth_src.image,
         depth_src.layout,
@@ -95,7 +92,6 @@ fn begin(
         depth_dst.stage_mask,
         depth_dst.access_mask,
         vk::ImageAspectFlags::DEPTH,
-        c"ForwardPass::Depth",
     );
 
     let color_attachment = [vk_util::attachment_info(
@@ -120,23 +116,10 @@ fn begin(
     let scissors = [render_area];
 
     unsafe {
-        #[cfg(debug_assertions)]
-        {
-            use ash::vk::DebugUtilsLabelEXT;
+        ctx.cmd_begin_rendering(cmd, &rendering_info);
 
-            let label = DebugUtilsLabelEXT::default().label_name(c"BeginRendering::LightningPass");
-            debug_device.cmd_begin_debug_utils_label(cmd, &label);
-        }
-
-        device.cmd_begin_rendering(cmd, &rendering_info);
-
-        #[cfg(debug_assertions)]
-        {
-            debug_device.cmd_end_debug_utils_label(cmd);
-        }
-
-        device.cmd_set_viewport(cmd, 0, &viewports);
-        device.cmd_set_scissor(cmd, 0, &scissors);
+        ctx.cmd_set_viewport(cmd, 0, &viewports);
+        ctx.cmd_set_scissor(cmd, 0, &scissors);
     };
 }
 

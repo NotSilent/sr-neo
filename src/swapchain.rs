@@ -5,7 +5,7 @@ use ash::{
 };
 use thiserror::Error;
 
-use crate::vk_util;
+use crate::{vk_util, vulkan_engine::VulkanContext};
 
 #[derive(Error, Debug)]
 pub enum SwapchainError {
@@ -37,21 +37,21 @@ pub struct Swapchain {
 // TODO: Part of DoubleBuffer?
 impl Swapchain {
     pub fn new(
+        // TODO: Order
         surface_instance: surface::Instance,
         swapchain_device: swapchain::Device,
-        physical_device: vk::PhysicalDevice,
-        device: &Device,
+        ctx: &VulkanContext,
         surface: vk::SurfaceKHR,
         extent: vk::Extent2D,
     ) -> Self {
         let surface_format = unsafe {
             surface_instance
-                .get_physical_device_surface_formats(physical_device, surface)
+                .get_physical_device_surface_formats(ctx.physical_device, surface)
                 .unwrap()[0]
         };
 
         let surface_capabilities = unsafe {
-            surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
+            surface_instance.get_physical_device_surface_capabilities(ctx.physical_device, surface)
         }
         .unwrap();
 
@@ -68,7 +68,7 @@ impl Swapchain {
 
         let mut semaphores = vec![];
         for _index in 0..images.len() {
-            semaphores.push(vk_util::create_semaphore(device));
+            semaphores.push(vk_util::create_semaphore(ctx));
         }
 
         Self {
@@ -95,22 +95,16 @@ impl Swapchain {
         }
     }
 
-    pub fn recreate_swapchain(
-        &mut self,
-        device: &Device,
-        physical_device: vk::PhysicalDevice,
-        width: u32,
-        height: u32,
-    ) {
+    pub fn recreate_swapchain(&mut self, ctx: &VulkanContext, width: u32, height: u32) {
         unsafe {
-            device.device_wait_idle().unwrap();
+            ctx.device_wait_idle().unwrap();
 
             self.swapchain_device
                 .destroy_swapchain(self.swapchain, None);
 
             let surface_capabilities = self
                 .surface_instance
-                .get_physical_device_surface_capabilities(physical_device, self.surface)
+                .get_physical_device_surface_capabilities(ctx.physical_device, self.surface)
                 .unwrap();
 
             self.extent = vk::Extent2D::default().width(width).height(height);

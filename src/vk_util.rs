@@ -1,11 +1,10 @@
-use std::ffi::CStr;
-
 use ash::{
     Device,
-    ext::debug_utils,
     vk::{self},
 };
 use gpu_allocator::vulkan::Allocation;
+
+use crate::vulkan_engine::VulkanContext;
 
 pub fn _extent_2d_from_3d(extent: &vk::Extent3D) -> vk::Extent2D {
     vk::Extent2D::default()
@@ -13,39 +12,36 @@ pub fn _extent_2d_from_3d(extent: &vk::Extent3D) -> vk::Extent2D {
         .height(extent.height)
 }
 
-pub fn create_fence(device: &Device, flags: vk::FenceCreateFlags) -> vk::Fence {
+pub fn create_fence(ctx: &VulkanContext, flags: vk::FenceCreateFlags) -> vk::Fence {
     let create_info = vk::FenceCreateInfo::default().flags(flags);
 
     unsafe {
-        device
-            .create_fence(&create_info, None)
+        ctx.create_fence(&create_info, None)
             .expect("Failed to create Fence")
     }
 }
 
-pub fn create_semaphore(device: &Device) -> vk::Semaphore {
+pub fn create_semaphore(ctx: &VulkanContext) -> vk::Semaphore {
     let create_info = vk::SemaphoreCreateInfo::default();
 
     unsafe {
-        device
-            .create_semaphore(&create_info, None)
+        ctx.create_semaphore(&create_info, None)
             .expect("Failed to create Semaphore")
     }
 }
 
-pub fn create_command_pool(device: &Device, graphics_queue_family_index: u32) -> vk::CommandPool {
+pub fn create_command_pool(ctx: &VulkanContext) -> vk::CommandPool {
     let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-        .queue_family_index(graphics_queue_family_index)
+        .queue_family_index(ctx.graphics_queue_index)
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
     unsafe {
-        device
-            .create_command_pool(&command_pool_create_info, None)
+        ctx.create_command_pool(&command_pool_create_info, None)
             .unwrap()
     }
 }
 
 pub fn allocate_command_buffer(
-    device: &Device,
+    ctx: &VulkanContext,
     command_pool: vk::CommandPool,
 ) -> vk::CommandBuffer {
     let allocate_info = vk::CommandBufferAllocateInfo::default()
@@ -54,16 +50,14 @@ pub fn allocate_command_buffer(
         .level(vk::CommandBufferLevel::PRIMARY);
 
     unsafe {
-        device
-            .allocate_command_buffers(&allocate_info)
+        ctx.allocate_command_buffers(&allocate_info)
             .expect("Failed to allocate command buffer")[0] // TODO: Safe
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn transition_image(
-    device: &Device,
-    debug_device: &debug_utils::Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     image: vk::Image,
     src_layout: vk::ImageLayout,
@@ -73,7 +67,6 @@ pub fn transition_image(
     dst_stage_mask: vk::PipelineStageFlags2,
     dst_access_mask: vk::AccessFlags2,
     aspect_mask: vk::ImageAspectFlags,
-    debug_cmd_label: &CStr,
 ) {
     let image_barrier = vk::ImageMemoryBarrier2::default()
         .src_stage_mask(src_stage_mask)
@@ -92,18 +85,7 @@ pub fn transition_image(
     let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&binding);
 
     unsafe {
-        #[cfg(debug_assertions)]
-        {
-            use ash::vk::DebugUtilsLabelEXT;
-
-            let label = DebugUtilsLabelEXT::default().label_name(debug_cmd_label);
-            debug_device.cmd_begin_debug_utils_label(cmd, &label);
-        }
-
-        device.cmd_pipeline_barrier2(cmd, &dependency_info);
-
-        #[cfg(debug_assertions)]
-        debug_device.cmd_end_debug_utils_label(cmd);
+        ctx.cmd_pipeline_barrier2(cmd, &dependency_info);
     }
 }
 

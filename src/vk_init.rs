@@ -10,6 +10,8 @@ use gpu_allocator::{
 };
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
+use crate::vulkan_engine::{VulkanContext, VulkanResult};
+
 unsafe extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,
@@ -61,7 +63,10 @@ unsafe extern "system" fn vulkan_debug_callback(
     vk::FALSE
 }
 
-pub fn create_instance(entry: &Entry, display_handle: RawDisplayHandle) -> Instance {
+pub fn create_instance(
+    entry: &Entry,
+    display_handle: RawDisplayHandle,
+) -> VulkanResult<ash::Instance> {
     unsafe {
         let appinfo = vk::ApplicationInfo::default()
             .application_name(c"FutureAppName")
@@ -88,9 +93,7 @@ pub fn create_instance(entry: &Entry, display_handle: RawDisplayHandle) -> Insta
             .enabled_extension_names(&extension_names)
             .flags(vk::InstanceCreateFlags::default());
 
-        entry
-            .create_instance(&create_info, None)
-            .expect("Instance creation failed")
+        entry.create_instance(&create_info, None)
     }
 }
 
@@ -188,25 +191,26 @@ pub fn create_device(
 }
 
 pub fn create_surface(
-    entry: &Entry,
-    instance: &Instance,
+    ctx: &VulkanContext,
     display_handle: RawDisplayHandle,
     window_handle: RawWindowHandle,
-) -> vk::SurfaceKHR {
+) -> Result<vk::SurfaceKHR, vk::Result> {
     unsafe {
-        ash_window::create_surface(entry, instance, display_handle, window_handle, None).unwrap()
+        ash_window::create_surface(
+            &ctx.entry,
+            &ctx.instance,
+            display_handle,
+            window_handle,
+            None,
+        )
     }
 }
 
-pub fn create_allocator(
-    instance: Instance,
-    device: Device,
-    physical_device: vk::PhysicalDevice,
-) -> Allocator {
+pub fn create_allocator(ctx: &VulkanContext) -> Allocator {
     Allocator::new(&AllocatorCreateDesc {
-        instance,
-        device,
-        physical_device,
+        instance: ctx.instance.clone(),
+        device: ctx.device.clone(),
+        physical_device: ctx.physical_device,
         debug_settings: AllocatorDebugSettings {
             log_memory_information: false,
             log_leaks_on_shutdown: true,

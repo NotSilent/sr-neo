@@ -1,6 +1,5 @@
 use ash::{
     Device,
-    ext::debug_utils,
     vk::{self},
 };
 use gpu_allocator::vulkan::Allocator;
@@ -17,7 +16,7 @@ use crate::{
     resource_manager::VulkanResource,
     shader_manager::ShaderManager,
     vk_util,
-    vulkan_engine::{DefaultResources, SceneData},
+    vulkan_engine::{DefaultResources, SceneData, VulkanContext},
 };
 
 pub struct FullScreenPassDescription {
@@ -220,10 +219,8 @@ impl FrameBuffer {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
     fn new(
-        device: &Device,
-        debug_device: &debug_utils::Device,
+        ctx: &VulkanContext,
         allocator: &mut Allocator,
-        graphics_queue_family_index: u32,
         width: u32,
         height: u32,
         timestamp_period: f32,
@@ -236,25 +233,23 @@ impl FrameBuffer {
         material_data_buffer: &Buffer,
         image_manager: &ImageManager,
     ) -> Self {
-        let targets = FrameBufferTargets::new(device, allocator, width, height);
+        let targets = FrameBufferTargets::new(ctx, allocator, width, height);
 
-        let command_pool = vk_util::create_command_pool(device, graphics_queue_family_index);
+        let command_pool = vk_util::create_command_pool(ctx);
 
         let query_pool_create_info = vk::QueryPoolCreateInfo::default()
             .query_type(vk::QueryType::TIMESTAMP)
             .query_count(2);
 
         let query_pool = unsafe {
-            device
-                .create_query_pool(&query_pool_create_info, None)
+            ctx.create_query_pool(&query_pool_create_info, None)
                 .unwrap()
         };
 
-        unsafe { device.reset_query_pool(query_pool, 0, 2) };
+        unsafe { ctx.reset_query_pool(query_pool, 0, 2) };
 
         let lightning_descriptor_set = Self::create_lightning_descriptor_set(
-            device,
-            debug_device,
+            ctx,
             global_descriptor_allocator,
             lightning_descriptor_layout,
             default_sampler_linear,
@@ -262,8 +257,7 @@ impl FrameBuffer {
         );
 
         let fxaa_descriptor_set = Self::create_fxaa_descriptor_set(
-            device,
-            debug_device,
+            ctx,
             global_descriptor_allocator,
             fxaa_descriptor_layout,
             default_sampler_linear,
@@ -273,7 +267,7 @@ impl FrameBuffer {
         let globals_alloc_size = size_of::<SceneData>();
 
         let globals_host_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             globals_alloc_size,
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
@@ -282,7 +276,7 @@ impl FrameBuffer {
         );
 
         let globals_device_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             globals_alloc_size,
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
@@ -293,7 +287,7 @@ impl FrameBuffer {
         let uniform_alloc_size = size_of::<UniformData>() * FRAME_BUFFER_ELEMENTS;
 
         let uniform_host_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             uniform_alloc_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
@@ -302,7 +296,7 @@ impl FrameBuffer {
         );
 
         let uniform_device_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             uniform_alloc_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
@@ -313,7 +307,7 @@ impl FrameBuffer {
         let draw_alloc_size = size_of::<vk::DrawIndexedIndirectCommand>() * FRAME_BUFFER_ELEMENTS;
 
         let draw_host_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             draw_alloc_size,
             vk::BufferUsageFlags::UNIFORM_BUFFER
@@ -324,7 +318,7 @@ impl FrameBuffer {
         );
 
         let draw_device_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             draw_alloc_size,
             vk::BufferUsageFlags::UNIFORM_BUFFER
@@ -336,8 +330,7 @@ impl FrameBuffer {
         );
 
         let globals_descriptor_set = global_descriptor_allocator.allocate(
-            device,
-            debug_device,
+            ctx,
             globals_descriptor_set_layout,
             true,
             c"globals_descriptor_set",
@@ -389,19 +382,19 @@ impl FrameBuffer {
             );
         }
 
-        writer.update_set(device, globals_descriptor_set);
+        writer.update_set(ctx, globals_descriptor_set);
 
         Self {
             targets,
             command_pool,
-            command_buffer: vk_util::allocate_command_buffer(device, command_pool),
+            command_buffer: vk_util::allocate_command_buffer(ctx, command_pool),
             synchronization_resources: FrameBufferSynchronizationResources {
-                swapchain_semaphore: vk_util::create_semaphore(device),
-                fence: vk_util::create_fence(device, vk::FenceCreateFlags::SIGNALED),
+                swapchain_semaphore: vk_util::create_semaphore(ctx),
+                fence: vk_util::create_fence(ctx, vk::FenceCreateFlags::SIGNALED),
             },
             buffer_manager: BufferManager::new(),
             descriptors: DescriptorAllocatorGrowable::new(
-                device,
+                ctx,
                 1024,
                 Self::create_default_pool_size_ratios(),
             ),
@@ -422,7 +415,7 @@ impl FrameBuffer {
     // TODO: ImageManager?
     fn update_images(
         &mut self,
-        device: &Device,
+        ctx: &VulkanContext,
         default_resources: &DefaultResources,
         image_manager: &ImageManager,
     ) {
@@ -439,7 +432,7 @@ impl FrameBuffer {
             );
         }
 
-        writer.update_set(device, self.globals_descriptor_set);
+        writer.update_set(ctx, self.globals_descriptor_set);
     }
 
     fn reset(&mut self, device: &Device, allocator: &mut Allocator) -> QueryResults {
@@ -495,8 +488,7 @@ impl FrameBuffer {
     // TODO: Don't upload whole buffers, just the data that will be actually used
     fn upload_buffers<'a>(
         &'a mut self,
-        device: &Device,
-        debug_device: &debug_utils::Device,
+        ctx: &VulkanContext,
         cmd: vk::CommandBuffer,
     ) -> FrameBufferWriteData<'a> {
         let globals_regions = [vk::BufferCopy::default()
@@ -504,7 +496,7 @@ impl FrameBuffer {
             .size(size_of::<SceneData>() as u64)];
 
         unsafe {
-            device.cmd_copy_buffer(
+            ctx.cmd_copy_buffer(
                 cmd,
                 self.globals_host_buffer.buffer,
                 self.globals_device_buffer.buffer,
@@ -517,7 +509,7 @@ impl FrameBuffer {
             .size((size_of::<UniformData>() * FRAME_BUFFER_ELEMENTS) as u64)];
 
         unsafe {
-            device.cmd_copy_buffer(
+            ctx.cmd_copy_buffer(
                 cmd,
                 self.uniform_host_buffer.buffer,
                 self.uniform_device_buffer.buffer,
@@ -530,7 +522,7 @@ impl FrameBuffer {
         )];
 
         unsafe {
-            device.cmd_copy_buffer(
+            ctx.cmd_copy_buffer(
                 cmd,
                 self.draw_host_buffer.buffer,
                 self.draw_device_buffer.buffer,
@@ -575,17 +567,7 @@ impl FrameBuffer {
             vk::DependencyInfo::default().buffer_memory_barriers(&buffer_barriers);
 
         unsafe {
-            #[cfg(debug_assertions)]
-            {
-                use ash::vk::DebugUtilsLabelEXT;
-
-                let label = DebugUtilsLabelEXT::default().label_name(c"This one?");
-                debug_device.cmd_begin_debug_utils_label(cmd, &label);
-            }
-            device.cmd_pipeline_barrier2(cmd, &dependency_info);
-
-            #[cfg(debug_assertions)]
-            debug_device.cmd_end_debug_utils_label(cmd);
+            ctx.cmd_pipeline_barrier2(cmd, &dependency_info);
         }
 
         let uniform_memory = self
@@ -617,16 +599,14 @@ impl FrameBuffer {
     }
 
     fn create_lightning_descriptor_set(
-        device: &Device,
-        debug_device: &debug_utils::Device,
+        ctx: &VulkanContext,
         global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
         lightning_descriptor_layout: vk::DescriptorSetLayout,
         default_sampler_linear: vk::Sampler,
         targets: &FrameBufferTargets,
     ) -> vk::DescriptorSet {
         let lightning_descriptor_set = global_descriptor_allocator.allocate(
-            device,
-            debug_device,
+            ctx,
             lightning_descriptor_layout,
             false,
             c"lightning_descriptor_set",
@@ -679,7 +659,7 @@ impl FrameBuffer {
 
         unsafe {
             // TODO: Combine writes?
-            device.update_descriptor_sets(
+            ctx.update_descriptor_sets(
                 &[write_color, write_normal, write_depth, write_shadow_map],
                 &[],
             );
@@ -688,16 +668,14 @@ impl FrameBuffer {
     }
 
     fn create_fxaa_descriptor_set(
-        device: &Device,
-        debug_device: &debug_utils::Device,
+        ctx: &VulkanContext,
         global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
         fxaa_descriptor_layout: vk::DescriptorSetLayout,
         default_sampler_linear: vk::Sampler,
         targets: &FrameBufferTargets,
     ) -> vk::DescriptorSet {
         let fxaa_descriptor_set = global_descriptor_allocator.allocate(
-            device,
-            debug_device,
+            ctx,
             fxaa_descriptor_layout,
             false,
             c"globals_descriptor_set",
@@ -716,7 +694,7 @@ impl FrameBuffer {
 
         unsafe {
             // TODO: Combine writes?
-            device.update_descriptor_sets(&[write_color], &[]);
+            ctx.update_descriptor_sets(&[write_color], &[]);
         }
         fxaa_descriptor_set
     }
@@ -762,10 +740,8 @@ pub struct DoubleBuffer {
 impl DoubleBuffer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        device: &Device,
-        debug_device: &debug_utils::Device,
+        ctx: &VulkanContext,
         allocator: &mut Allocator,
-        graphics_queue_family_index: u32,
         width: u32,
         height: u32,
         timestamp_period: f32,
@@ -778,25 +754,20 @@ impl DoubleBuffer {
         image_manager: &ImageManager,
     ) -> Self {
         let lightning_pass_description = Self::create_lightning_pass_description(
-            device,
+            ctx,
             globals_descriptor_set_layout,
             shader_manager,
         );
 
-        let fxaa_pass_description = Self::create_fxaa_pass_description(
-            device,
-            globals_descriptor_set_layout,
-            shader_manager,
-        );
+        let fxaa_pass_description =
+            Self::create_fxaa_pass_description(ctx, globals_descriptor_set_layout, shader_manager);
 
         Self {
             current_frame: 0,
             frame_buffers: [
                 FrameBuffer::new(
-                    device,
-                    debug_device,
+                    ctx,
                     allocator,
-                    graphics_queue_family_index,
                     width,
                     height,
                     timestamp_period,
@@ -810,10 +781,8 @@ impl DoubleBuffer {
                     image_manager,
                 ),
                 FrameBuffer::new(
-                    device,
-                    debug_device,
+                    ctx,
                     allocator,
-                    graphics_queue_family_index,
                     width,
                     height,
                     timestamp_period,
@@ -832,58 +801,55 @@ impl DoubleBuffer {
         }
     }
 
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+    pub fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
         for buffer in &mut self.frame_buffers {
-            buffer.destroy(device, allocator);
+            buffer.destroy(ctx, allocator);
         }
 
-        self.lightning_pass_description.destroy(device);
-        self.fxaa_pass_description.destroy(device);
+        self.lightning_pass_description.destroy(ctx);
+        self.fxaa_pass_description.destroy(ctx);
     }
 
     pub fn update_images(
         &mut self,
-        device: &Device,
+        ctx: &VulkanContext,
         default_resources: &DefaultResources,
         image_manager: &ImageManager,
     ) {
         for buffer in &mut self.frame_buffers {
-            buffer.update_images(device, default_resources, image_manager);
+            buffer.update_images(ctx, default_resources, image_manager);
         }
     }
 
-    pub fn swap_buffer(&mut self, device: &Device, allocator: &mut Allocator) -> QueryResults {
+    pub fn swap_buffer(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) -> QueryResults {
         self.current_frame = (self.current_frame + 1) % BUFFER_SIZE;
 
         unsafe {
-            device
-                .wait_for_fences(
-                    &[self.frame_buffers[self.current_frame]
-                        .synchronization_resources
-                        .fence],
-                    true,
-                    1_000_000_000,
-                )
-                .expect("Failed waiting for fences");
-
-            device
-                .reset_fences(&[self.frame_buffers[self.current_frame]
+            ctx.wait_for_fences(
+                &[self.frame_buffers[self.current_frame]
                     .synchronization_resources
-                    .fence])
+                    .fence],
+                true,
+                1_000_000_000,
+            )
+            .expect("Failed waiting for fences");
+
+            ctx.reset_fences(&[self.frame_buffers[self.current_frame]
+                .synchronization_resources
+                .fence])
                 .expect("Failed to reset fences");
         };
 
         let current_buffer = &mut self.frame_buffers[self.current_frame];
-        current_buffer.reset(device, allocator)
+        current_buffer.reset(ctx, allocator)
     }
 
     pub fn upload_buffers<'a>(
         &'a mut self,
-        device: &Device,
-        debug_device: &debug_utils::Device,
+        ctx: &VulkanContext,
         cmd: vk::CommandBuffer,
     ) -> FrameBufferWriteData<'a> {
-        self.frame_buffers[self.current_frame].upload_buffers(device, debug_device, cmd)
+        self.frame_buffers[self.current_frame].upload_buffers(ctx, cmd)
     }
 
     pub fn get_synchronization_resources(&self) -> FrameBufferSynchronizationResources {

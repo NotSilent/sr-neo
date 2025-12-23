@@ -3,8 +3,9 @@ use crate::{
     immediate_submit::ImmediateSubmit,
     resource_manager::{ResourceManager, VulkanResource},
     vk_util,
+    vulkan_engine::VulkanContext,
 };
-use ash::{Device, ext::debug_utils, vk};
+use ash::{Device, vk};
 use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
@@ -99,8 +100,7 @@ impl Image {
 
     #[allow(clippy::too_many_arguments)]
     pub fn with_data<T>(
-        device: &Device,
-        debug_device: &debug_utils::Device,
+        ctx: &VulkanContext,
         allocator: &mut Allocator,
         immediate_submit: &ImmediateSubmit, // TODO: Allocations should come from ImageManager or sth
         extent: vk::Extent3D,
@@ -115,7 +115,7 @@ impl Image {
         let data_size = size_of_val(data);
 
         let mut upload_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             data_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
@@ -126,7 +126,7 @@ impl Image {
         vk_util::copy_data_to_allocation(data, upload_buffer.allocation.as_ref().unwrap());
 
         let new_image = Image::new(
-            device,
+            ctx,
             allocator,
             extent,
             format,
@@ -135,10 +135,9 @@ impl Image {
             name,
         );
 
-        immediate_submit.submit(device, |cmd| {
+        immediate_submit.submit(ctx, |cmd| {
             vk_util::transition_image(
-                device,
-                debug_device,
+                ctx,
                 cmd,
                 new_image.image,
                 vk::ImageLayout::UNDEFINED,
@@ -148,7 +147,6 @@ impl Image {
                 vk::PipelineStageFlags2::COPY,
                 vk::AccessFlags2::TRANSFER_WRITE,
                 access_mask,
-                c"Invalid",
             );
 
             let copy_regions = [vk::BufferImageCopy::default()
@@ -165,7 +163,7 @@ impl Image {
                 )];
 
             unsafe {
-                device.cmd_copy_buffer_to_image(
+                ctx.cmd_copy_buffer_to_image(
                     cmd,
                     upload_buffer.buffer,
                     new_image.image,
@@ -175,8 +173,7 @@ impl Image {
             }
 
             vk_util::transition_image(
-                device,
-                debug_device,
+                ctx,
                 cmd,
                 new_image.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -186,11 +183,10 @@ impl Image {
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
                 access_flags,
                 access_mask,
-                c"Invalid",
             );
         });
 
-        upload_buffer.destroy(device, allocator);
+        upload_buffer.destroy(ctx, allocator);
 
         new_image
     }
