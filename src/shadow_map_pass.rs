@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::vk;
 
 use crate::{
     double_buffer::{self},
@@ -109,7 +109,7 @@ fn begin(
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 fn draw(
-    device: &Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     index_buffer: vk::Buffer,
@@ -118,13 +118,13 @@ fn draw(
 ) {
     if !records.is_empty() {
         unsafe {
-            device.cmd_bind_pipeline(
+            ctx.cmd_bind_pipeline(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
                 shadow_pass_master_material.pipeline,
             );
 
-            device.cmd_bind_descriptor_sets(
+            ctx.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
                 shadow_pass_master_material.pipeline_layout,
@@ -133,7 +133,7 @@ fn draw(
                 &[],
             );
 
-            device.cmd_bind_index_buffer(cmd, index_buffer, 0, vk::IndexType::UINT32);
+            ctx.cmd_bind_index_buffer(cmd, index_buffer, 0, vk::IndexType::UINT32);
         }
 
         for record in records {
@@ -142,7 +142,7 @@ fn draw(
                     index: record.draw_offset,
                 };
 
-                device.cmd_push_constants(
+                ctx.cmd_push_constants(
                     cmd,
                     record.pipeline_layout,
                     vk::ShaderStageFlags::VERTEX,
@@ -150,7 +150,7 @@ fn draw(
                     push_constants.as_bytes(),
                 );
 
-                device.cmd_draw_indexed_indirect(
+                ctx.cmd_draw_indexed_indirect(
                     cmd,
                     record.draws_buffer,
                     u64::from(record.draw_offset)
@@ -163,6 +163,6 @@ fn draw(
     }
 }
 
-fn end(device: &Device, cmd: vk::CommandBuffer) {
-    unsafe { device.cmd_end_rendering(cmd) }
+fn end(ctx: &VulkanContext, cmd: vk::CommandBuffer) {
+    unsafe { ctx.cmd_end_rendering(cmd) }
 }

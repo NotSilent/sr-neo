@@ -1,7 +1,4 @@
-use ash::{
-    Device,
-    vk::{self},
-};
+use ash::vk::{self};
 use gpu_allocator::vulkan::Allocation;
 
 use crate::vulkan_engine::VulkanContext;
@@ -135,7 +132,7 @@ pub fn image_view_create_info(
 }
 
 pub fn blit_image(
-    device: &Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     source: vk::Image,
     destination: vk::Image,
@@ -180,7 +177,7 @@ pub fn blit_image(
         .filter(vk::Filter::LINEAR)
         .regions(&blit_regions);
 
-    unsafe { device.cmd_blit_image2(cmd, &blit_info) }
+    unsafe { ctx.cmd_blit_image2(cmd, &blit_info) }
 }
 
 pub fn attachment_info(

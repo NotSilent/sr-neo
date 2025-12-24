@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::vk;
 
 use crate::{
     draw::{DrawCommand, IndexedIndirectRecord},
@@ -125,15 +125,15 @@ fn begin(
 
 #[allow(clippy::too_many_arguments)]
 fn draw(
-    device: &Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     index_buffer: vk::Buffer,
     records: &[IndexedIndirectRecord],
 ) {
-    DrawCommand::cmd_record_draw_commands(device, cmd, global_descriptor, index_buffer, records);
+    DrawCommand::cmd_record_draw_commands(ctx, cmd, global_descriptor, index_buffer, records);
 }
 
-fn end(device: &Device, cmd: vk::CommandBuffer) {
-    unsafe { device.cmd_end_rendering(cmd) }
+fn end(ctx: &VulkanContext, cmd: vk::CommandBuffer) {
+    unsafe { ctx.cmd_end_rendering(cmd) }
 }

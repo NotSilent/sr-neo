@@ -1,11 +1,11 @@
-use ash::{Device, vk};
+use ash::vk;
 use nalgebra::{Matrix4, Vector3};
 
 use crate::{
     double_buffer::{FrameBufferWriteData, UniformData},
     materials::{MaterialDataIndex, MaterialPass},
     meshes::MeshIndex,
-    vulkan_engine::{GPUStats, ManagedResources},
+    vulkan_engine::{GPUStats, ManagedResources, VulkanContext},
 };
 
 pub struct RenderObject {
@@ -140,7 +140,7 @@ impl DrawCommand {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
     pub fn cmd_record_draw_commands(
-        device: &Device,
+        ctx: &VulkanContext,
         cmd: vk::CommandBuffer,
         global_descriptor: vk::DescriptorSet,
         index_buffer: vk::Buffer,
@@ -153,9 +153,9 @@ impl DrawCommand {
                 if last_pipeline != record.pipeline {
                     last_pipeline = record.pipeline;
 
-                    device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, record.pipeline);
+                    ctx.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, record.pipeline);
 
-                    device.cmd_bind_descriptor_sets(
+                    ctx.cmd_bind_descriptor_sets(
                         cmd,
                         vk::PipelineBindPoint::GRAPHICS,
                         record.pipeline_layout,
@@ -164,7 +164,7 @@ impl DrawCommand {
                         &[],
                     );
 
-                    device.cmd_bind_index_buffer(cmd, index_buffer, 0, vk::IndexType::UINT32);
+                    ctx.cmd_bind_index_buffer(cmd, index_buffer, 0, vk::IndexType::UINT32);
 
                     // TODO: Dynamic state
                 }
@@ -173,7 +173,7 @@ impl DrawCommand {
                     index: record.draw_offset,
                 };
 
-                device.cmd_push_constants(
+                ctx.cmd_push_constants(
                     cmd,
                     record.pipeline_layout,
                     vk::ShaderStageFlags::VERTEX,
@@ -181,7 +181,7 @@ impl DrawCommand {
                     push_constants.as_bytes(),
                 );
 
-                device.cmd_draw_indexed_indirect(
+                ctx.cmd_draw_indexed_indirect(
                     cmd,
                     record.draws_buffer,
                     u64::from(record.draw_offset)

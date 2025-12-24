@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::vk;
 
 use crate::{
     double_buffer::FullScreenPassData, renderpass_common::RenderpassImageState, vk_util,
@@ -127,19 +127,19 @@ fn begin(
 
 #[allow(clippy::too_many_arguments)]
 fn draw(
-    device: &Device,
+    ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     fxaa_pass_data: &FullScreenPassData,
 ) {
     unsafe {
-        device.cmd_bind_pipeline(
+        ctx.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::GRAPHICS,
             fxaa_pass_data.pipeline,
         );
 
-        device.cmd_bind_descriptor_sets(
+        ctx.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::GRAPHICS,
             fxaa_pass_data.pipeline_layout,
@@ -148,10 +148,10 @@ fn draw(
             &[],
         );
 
-        device.cmd_draw(cmd, 3, 1, 0, 0);
+        ctx.cmd_draw(cmd, 3, 1, 0, 0);
     }
 }
 
-fn end(device: &Device, cmd: vk::CommandBuffer) {
-    unsafe { device.cmd_end_rendering(cmd) }
+fn end(ctx: &VulkanContext, cmd: vk::CommandBuffer) {
+    unsafe { ctx.cmd_end_rendering(cmd) }
 }

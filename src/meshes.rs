@@ -1,9 +1,8 @@
-use ash::Device;
 use gpu_allocator::vulkan::Allocator;
 
 use crate::{
     resource_manager::{ResourceManager, VulkanResource},
-    vulkan_engine::GeoSurface,
+    vulkan_engine::{GeoSurface, VulkanContext},
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -31,5 +30,5 @@ pub struct Mesh {
 
 impl VulkanResource for Mesh {
     type Subresource = ();
-    fn destroy(&mut self, _device: &Device, _allocator: &mut Allocator) {}
+    fn destroy(&mut self, _ctx: &VulkanContext, _allocator: &mut Allocator) {}
 }

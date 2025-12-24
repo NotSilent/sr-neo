@@ -1,7 +1,4 @@
-use ash::{
-    Device,
-    vk::{self},
-};
+use ash::vk::{self};
 use gpu_allocator::vulkan::Allocator;
 use nalgebra::{Matrix4, Vector3};
 
@@ -26,11 +23,11 @@ pub struct FullScreenPassDescription {
 }
 
 impl FullScreenPassDescription {
-    pub fn destroy(&mut self, device: &Device) {
+    pub fn destroy(&mut self, ctx: &VulkanContext) {
         unsafe {
-            device.destroy_descriptor_set_layout(self.descriptor_layout, None);
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
+            ctx.destroy_descriptor_set_layout(self.descriptor_layout, None);
+            ctx.destroy_pipeline(self.pipeline, None);
+            ctx.destroy_pipeline_layout(self.pipeline_layout, None);
         }
     }
 }
@@ -92,11 +89,11 @@ pub struct FrameBufferWriteData<'a> {
 }
 
 impl FrameBufferTargets {
-    fn new(device: &Device, allocator: &mut Allocator, width: u32, height: u32) -> Self {
+    fn new(ctx: &VulkanContext, allocator: &mut Allocator, width: u32, height: u32) -> Self {
         let image_extent = vk::Extent3D::default().width(width).height(height).depth(1);
 
         let draw_image = Image::new(
-            device,
+            ctx,
             allocator,
             image_extent,
             // TODO: Smaller format
@@ -110,7 +107,7 @@ impl FrameBufferTargets {
         );
 
         let color_image = Image::new(
-            device,
+            ctx,
             allocator,
             image_extent,
             // TODO: Smaller format
@@ -121,7 +118,7 @@ impl FrameBufferTargets {
         );
 
         let normal_image = Image::new(
-            device,
+            ctx,
             allocator,
             image_extent,
             // TODO: Smaller format
@@ -132,7 +129,7 @@ impl FrameBufferTargets {
         );
 
         let depth_image = Image::new(
-            device,
+            ctx,
             allocator,
             image_extent,
             DEPTH_FORMAT,
@@ -142,7 +139,7 @@ impl FrameBufferTargets {
         );
 
         let shadow_map_image = Image::new(
-            device,
+            ctx,
             allocator,
             vk::Extent3D::default()
                 .width(SHADOW_MAP_DIMENSION)
@@ -155,7 +152,7 @@ impl FrameBufferTargets {
         );
 
         let fxaa_image = Image::new(
-            device,
+            ctx,
             allocator,
             image_extent,
             DRAW_FORMAT,
@@ -176,13 +173,13 @@ impl FrameBufferTargets {
         }
     }
 
-    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        self.draw.destroy(device, allocator);
-        self.color.destroy(device, allocator);
-        self.normal.destroy(device, allocator);
-        self.depth.destroy(device, allocator);
-        self.shadow_map.destroy(device, allocator);
-        self.fxaa.destroy(device, allocator);
+    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+        self.draw.destroy(ctx, allocator);
+        self.color.destroy(ctx, allocator);
+        self.normal.destroy(ctx, allocator);
+        self.depth.destroy(ctx, allocator);
+        self.shadow_map.destroy(ctx, allocator);
+        self.fxaa.destroy(ctx, allocator);
     }
 }
 
@@ -435,53 +432,52 @@ impl FrameBuffer {
         writer.update_set(ctx, self.globals_descriptor_set);
     }
 
-    fn reset(&mut self, device: &Device, allocator: &mut Allocator) -> QueryResults {
-        self.buffer_manager.destroy(device, allocator);
-        self.descriptors.clear_pools(device);
+    fn reset(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) -> QueryResults {
+        self.buffer_manager.destroy(ctx, allocator);
+        self.descriptors.clear_pools(ctx);
 
         let mut query_results: [u64; 2] = [0; 2];
 
         unsafe {
-            device
-                .get_query_pool_results(
-                    self.query_pool,
-                    0,
-                    &mut query_results,
-                    vk::QueryResultFlags::TYPE_64,
-                )
-                .unwrap_or(());
+            ctx.get_query_pool_results(
+                self.query_pool,
+                0,
+                &mut query_results,
+                vk::QueryResultFlags::TYPE_64,
+            )
+            .unwrap_or(());
         };
 
         let draw_time = (query_results[1] as f64 - query_results[0] as f64)
             * f64::from(self.timestamp_period)
             / 1_000_000.0f64;
 
-        unsafe { device.reset_query_pool(self.query_pool, 0, 2) };
+        unsafe { ctx.reset_query_pool(self.query_pool, 0, 2) };
 
         QueryResults { draw_time }
     }
 
-    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
         unsafe {
-            device.destroy_command_pool(self.command_pool, None);
-            device.destroy_fence(self.synchronization_resources.fence, None);
-            device.destroy_semaphore(self.synchronization_resources.swapchain_semaphore, None);
+            ctx.destroy_command_pool(self.command_pool, None);
+            ctx.destroy_fence(self.synchronization_resources.fence, None);
+            ctx.destroy_semaphore(self.synchronization_resources.swapchain_semaphore, None);
 
-            device.destroy_query_pool(self.query_pool, None);
+            ctx.destroy_query_pool(self.query_pool, None);
 
-            self.descriptors.destroy(device);
-            self.buffer_manager.destroy(device, allocator);
+            self.descriptors.destroy(ctx);
+            self.buffer_manager.destroy(ctx, allocator);
 
-            self.targets.destroy(device, allocator);
+            self.targets.destroy(ctx, allocator);
 
-            self.globals_device_buffer.destroy(device, allocator);
-            self.globals_host_buffer.destroy(device, allocator);
+            self.globals_device_buffer.destroy(ctx, allocator);
+            self.globals_host_buffer.destroy(ctx, allocator);
 
-            self.uniform_device_buffer.destroy(device, allocator);
-            self.uniform_host_buffer.destroy(device, allocator);
+            self.uniform_device_buffer.destroy(ctx, allocator);
+            self.uniform_host_buffer.destroy(ctx, allocator);
 
-            self.draw_device_buffer.destroy(device, allocator);
-            self.draw_host_buffer.destroy(device, allocator);
+            self.draw_device_buffer.destroy(ctx, allocator);
+            self.draw_host_buffer.destroy(ctx, allocator);
         }
     }
 
@@ -907,11 +903,11 @@ impl DoubleBuffer {
     }
 
     fn create_lightning_pass_description(
-        device: &Device,
+        ctx: &VulkanContext,
         frame_layout: vk::DescriptorSetLayout,
         shader_manager: &mut ShaderManager,
     ) -> FullScreenPassDescription {
-        let shader = shader_manager.get_graphics_shader(device, "full_screen", "lightning_pass");
+        let shader = shader_manager.get_graphics_shader(ctx, "full_screen", "lightning_pass");
 
         let lightning_descriptor_layout = DescriptorLayoutBuilder::default()
             .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -919,7 +915,7 @@ impl DoubleBuffer {
             .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .add_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .build(
-                device,
+                ctx,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             );
 
@@ -929,8 +925,7 @@ impl DoubleBuffer {
             vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
 
         let lightning_pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layout_create_info, None)
+            ctx.create_pipeline_layout(&pipeline_layout_create_info, None)
                 .unwrap()
         };
 
@@ -945,7 +940,7 @@ impl DoubleBuffer {
             .set_pipeline_layout(lightning_pipeline_layout)
             .add_attachment();
 
-        let lightning_pipeline = pipeline_builder.build(device);
+        let lightning_pipeline = pipeline_builder.build(ctx);
 
         FullScreenPassDescription {
             pipeline_layout: lightning_pipeline_layout,
@@ -955,16 +950,16 @@ impl DoubleBuffer {
     }
 
     fn create_fxaa_pass_description(
-        device: &Device,
+        ctx: &VulkanContext,
         frame_layout: vk::DescriptorSetLayout,
         shader_manager: &mut ShaderManager,
     ) -> FullScreenPassDescription {
-        let shader = shader_manager.get_graphics_shader(device, "full_screen", "fxaa_pass");
+        let shader = shader_manager.get_graphics_shader(ctx, "full_screen", "fxaa_pass");
 
         let fxaa_descriptor_layout = DescriptorLayoutBuilder::default()
             .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .build(
-                device,
+                ctx,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             );
 
@@ -974,8 +969,7 @@ impl DoubleBuffer {
             vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
 
         let fxaa_pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layout_create_info, None)
+            ctx.create_pipeline_layout(&pipeline_layout_create_info, None)
                 .unwrap()
         };
 
@@ -990,7 +984,7 @@ impl DoubleBuffer {
             .set_pipeline_layout(fxaa_pipeline_layout)
             .add_attachment();
 
-        let fxaa_pipeline = pipeline_builder.build(device);
+        let fxaa_pipeline = pipeline_builder.build(ctx);
 
         FullScreenPassDescription {
             pipeline_layout: fxaa_pipeline_layout,

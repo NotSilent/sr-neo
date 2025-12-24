@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 
-use ash::{Device, vk};
+use ash::vk;
 
 use crate::vulkan_engine::VulkanContext;
 
@@ -67,7 +67,7 @@ impl DescriptorWriter {
 
     // TODO: drop pointers
     // TODO: refactor to create_set, allocate and return the new set
-    pub fn update_set(&mut self, device: &Device, set: vk::DescriptorSet) {
+    pub fn update_set(&mut self, ctx: &VulkanContext, set: vk::DescriptorSet) {
         let mut writes = vec![];
 
         for buffer_info in &self.buffer_infos {
@@ -96,7 +96,7 @@ impl DescriptorWriter {
             writes.push(write);
         }
 
-        unsafe { device.update_descriptor_sets(&writes, &[]) };
+        unsafe { ctx.update_descriptor_sets(&writes, &[]) };
 
         self.buffer_infos.clear();
         self.image_infos.clear();
@@ -129,33 +129,31 @@ impl DescriptorAllocatorGrowable {
         }
     }
 
-    pub fn destroy(&self, device: &Device) {
+    pub fn destroy(&self, ctx: &VulkanContext) {
         for pool in &self.ready_pools {
             unsafe {
-                device.destroy_descriptor_pool(*pool, None);
+                ctx.destroy_descriptor_pool(*pool, None);
             }
         }
 
         for pool in &self.full_pools {
             unsafe {
-                device.destroy_descriptor_pool(*pool, None);
+                ctx.destroy_descriptor_pool(*pool, None);
             }
         }
     }
 
-    pub fn clear_pools(&mut self, device: &Device) {
+    pub fn clear_pools(&mut self, ctx: &VulkanContext) {
         for pool in &self.ready_pools {
             unsafe {
-                device
-                    .reset_descriptor_pool(*pool, vk::DescriptorPoolResetFlags::empty())
+                ctx.reset_descriptor_pool(*pool, vk::DescriptorPoolResetFlags::empty())
                     .unwrap();
             }
         }
 
         for pool in &self.full_pools {
             unsafe {
-                device
-                    .reset_descriptor_pool(*pool, vk::DescriptorPoolResetFlags::empty())
+                ctx.reset_descriptor_pool(*pool, vk::DescriptorPoolResetFlags::empty())
                     .unwrap();
             }
 
@@ -306,7 +304,7 @@ impl DescriptorLayoutBuilder<'_> {
 
     pub fn build(
         mut self,
-        device: &Device,
+        ctx: &VulkanContext,
         shader_stages: vk::ShaderStageFlags,
     ) -> vk::DescriptorSetLayout {
         for binding in &mut self.bindings {
@@ -325,8 +323,7 @@ impl DescriptorLayoutBuilder<'_> {
         }
 
         unsafe {
-            device
-                .create_descriptor_set_layout(&create_info, None)
+            ctx.create_descriptor_set_layout(&create_info, None)
                 .unwrap()
         }
     }

@@ -1,4 +1,6 @@
-use ash::{Device, vk};
+use ash::vk;
+
+use crate::vulkan_engine::VulkanContext;
 
 #[derive(Default, Clone)]
 pub struct PipelineBuilder<'a> {
@@ -13,7 +15,7 @@ pub struct PipelineBuilder<'a> {
 }
 
 impl<'a> PipelineBuilder<'a> {
-    pub fn build(mut self, device: &Device) -> vk::Pipeline {
+    pub fn build(mut self, ctx: &VulkanContext) -> vk::Pipeline {
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
@@ -44,8 +46,7 @@ impl<'a> PipelineBuilder<'a> {
             .dynamic_state(&dynamic_info);
 
         unsafe {
-            *device
-                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+            *ctx.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
                 .unwrap()
                 .first()
                 .unwrap()

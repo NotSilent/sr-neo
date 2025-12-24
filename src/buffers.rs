@@ -1,6 +1,9 @@
-use crate::resource_manager::{ResourceManager, VulkanResource};
+use crate::{
+    resource_manager::{ResourceManager, VulkanResource},
+    vulkan_engine::VulkanContext,
+};
 
-use ash::{Device, vk};
+use ash::vk;
 use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
@@ -30,7 +33,7 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn new(
-        device: &Device,
+        ctx: &VulkanContext,
         allocator: &mut Allocator,
         alloc_size: usize,
         usage: vk::BufferUsageFlags,
@@ -41,8 +44,8 @@ impl Buffer {
             .size(alloc_size as u64)
             .usage(usage);
 
-        let buffer = unsafe { device.create_buffer(&create_info, None).unwrap() };
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let buffer = unsafe { ctx.create_buffer(&create_info, None).unwrap() };
+        let requirements = unsafe { ctx.get_buffer_memory_requirements(buffer) };
 
         let allocation_info = AllocationCreateDesc {
             name,
@@ -55,8 +58,7 @@ impl Buffer {
         let allocation = allocator.allocate(&allocation_info).unwrap();
 
         unsafe {
-            device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+            ctx.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
                 .unwrap();
         };
 
@@ -70,8 +72,8 @@ impl Buffer {
 impl VulkanResource for Buffer {
     type Subresource = ();
 
-    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        unsafe { device.destroy_buffer(self.buffer, None) };
+    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+        unsafe { ctx.destroy_buffer(self.buffer, None) };
         allocator.free(self.allocation.take().unwrap()).unwrap();
     }
 }

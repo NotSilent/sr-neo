@@ -5,7 +5,7 @@ use crate::{
     vk_util,
     vulkan_engine::VulkanContext,
 };
-use ash::{Device, vk};
+use ash::vk;
 use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
@@ -41,7 +41,7 @@ pub struct Image {
 impl Image {
     #[allow(clippy::too_many_lines)]
     pub fn new(
-        device: &Device,
+        ctx: &VulkanContext,
         allocator: &mut Allocator,
         extent: vk::Extent3D,
         format: vk::Format,
@@ -57,8 +57,8 @@ impl Image {
 
         let image_create_info = vk_util::image_create_info(format, image_usage, extent, mip_levels);
 
-        let image = unsafe { device.create_image(&image_create_info, None).unwrap() };
-        let requirements = unsafe { device.get_image_memory_requirements(image) };
+        let image = unsafe { ctx.create_image(&image_create_info, None).unwrap() };
+        let requirements = unsafe { ctx.get_image_memory_requirements(image) };
 
         let description = AllocationCreateDesc {
             name,
@@ -71,8 +71,7 @@ impl Image {
         let allocation = allocator.allocate(&description).unwrap();
 
         unsafe {
-            device
-                .bind_image_memory(image, allocation.memory(), allocation.offset())
+            ctx.bind_image_memory(image, allocation.memory(), allocation.offset())
                 .unwrap();
         };
 
@@ -84,8 +83,7 @@ impl Image {
 
         let image_view_create_info = vk_util::image_view_create_info(format, image, aspect_flag);
         let image_view = unsafe {
-            device
-                .create_image_view(&image_view_create_info, None)
+            ctx.create_image_view(&image_view_create_info, None)
                 .unwrap()
         };
 
@@ -195,10 +193,10 @@ impl Image {
 impl VulkanResource for Image {
     type Subresource = ();
 
-    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
+    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
         unsafe {
-            device.destroy_image_view(self.image_view, None);
-            device.destroy_image(self.image, None);
+            ctx.destroy_image_view(self.image_view, None);
+            ctx.destroy_image(self.image, None);
         }
         allocator.free(self.allocation.take().unwrap()).unwrap();
     }

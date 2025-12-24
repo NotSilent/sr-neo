@@ -1,6 +1,6 @@
 use gpu_allocator::vulkan::Allocator;
 
-use ash::Device;
+use crate::vulkan_engine::VulkanContext;
 
 pub trait VulkanSubresource {}
 
@@ -9,7 +9,7 @@ impl VulkanSubresource for () {}
 pub trait VulkanResource {
     type Subresource: VulkanSubresource;
 
-    fn destroy(&mut self, device: &Device, allocator: &mut Allocator) -> Self::Subresource;
+    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) -> Self::Subresource;
 }
 
 // TODO: Probably better if resource manager allocates
@@ -59,13 +59,13 @@ where
 
     pub fn remove(
         &mut self,
-        device: &Device,
+        ctx: &VulkanContext,
         allocator: &mut Allocator,
         index: I,
     ) -> T::Subresource {
         self.destroyed.push(index);
         let item = &mut self.dense[index.into()];
-        item.destroy(device, allocator)
+        item.destroy(ctx, allocator)
     }
 
     pub fn get(&self, index: I) -> &T {
@@ -76,12 +76,16 @@ where
         &mut self.dense[index.into()]
     }
 
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) -> Vec<T::Subresource> {
+    pub fn destroy(
+        &mut self,
+        ctx: &VulkanContext,
+        allocator: &mut Allocator,
+    ) -> Vec<T::Subresource> {
         let mut subresources: Vec<T::Subresource> = vec![];
 
         for (index, resource) in &mut self.dense.iter_mut().enumerate() {
             if !self.destroyed.contains(&index.into()) {
-                subresources.push(resource.destroy(device, allocator));
+                subresources.push(resource.destroy(ctx, allocator));
                 self.destroyed.push(index.into());
             }
         }

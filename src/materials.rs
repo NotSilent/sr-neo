@@ -1,4 +1,4 @@
-use ash::{Device, vk};
+use ash::vk;
 use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 use nalgebra::Vector4;
 
@@ -50,13 +50,13 @@ pub struct MaterialDataManager {
 }
 
 impl MaterialDataManager {
-    pub fn new(device: &Device, allocator: &mut Allocator) -> Self {
+    pub fn new(ctx: &VulkanContext, allocator: &mut Allocator) -> Self {
         let max_count = 1024;
 
         let alloc_size = size_of::<MaterialData>() * max_count;
 
         let host_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             alloc_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
@@ -65,7 +65,7 @@ impl MaterialDataManager {
         );
 
         let device_buffer = Buffer::new(
-            device,
+            ctx,
             allocator,
             alloc_size,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
@@ -145,9 +145,9 @@ impl MaterialDataManager {
         }
     }
 
-    pub fn destroy(&mut self, device: &Device, allocator: &mut Allocator) {
-        self.device_buffer.destroy(device, allocator);
-        self.host_buffer.destroy(device, allocator);
+    pub fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+        self.device_buffer.destroy(ctx, allocator);
+        self.host_buffer.destroy(ctx, allocator);
     }
 
     pub fn get(&self) -> &Buffer {
@@ -214,18 +214,18 @@ pub struct MasterMaterial {
 impl VulkanResource for MasterMaterial {
     type Subresource = ();
 
-    fn destroy(&mut self, device: &Device, _allocator: &mut Allocator) {
+    fn destroy(&mut self, ctx: &VulkanContext, _allocator: &mut Allocator) {
         unsafe {
-            device.destroy_descriptor_set_layout(self.material_layout, None);
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
+            ctx.destroy_descriptor_set_layout(self.material_layout, None);
+            ctx.destroy_pipeline(self.pipeline, None);
+            ctx.destroy_pipeline_layout(self.pipeline_layout, None);
         }
     }
 }
 
 impl MasterMaterial {
     pub fn new(
-        device: &Device,
+        ctx: &VulkanContext,
         frame_layout: vk::DescriptorSetLayout,
         color_attachment_formats: &[vk::Format],
         depth_format: vk::Format,
@@ -243,7 +243,7 @@ impl MasterMaterial {
             .add_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .add_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .build(
-                device,
+                ctx,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             );
 
@@ -254,8 +254,7 @@ impl MasterMaterial {
             .push_constant_ranges(&matrix_range);
 
         let pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layouts_create_info, None)
+            ctx.create_pipeline_layout(&pipeline_layouts_create_info, None)
                 .unwrap()
         };
 
@@ -284,7 +283,7 @@ impl MasterMaterial {
                 pipeline_builder.enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL);
         }
 
-        let pipeline = pipeline_builder.build(device);
+        let pipeline = pipeline_builder.build(ctx);
 
         Self {
             material_pass,
@@ -295,7 +294,7 @@ impl MasterMaterial {
     }
 
     pub fn new_shadow_map(
-        device: &Device,
+        ctx: &VulkanContext,
         frame_layout: vk::DescriptorSetLayout,
         depth_format: vk::Format,
         material_pass: MaterialPass,
@@ -313,8 +312,7 @@ impl MasterMaterial {
             .push_constant_ranges(&matrix_range);
 
         let pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layouts_create_info, None)
+            ctx.create_pipeline_layout(&pipeline_layouts_create_info, None)
                 .unwrap()
         };
 
@@ -328,7 +326,7 @@ impl MasterMaterial {
             .set_depth_format(depth_format)
             .set_pipeline_layout(pipeline_layout);
 
-        let pipeline = pipeline_builder.build(device);
+        let pipeline = pipeline_builder.build(ctx);
 
         Self {
             material_pass,
@@ -357,5 +355,5 @@ pub struct MaterialInstance {
 impl VulkanResource for MaterialInstance {
     type Subresource = ();
 
-    fn destroy(&mut self, _device: &Device, _allocator: &mut Allocator) {}
+    fn destroy(&mut self, _ctx: &VulkanContext, _allocator: &mut Allocator) {}
 }

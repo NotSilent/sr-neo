@@ -1,5 +1,4 @@
 use ash::{
-    Device,
     khr::{surface, swapchain},
     vk,
 };
@@ -83,10 +82,10 @@ impl Swapchain {
         }
     }
 
-    pub fn destroy(&mut self, device: &Device) {
+    pub fn destroy(&mut self, ctx: &VulkanContext) {
         unsafe {
             for semaphore in &self.semaphores {
-                device.destroy_semaphore(*semaphore, None);
+                ctx.destroy_semaphore(*semaphore, None);
             }
 
             self.swapchain_device

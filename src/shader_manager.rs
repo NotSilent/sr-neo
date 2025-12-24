@@ -1,6 +1,8 @@
 use std::{collections::HashMap, fs::File};
 
-use ash::{Device, util, vk};
+use ash::{util, vk};
+
+use crate::vulkan_engine::VulkanContext;
 
 // TODO: Compile to SPIR-V during runtime
 
@@ -20,7 +22,7 @@ pub struct ShaderManager {
 }
 
 impl ShaderManager {
-    pub fn destroy(&self, device: &Device) {
+    pub fn destroy(&self, ctx: &VulkanContext) {
         for shader in self
             .comp_shaders
             .values()
@@ -28,7 +30,7 @@ impl ShaderManager {
             .chain(self.frag_shaders.values())
         {
             unsafe {
-                device.destroy_shader_module(*shader, None);
+                ctx.destroy_shader_module(*shader, None);
             }
         }
     }
@@ -53,22 +55,22 @@ impl ShaderManager {
     }
 
     fn create_shader_module(
-        device: &Device,
+        ctx: &VulkanContext,
         name: &str,
         shader_stage: vk::ShaderStageFlags,
     ) -> vk::ShaderModule {
         let code = Self::load_shader_code(name, shader_stage);
         let create_info = vk::ShaderModuleCreateInfo::default().code(&code[..]);
 
-        unsafe { device.create_shader_module(&create_info, None).unwrap() }
+        unsafe { ctx.create_shader_module(&create_info, None).unwrap() }
     }
 
-    pub fn _get_compute_shader(&mut self, device: &Device, name: &str) -> vk::ShaderModule {
+    pub fn _get_compute_shader(&mut self, ctx: &VulkanContext, name: &str) -> vk::ShaderModule {
         let value = self
             .comp_shaders
             .entry(name.to_string())
             .or_insert_with(|| {
-                Self::create_shader_module(device, name, vk::ShaderStageFlags::COMPUTE)
+                Self::create_shader_module(ctx, name, vk::ShaderStageFlags::COMPUTE)
             });
 
         *value
@@ -76,7 +78,7 @@ impl ShaderManager {
 
     pub fn get_graphics_shader(
         &mut self,
-        device: &Device,
+        ctx: &VulkanContext,
         vert_name: &str,
         frag_name: &str,
     ) -> GraphicsShader {
@@ -84,20 +86,24 @@ impl ShaderManager {
             .vert_shaders
             .entry(vert_name.to_string())
             .or_insert_with(|| {
-                Self::create_shader_module(device, vert_name, vk::ShaderStageFlags::VERTEX)
+                Self::create_shader_module(ctx, vert_name, vk::ShaderStageFlags::VERTEX)
             });
 
         let frag = *self
             .frag_shaders
             .entry(frag_name.to_string())
             .or_insert_with(|| {
-                Self::create_shader_module(device, frag_name, vk::ShaderStageFlags::FRAGMENT)
+                Self::create_shader_module(ctx, frag_name, vk::ShaderStageFlags::FRAGMENT)
             });
 
         GraphicsShader { vert, frag }
     }
 
-    pub fn get_graphics_shader_combined(&mut self, device: &Device, name: &str) -> GraphicsShader {
-        self.get_graphics_shader(device, name, name)
+    pub fn get_graphics_shader_combined(
+        &mut self,
+        ctx: &VulkanContext,
+        name: &str,
+    ) -> GraphicsShader {
+        self.get_graphics_shader(ctx, name, name)
     }
 }
