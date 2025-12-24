@@ -53,7 +53,7 @@ pub fn allocate_command_buffer(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn transition_image(
+pub fn pipeine_barrier_single_image(
     ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     image: vk::Image,
@@ -80,6 +80,45 @@ pub fn transition_image(
 
     let binding = [image_barrier];
     let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&binding);
+
+    unsafe {
+        ctx.cmd_pipeline_barrier2(cmd, &dependency_info);
+    }
+}
+
+// TODO: ImageState?
+#[allow(clippy::too_many_arguments)]
+pub fn create_image_memory_barrier(
+    image: vk::Image,
+    src_layout: vk::ImageLayout,
+    src_stage_mask: vk::PipelineStageFlags2,
+    src_access_mask: vk::AccessFlags2,
+    dst_layout: vk::ImageLayout,
+    dst_stage_mask: vk::PipelineStageFlags2,
+    dst_access_mask: vk::AccessFlags2,
+    aspect_mask: vk::ImageAspectFlags,
+) -> vk::ImageMemoryBarrier2<'static> {
+    vk::ImageMemoryBarrier2::default()
+        .src_stage_mask(src_stage_mask)
+        .src_access_mask(src_access_mask)
+        .dst_stage_mask(dst_stage_mask)
+        .dst_access_mask(dst_access_mask)
+        .old_layout(src_layout)
+        .new_layout(dst_layout)
+        // Used for barriers between queues?
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .subresource_range(image_subresource_range(aspect_mask))
+        .image(image)
+}
+
+pub fn pipeline_barrier(
+    ctx: &VulkanContext,
+    cmd: vk::CommandBuffer,
+    image_memory_barriers: &[vk::ImageMemoryBarrier2],
+) {
+    let dependency_info =
+        vk::DependencyInfo::default().image_memory_barriers(image_memory_barriers);
 
     unsafe {
         ctx.cmd_pipeline_barrier2(cmd, &dependency_info);

@@ -4,7 +4,10 @@ use ash::{
 };
 use thiserror::Error;
 
-use crate::{vk_util, vulkan_engine::VulkanContext};
+use crate::{
+    vk_util,
+    vulkan_engine::{VulkanContext, VulkanResult},
+};
 
 #[derive(Error, Debug)]
 pub enum SwapchainError {
@@ -42,35 +45,28 @@ impl Swapchain {
         ctx: &VulkanContext,
         surface: vk::SurfaceKHR,
         extent: vk::Extent2D,
-    ) -> Self {
+    ) -> VulkanResult<Self> {
         let surface_format = unsafe {
-            surface_instance
-                .get_physical_device_surface_formats(ctx.physical_device, surface)
-                .unwrap()[0]
+            surface_instance.get_physical_device_surface_formats(ctx.physical_device, surface)?[0]
         };
 
         let surface_capabilities = unsafe {
             surface_instance.get_physical_device_surface_capabilities(ctx.physical_device, surface)
-        }
-        .unwrap();
+        }?;
 
         let create_info =
             Self::swapchain_create_info(surface, &surface_format, &surface_capabilities, extent);
 
-        let swapchain = unsafe {
-            swapchain_device
-                .create_swapchain(&create_info, None)
-                .unwrap()
-        };
+        let swapchain = unsafe { swapchain_device.create_swapchain(&create_info, None)? };
 
-        let images = unsafe { swapchain_device.get_swapchain_images(swapchain).unwrap() };
+        let images = unsafe { swapchain_device.get_swapchain_images(swapchain)? };
 
         let mut semaphores = vec![];
         for _index in 0..images.len() {
             semaphores.push(vk_util::create_semaphore(ctx));
         }
 
-        Self {
+        Ok(Self {
             surface_instance,
             swapchain_device,
             surface_format,
@@ -79,7 +75,7 @@ impl Swapchain {
             swapchain,
             images,
             semaphores,
-        }
+        })
     }
 
     pub fn destroy(&mut self, ctx: &VulkanContext) {

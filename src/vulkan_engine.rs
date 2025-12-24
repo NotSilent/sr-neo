@@ -258,6 +258,17 @@ impl VulkanContext {
     ) -> DebugLabel<'_> {
         DebugLabel::new(self, cmd, label_name)
     }
+
+    fn destroy(&self) {
+        unsafe {
+            self.destroy_device(None);
+
+            #[cfg(debug_assertions)]
+            self.debug_instance
+                .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
+            self.instance.destroy_instance(None);
+        };
+    }
 }
 
 pub struct VulkanEngine {
@@ -265,6 +276,7 @@ pub struct VulkanEngine {
 
     ctx: VulkanContext,
 
+    // TODO: Part of context?
     swapchain: Swapchain,
 
     double_buffer: DoubleBuffer,
@@ -282,8 +294,11 @@ pub struct VulkanEngine {
     gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
     pub managed_resources: ManagedResources,
+
+    // TODO: Maybe not internal
     pub default_resources: DefaultResources,
 
+    // TODO: MeshManager that manages that memory with some (buddy?) allocator
     index_buffer: BufferIndex,
     vertex_buffer: BufferIndex,
 }
@@ -300,6 +315,7 @@ impl VulkanEngine {
         width: u32,
         height: u32,
     ) -> Self {
+        // TODO: Decide what type of result should be returned
         let ctx = VulkanContext::new(display_handle).unwrap();
 
         let surface_instance = surface::Instance::new(&ctx.entry, &ctx.instance);
@@ -313,7 +329,8 @@ impl VulkanEngine {
             &ctx,
             surface,
             vk::Extent2D::default().width(width).height(height),
-        );
+        )
+        .unwrap();
 
         let mut allocator = vk_init::create_allocator(&ctx);
 
@@ -751,10 +768,7 @@ impl VulkanEngine {
                 &fxaa_pass_data,
             );
 
-            // TODO: Part of FXAAPass?
-            vk_util::transition_image(
-                &self.ctx,
-                cmd,
+            let fxaa_to_transfer_src = vk_util::create_image_memory_barrier(
                 fxaa_pass_output.fxaa.image,
                 fxaa_pass_output.fxaa.layout,
                 fxaa_pass_output.fxaa.stage_mask,
@@ -765,9 +779,7 @@ impl VulkanEngine {
                 vk::ImageAspectFlags::COLOR,
             );
 
-            vk_util::transition_image(
-                &self.ctx,
-                cmd,
+            let swapchain_to_transfer_dst = vk_util::create_image_memory_barrier(
                 acquired_swapchain.image,
                 vk::ImageLayout::UNDEFINED,
                 vk::PipelineStageFlags2::TOP_OF_PIPE,
@@ -778,6 +790,10 @@ impl VulkanEngine {
                 vk::ImageAspectFlags::COLOR,
             );
 
+            let image_memory_barriers = [fxaa_to_transfer_src, swapchain_to_transfer_dst];
+
+            vk_util::pipeline_barrier(&self.ctx, cmd, &image_memory_barriers);
+
             vk_util::blit_image(
                 &self.ctx,
                 cmd,
@@ -787,7 +803,7 @@ impl VulkanEngine {
                 self.swapchain.extent,
             );
 
-            vk_util::transition_image(
+            vk_util::pipeine_barrier_single_image(
                 &self.ctx,
                 cmd,
                 acquired_swapchain.image,
@@ -909,6 +925,7 @@ impl VulkanEngine {
         self.swapchain.recreate_swapchain(&self.ctx, width, height);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn upload_image<T>(
         &mut self,
         extent: vk::Extent3D,
@@ -1048,14 +1065,7 @@ impl Drop for VulkanEngine {
 
         unsafe { ManuallyDrop::drop(allocator) };
 
-        unsafe {
-            self.swapchain.destroy(ctx);
-            ctx.destroy_device(None);
-
-            // TODO: Context
-            ctx.debug_instance
-                .destroy_debug_utils_messenger(ctx.debug_utils_messenger, None);
-            ctx.instance.destroy_instance(None);
-        };
+        self.swapchain.destroy(ctx);
+        self.ctx.destroy();
     }
 }

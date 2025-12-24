@@ -64,7 +64,7 @@ fn begin(
     shadow_map_src: &RenderpassImageState,
     shadow_map_dst: &RenderpassImageState,
 ) {
-    vk_util::transition_image(
+    vk_util::pipeine_barrier_single_image(
         ctx,
         cmd,
         shadow_map_src.image,

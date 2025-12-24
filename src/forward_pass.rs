@@ -68,31 +68,12 @@ fn begin(
     depth_src: &RenderpassImageState,
     depth_dst: &RenderpassImageState,
 ) {
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        draw_src.image,
-        draw_src.layout,
-        draw_src.stage_mask,
-        draw_src.access_mask,
-        draw_dst.layout,
-        draw_dst.stage_mask,
-        draw_dst.access_mask,
-        vk::ImageAspectFlags::COLOR,
-    );
+    let draw_barrier = draw_src.create_barrier(draw_dst, vk::ImageAspectFlags::COLOR);
+    let depth_barrier = depth_src.create_barrier(depth_dst, vk::ImageAspectFlags::DEPTH);
 
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        depth_src.image,
-        depth_src.layout,
-        depth_src.stage_mask,
-        depth_src.access_mask,
-        depth_dst.layout,
-        depth_dst.stage_mask,
-        depth_dst.access_mask,
-        vk::ImageAspectFlags::DEPTH,
-    );
+    let image_memory_barriers = [draw_barrier, depth_barrier];
+
+    vk_util::pipeline_barrier(ctx, cmd, &image_memory_barriers);
 
     let color_attachment = [vk_util::attachment_info(
         draw_src.image_view,

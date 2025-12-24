@@ -2,6 +2,9 @@ use ash::vk;
 
 use crate::{vk_util, vulkan_engine::VulkanContext};
 
+// TODO: Replace with queue of uploads that happens before the frame
+// The idea is to have a stafing buffer for all resources (one? per frame?)
+// Static size and if that would overflow then queue submit immediately?
 pub struct ImmediateSubmit {
     fence: vk::Fence,
     pool: vk::CommandPool,

@@ -92,44 +92,13 @@ fn begin(
     depth_src: &RenderpassImageState,
     depth_dst: &RenderpassImageState,
 ) {
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        color_src.image,
-        color_src.layout,
-        color_src.stage_mask,
-        color_src.access_mask,
-        color_dst.layout,
-        color_dst.stage_mask,
-        color_dst.access_mask,
-        vk::ImageAspectFlags::COLOR,
-    );
+    let color_barrier = color_src.create_barrier(color_dst, vk::ImageAspectFlags::COLOR);
+    let normal_barrier = normal_src.create_barrier(normal_dst, vk::ImageAspectFlags::COLOR);
+    let depth_barrier = depth_src.create_barrier(depth_dst, vk::ImageAspectFlags::DEPTH);
 
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        normal_src.image,
-        normal_src.layout,
-        normal_src.stage_mask,
-        normal_src.access_mask,
-        normal_dst.layout,
-        normal_dst.stage_mask,
-        normal_dst.access_mask,
-        vk::ImageAspectFlags::COLOR,
-    );
+    let image_memory_barriers = [color_barrier, normal_barrier, depth_barrier];
 
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        depth_src.image,
-        depth_src.layout,
-        depth_src.stage_mask,
-        depth_src.access_mask,
-        depth_dst.layout,
-        depth_dst.stage_mask,
-        depth_dst.access_mask,
-        vk::ImageAspectFlags::DEPTH,
-    );
+    vk_util::pipeline_barrier(ctx, cmd, &image_memory_barriers);
 
     let clear_color = Some(vk::ClearValue {
         color: vk::ClearColorValue {

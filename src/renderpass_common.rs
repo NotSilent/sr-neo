@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::images::Image;
+use crate::{images::Image, vk_util};
 
 pub struct RenderpassImageState {
     pub image: vk::Image,
@@ -19,5 +19,22 @@ impl RenderpassImageState {
             stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
             access_mask: vk::AccessFlags2::NONE,
         }
+    }
+
+    pub fn create_barrier(
+        &self,
+        target: &RenderpassImageState,
+        aspect_mask: vk::ImageAspectFlags,
+    ) -> vk::ImageMemoryBarrier2<'static> {
+        vk_util::create_image_memory_barrier(
+            self.image,
+            self.layout,
+            self.stage_mask,
+            self.access_mask,
+            target.layout,
+            target.stage_mask,
+            target.access_mask,
+            aspect_mask,
+        )
     }
 }

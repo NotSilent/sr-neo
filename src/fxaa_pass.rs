@@ -70,31 +70,12 @@ fn begin(
     fxaa_src: &RenderpassImageState,
     fxaa_dst: &RenderpassImageState,
 ) {
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        color_src.image,
-        color_src.layout,
-        color_src.stage_mask,
-        color_src.access_mask,
-        color_dst.layout,
-        color_dst.stage_mask,
-        color_dst.access_mask,
-        vk::ImageAspectFlags::COLOR,
-    );
+    let color_barrier = color_src.create_barrier(color_dst, vk::ImageAspectFlags::COLOR);
+    let fxaa_barrier = fxaa_src.create_barrier(fxaa_dst, vk::ImageAspectFlags::COLOR);
 
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        fxaa_src.image,
-        fxaa_src.layout,
-        fxaa_src.stage_mask,
-        fxaa_src.access_mask,
-        fxaa_dst.layout,
-        fxaa_dst.stage_mask,
-        fxaa_dst.access_mask,
-        vk::ImageAspectFlags::COLOR,
-    );
+    let image_memory_barriers = [color_barrier, fxaa_barrier];
+
+    vk_util::pipeline_barrier(ctx, cmd, &image_memory_barriers);
 
     let color_attachment = vk_util::attachment_info(
         fxaa_src.image_view,

@@ -69,6 +69,7 @@ impl IndexedIndirectRecord {
 
         let mut draw_index = starting_draw_index;
 
+        // TODO: Cleanup
         if !commands.is_empty() {
             let first = commands.first().unwrap();
 

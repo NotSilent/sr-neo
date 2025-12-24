@@ -112,70 +112,22 @@ fn begin(
     shadow_map_src: &RenderpassImageState,
     shadow_map_dst: &RenderpassImageState,
 ) {
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        draw_src.image,
-        draw_src.layout,
-        draw_src.stage_mask,
-        draw_src.access_mask,
-        draw_dst.layout,
-        draw_dst.stage_mask,
-        draw_dst.access_mask,
-        vk::ImageAspectFlags::COLOR,
-    );
+    let draw_barrier = draw_src.create_barrier(draw_dst, vk::ImageAspectFlags::COLOR);
+    let color_barrier = color_src.create_barrier(color_dst, vk::ImageAspectFlags::COLOR);
+    let normal_barrier = normal_src.create_barrier(normal_dst, vk::ImageAspectFlags::COLOR);
+    let depth_barrier = depth_src.create_barrier(depth_dst, vk::ImageAspectFlags::DEPTH);
+    let shadow_map_barrier =
+        shadow_map_src.create_barrier(shadow_map_dst, vk::ImageAspectFlags::DEPTH);
 
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        color_src.image,
-        color_src.layout,
-        color_src.stage_mask,
-        color_src.access_mask,
-        color_dst.layout,
-        color_dst.stage_mask,
-        color_dst.access_mask,
-        vk::ImageAspectFlags::COLOR,
-    );
+    let image_memory_barriers = [
+        draw_barrier,
+        color_barrier,
+        normal_barrier,
+        depth_barrier,
+        shadow_map_barrier,
+    ];
 
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        normal_src.image,
-        normal_src.layout,
-        normal_src.stage_mask,
-        normal_src.access_mask,
-        normal_dst.layout,
-        normal_dst.stage_mask,
-        normal_dst.access_mask,
-        vk::ImageAspectFlags::COLOR,
-    );
-
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        depth_src.image,
-        depth_src.layout,
-        depth_src.stage_mask,
-        depth_src.access_mask,
-        depth_dst.layout,
-        depth_dst.stage_mask,
-        depth_dst.access_mask,
-        vk::ImageAspectFlags::DEPTH,
-    );
-
-    vk_util::transition_image(
-        ctx,
-        cmd,
-        shadow_map_src.image,
-        shadow_map_src.layout,
-        shadow_map_src.stage_mask,
-        shadow_map_src.access_mask,
-        shadow_map_dst.layout,
-        shadow_map_dst.stage_mask,
-        shadow_map_dst.access_mask,
-        vk::ImageAspectFlags::DEPTH,
-    );
+    vk_util::pipeline_barrier(ctx, cmd, &image_memory_barriers);
 
     let clear_color = Some(vk::ClearValue {
         color: vk::ClearColorValue {
