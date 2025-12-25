@@ -63,7 +63,7 @@ fn begin(
     depth_src: &RenderpassImageState,
     depth_dst: &RenderpassImageState,
 ) {
-    vk_util::pipeine_barrier_single_image(
+    vk_util::pipeline_barrier_single_image(
         ctx,
         cmd,
         depth_src.image,

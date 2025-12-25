@@ -598,9 +598,7 @@ impl VulkanEngine {
         let height = self.swapchain.extent.height as f32;
 
         unsafe {
-            let query_results = self
-                .double_buffer
-                .swap_buffer(&self.ctx, &mut self.allocator);
+            let query_results = self.double_buffer.swap_buffer(&self.ctx);
 
             gpu_stats.draw_time = query_results.draw_time;
 
@@ -803,7 +801,7 @@ impl VulkanEngine {
                 self.swapchain.extent,
             );
 
-            vk_util::pipeine_barrier_single_image(
+            vk_util::pipeline_barrier_single_image(
                 &self.ctx,
                 cmd,
                 acquired_swapchain.image,

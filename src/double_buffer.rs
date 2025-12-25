@@ -3,7 +3,7 @@ use gpu_allocator::vulkan::Allocator;
 use nalgebra::{Matrix4, Vector3};
 
 use crate::{
-    buffers::{Buffer, BufferIndex, BufferManager},
+    buffers::Buffer,
     descriptors::{
         DescriptorAllocatorGrowable, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
     },
@@ -184,6 +184,7 @@ impl FrameBufferTargets {
 }
 
 struct FrameBuffer {
+    // TODO: only swapchain should be different between frames
     targets: FrameBufferTargets,
 
     command_pool: vk::CommandPool,
@@ -191,7 +192,6 @@ struct FrameBuffer {
 
     synchronization_resources: FrameBufferSynchronizationResources,
 
-    buffer_manager: BufferManager,
     descriptors: DescriptorAllocatorGrowable,
 
     // TODO: Abstract
@@ -389,7 +389,6 @@ impl FrameBuffer {
                 swapchain_semaphore: vk_util::create_semaphore(ctx),
                 fence: vk_util::create_fence(ctx, vk::FenceCreateFlags::SIGNALED),
             },
-            buffer_manager: BufferManager::new(),
             descriptors: DescriptorAllocatorGrowable::new(
                 ctx,
                 1024,
@@ -432,8 +431,7 @@ impl FrameBuffer {
         writer.update_set(ctx, self.globals_descriptor_set);
     }
 
-    fn reset(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) -> QueryResults {
-        self.buffer_manager.destroy(ctx, allocator);
+    fn reset(&mut self, ctx: &VulkanContext) -> QueryResults {
         self.descriptors.clear_pools(ctx);
 
         let mut query_results: [u64; 2] = [0; 2];
@@ -466,7 +464,6 @@ impl FrameBuffer {
             ctx.destroy_query_pool(self.query_pool, None);
 
             self.descriptors.destroy(ctx);
-            self.buffer_manager.destroy(ctx, allocator);
 
             self.targets.destroy(ctx, allocator);
 
@@ -817,7 +814,7 @@ impl DoubleBuffer {
         }
     }
 
-    pub fn swap_buffer(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) -> QueryResults {
+    pub fn swap_buffer(&mut self, ctx: &VulkanContext) -> QueryResults {
         self.current_frame = (self.current_frame + 1) % BUFFER_SIZE;
 
         unsafe {
@@ -837,7 +834,7 @@ impl DoubleBuffer {
         };
 
         let current_buffer = &mut self.frame_buffers[self.current_frame];
-        current_buffer.reset(ctx, allocator)
+        current_buffer.reset(ctx)
     }
 
     pub fn upload_buffers<'a>(
@@ -860,18 +857,6 @@ impl DoubleBuffer {
 
     pub fn get_command_buffer(&self) -> vk::CommandBuffer {
         self.frame_buffers[self.current_frame].command_buffer
-    }
-
-    pub fn _add_buffer(&mut self, buffer: Buffer) -> BufferIndex {
-        self.frame_buffers[self.current_frame]
-            .buffer_manager
-            .add(buffer)
-    }
-
-    pub fn _get_buffer(&mut self, buffer_index: BufferIndex) -> &Buffer {
-        self.frame_buffers[self.current_frame]
-            .buffer_manager
-            .get(buffer_index)
     }
 
     pub fn get_frame_targets(&self) -> &FrameBufferTargets {

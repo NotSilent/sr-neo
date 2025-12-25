@@ -134,7 +134,7 @@ impl Image {
         );
 
         immediate_submit.submit(ctx, |cmd| {
-            vk_util::pipeine_barrier_single_image(
+            vk_util::pipeline_barrier_single_image(
                 ctx,
                 cmd,
                 new_image.image,
@@ -170,7 +170,7 @@ impl Image {
                 );
             }
 
-            vk_util::pipeine_barrier_single_image(
+            vk_util::pipeline_barrier_single_image(
                 ctx,
                 cmd,
                 new_image.image,

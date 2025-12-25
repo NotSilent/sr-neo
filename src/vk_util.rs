@@ -53,7 +53,7 @@ pub fn allocate_command_buffer(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn pipeine_barrier_single_image(
+pub fn pipeline_barrier_single_image(
     ctx: &VulkanContext,
     cmd: vk::CommandBuffer,
     image: vk::Image,
