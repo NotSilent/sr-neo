@@ -24,24 +24,6 @@ unsafe extern "system" fn vulkan_debug_callback(
 
     let callback_data = unsafe { *p_callback_data };
 
-    let cmd_labels = unsafe {
-        if callback_data.cmd_buf_label_count > 0 {
-            std::slice::from_raw_parts(
-                callback_data.p_cmd_buf_labels,
-                callback_data.cmd_buf_label_count as usize,
-            )
-        } else {
-            &[]
-        }
-    };
-
-    let test_cmd_label = if cmd_labels.is_empty() {
-        c""
-    } else {
-        unsafe { cmd_labels[0].label_name_as_c_str().unwrap() }
-    }
-    .to_string_lossy();
-
     let message_id_number = callback_data.message_id_number;
 
     let message_id_name = if callback_data.p_message_id_name.is_null() {
@@ -57,7 +39,7 @@ unsafe extern "system" fn vulkan_debug_callback(
     };
 
     println!(
-        "{test_cmd_label}\n{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
+        "{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
     );
 
     vk::FALSE

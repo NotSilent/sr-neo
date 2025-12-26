@@ -184,9 +184,6 @@ impl FrameBufferTargets {
 }
 
 struct FrameBuffer {
-    // TODO: only swapchain should be different between frames
-    targets: FrameBufferTargets,
-
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
 
@@ -199,8 +196,6 @@ struct FrameBuffer {
     timestamp_period: f32,
 
     globals_descriptor_set: vk::DescriptorSet,
-    lightning_descriptor_set: vk::DescriptorSet,
-    fxaa_descriptor_set: vk::DescriptorSet,
 
     globals_host_buffer: Buffer,
     globals_device_buffer: Buffer,
@@ -218,20 +213,14 @@ impl FrameBuffer {
     fn new(
         ctx: &VulkanContext,
         allocator: &mut Allocator,
-        width: u32,
-        height: u32,
         timestamp_period: f32,
         globals_descriptor_set_layout: vk::DescriptorSetLayout,
         global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
-        lightning_descriptor_layout: vk::DescriptorSetLayout,
-        fxaa_descriptor_layout: vk::DescriptorSetLayout,
         default_sampler_linear: vk::Sampler,
         vertex_buffer: &Buffer,
         material_data_buffer: &Buffer,
         image_manager: &ImageManager,
     ) -> Self {
-        let targets = FrameBufferTargets::new(ctx, allocator, width, height);
-
         let command_pool = vk_util::create_command_pool(ctx);
 
         let query_pool_create_info = vk::QueryPoolCreateInfo::default()
@@ -244,22 +233,6 @@ impl FrameBuffer {
         };
 
         unsafe { ctx.reset_query_pool(query_pool, 0, 2) };
-
-        let lightning_descriptor_set = Self::create_lightning_descriptor_set(
-            ctx,
-            global_descriptor_allocator,
-            lightning_descriptor_layout,
-            default_sampler_linear,
-            &targets,
-        );
-
-        let fxaa_descriptor_set = Self::create_fxaa_descriptor_set(
-            ctx,
-            global_descriptor_allocator,
-            fxaa_descriptor_layout,
-            default_sampler_linear,
-            &targets,
-        );
 
         let globals_alloc_size = size_of::<SceneData>();
 
@@ -382,7 +355,6 @@ impl FrameBuffer {
         writer.update_set(ctx, globals_descriptor_set);
 
         Self {
-            targets,
             command_pool,
             command_buffer: vk_util::allocate_command_buffer(ctx, command_pool),
             synchronization_resources: FrameBufferSynchronizationResources {
@@ -397,14 +369,12 @@ impl FrameBuffer {
             query_pool,
             timestamp_period,
             globals_descriptor_set,
-            lightning_descriptor_set,
             globals_host_buffer,
             globals_device_buffer,
             uniform_host_buffer,
             uniform_device_buffer,
             draw_host_buffer,
             draw_device_buffer,
-            fxaa_descriptor_set,
         }
     }
 
@@ -464,9 +434,6 @@ impl FrameBuffer {
             ctx.destroy_query_pool(self.query_pool, None);
 
             self.descriptors.destroy(ctx);
-
-            self.targets.destroy(ctx, allocator);
-
             self.globals_device_buffer.destroy(ctx, allocator);
             self.globals_host_buffer.destroy(ctx, allocator);
 
@@ -591,6 +558,124 @@ impl FrameBuffer {
         }
     }
 
+    fn create_default_pool_size_ratios() -> Vec<PoolSizeRatio> {
+        vec![
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                ratio: 4,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                ratio: 4,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                ratio: 4,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                ratio: 4,
+            },
+        ]
+    }
+
+    fn set_globals(&mut self, scene_data: &SceneData) {
+        vk_util::copy_data_to_allocation(
+            scene_data.as_bytes(),
+            self.globals_host_buffer.allocation.as_ref().unwrap(),
+        );
+    }
+}
+
+// TODO: All resources eg. gbuffer, per buffer
+pub struct DoubleBuffer {
+    current_frame: usize,
+    targets: FrameBufferTargets,
+    frame_buffers: [FrameBuffer; BUFFER_SIZE],
+
+    lightning_pass_description: FullScreenPassDescription,
+    fxaa_pass_description: FullScreenPassDescription,
+
+    lightning_pass_descriptor_set: vk::DescriptorSet,
+    fxaa_pass_descriptor_set: vk::DescriptorSet,
+}
+
+impl DoubleBuffer {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        ctx: &VulkanContext,
+        allocator: &mut Allocator,
+        width: u32,
+        height: u32,
+        timestamp_period: f32,
+        globals_descriptor_set_layout: vk::DescriptorSetLayout,
+        global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
+        default_sampler_linear: vk::Sampler,
+        shader_manager: &mut ShaderManager,
+        vertex_buffer: &Buffer,
+        material_data_buffer: &Buffer,
+        image_manager: &ImageManager,
+    ) -> Self {
+        let target = FrameBufferTargets::new(ctx, allocator, width, height);
+
+        let lightning_pass_description = Self::create_lightning_pass_description(
+            ctx,
+            globals_descriptor_set_layout,
+            shader_manager,
+        );
+
+        let fxaa_pass_description =
+            Self::create_fxaa_pass_description(ctx, globals_descriptor_set_layout, shader_manager);
+
+        let lightning_pass_descriptor_set = Self::create_lightning_descriptor_set(
+            ctx,
+            global_descriptor_allocator,
+            lightning_pass_description.descriptor_layout,
+            default_sampler_linear,
+            &target,
+        );
+
+        let fxaa_pass_descriptor_set = Self::create_fxaa_descriptor_set(
+            ctx,
+            global_descriptor_allocator,
+            fxaa_pass_description.descriptor_layout,
+            default_sampler_linear,
+            &target,
+        );
+
+        Self {
+            current_frame: 0,
+            targets: target,
+            frame_buffers: [
+                FrameBuffer::new(
+                    ctx,
+                    allocator,
+                    timestamp_period,
+                    globals_descriptor_set_layout,
+                    global_descriptor_allocator,
+                    default_sampler_linear,
+                    vertex_buffer,
+                    material_data_buffer,
+                    image_manager,
+                ),
+                FrameBuffer::new(
+                    ctx,
+                    allocator,
+                    timestamp_period,
+                    globals_descriptor_set_layout,
+                    global_descriptor_allocator,
+                    default_sampler_linear,
+                    vertex_buffer,
+                    material_data_buffer,
+                    image_manager,
+                ),
+            ],
+            lightning_pass_description,
+            fxaa_pass_description,
+            lightning_pass_descriptor_set,
+            fxaa_pass_descriptor_set,
+        }
+    }
     fn create_lightning_descriptor_set(
         ctx: &VulkanContext,
         global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
@@ -692,109 +777,9 @@ impl FrameBuffer {
         fxaa_descriptor_set
     }
 
-    fn create_default_pool_size_ratios() -> Vec<PoolSizeRatio> {
-        vec![
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                ratio: 4,
-            },
-        ]
-    }
-
-    fn set_globals(&mut self, scene_data: &SceneData) {
-        vk_util::copy_data_to_allocation(
-            scene_data.as_bytes(),
-            self.globals_host_buffer.allocation.as_ref().unwrap(),
-        );
-    }
-}
-
-// TODO: All resources eg. gbuffer, per buffer
-pub struct DoubleBuffer {
-    current_frame: usize,
-    frame_buffers: [FrameBuffer; BUFFER_SIZE],
-
-    lightning_pass_description: FullScreenPassDescription,
-    fxaa_pass_description: FullScreenPassDescription,
-}
-
-impl DoubleBuffer {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        ctx: &VulkanContext,
-        allocator: &mut Allocator,
-        width: u32,
-        height: u32,
-        timestamp_period: f32,
-        globals_descriptor_set_layout: vk::DescriptorSetLayout,
-        global_descriptor_allocator: &mut DescriptorAllocatorGrowable,
-        default_sampler_linear: vk::Sampler,
-        shader_manager: &mut ShaderManager,
-        vertex_buffer: &Buffer,
-        material_data_buffer: &Buffer,
-        image_manager: &ImageManager,
-    ) -> Self {
-        let lightning_pass_description = Self::create_lightning_pass_description(
-            ctx,
-            globals_descriptor_set_layout,
-            shader_manager,
-        );
-
-        let fxaa_pass_description =
-            Self::create_fxaa_pass_description(ctx, globals_descriptor_set_layout, shader_manager);
-
-        Self {
-            current_frame: 0,
-            frame_buffers: [
-                FrameBuffer::new(
-                    ctx,
-                    allocator,
-                    width,
-                    height,
-                    timestamp_period,
-                    globals_descriptor_set_layout,
-                    global_descriptor_allocator,
-                    lightning_pass_description.descriptor_layout,
-                    fxaa_pass_description.descriptor_layout,
-                    default_sampler_linear,
-                    vertex_buffer,
-                    material_data_buffer,
-                    image_manager,
-                ),
-                FrameBuffer::new(
-                    ctx,
-                    allocator,
-                    width,
-                    height,
-                    timestamp_period,
-                    globals_descriptor_set_layout,
-                    global_descriptor_allocator,
-                    lightning_pass_description.descriptor_layout,
-                    fxaa_pass_description.descriptor_layout,
-                    default_sampler_linear,
-                    vertex_buffer,
-                    material_data_buffer,
-                    image_manager,
-                ),
-            ],
-            lightning_pass_description,
-            fxaa_pass_description,
-        }
-    }
-
     pub fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+        self.targets.destroy(ctx, allocator);
+
         for buffer in &mut self.frame_buffers {
             buffer.destroy(ctx, allocator);
         }
@@ -860,7 +845,7 @@ impl DoubleBuffer {
     }
 
     pub fn get_frame_targets(&self) -> &FrameBufferTargets {
-        &self.frame_buffers[self.current_frame].targets
+        &self.targets
     }
 
     pub fn get_globals_descriptor_set(&self) -> vk::DescriptorSet {
@@ -875,7 +860,7 @@ impl DoubleBuffer {
         FullScreenPassData {
             pipeline_layout: self.lightning_pass_description.pipeline_layout,
             pipeline: self.lightning_pass_description.pipeline,
-            descriptor_set: self.frame_buffers[self.current_frame].lightning_descriptor_set,
+            descriptor_set: self.lightning_pass_descriptor_set,
         }
     }
 
@@ -883,7 +868,7 @@ impl DoubleBuffer {
         FullScreenPassData {
             pipeline_layout: self.fxaa_pass_description.pipeline_layout,
             pipeline: self.fxaa_pass_description.pipeline,
-            descriptor_set: self.frame_buffers[self.current_frame].fxaa_descriptor_set,
+            descriptor_set: self.fxaa_pass_descriptor_set,
         }
     }
 
