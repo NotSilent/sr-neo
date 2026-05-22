@@ -702,6 +702,7 @@ impl VulkanEngine {
                 depth_pre_pass_master_material,
                 globals_descriptor_set,
                 index_buffer,
+                write_data.draws_buffer,
                 &indexed_indirect_data.opaque,
             );
 
@@ -714,6 +715,7 @@ impl VulkanEngine {
                 depth_pre_pass_output.depth,
                 globals_descriptor_set,
                 index_buffer,
+                write_data.draws_buffer,
                 &indexed_indirect_data.opaque,
             );
 
@@ -729,6 +731,7 @@ impl VulkanEngine {
                 shadow_pass_master_material,
                 globals_descriptor_set,
                 index_buffer,
+                write_data.draws_buffer,
                 &indexed_indirect_data.opaque,
             );
 
@@ -753,6 +756,7 @@ impl VulkanEngine {
                 lightning_pass_output.depth,
                 globals_descriptor_set,
                 index_buffer,
+                write_data.draws_buffer,
                 &indexed_indirect_data.transparent,
             );
 

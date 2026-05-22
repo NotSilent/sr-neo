@@ -21,6 +21,7 @@ pub fn record(
     depth_src: RenderpassImageState,
     global_descriptor: vk::DescriptorSet,
     index_buffer: vk::Buffer,
+    draws_buffer: vk::Buffer,
     records: &[IndexedIndirectRecord],
 ) -> RenderpassImageState {
     let draw_dst = RenderpassImageState {
@@ -52,7 +53,14 @@ pub fn record(
         &depth_dst,
     );
 
-    draw(ctx, cmd, global_descriptor, index_buffer, records);
+    draw(
+        ctx,
+        cmd,
+        global_descriptor,
+        index_buffer,
+        draws_buffer,
+        records,
+    );
 
     end(ctx, cmd);
 
@@ -110,9 +118,17 @@ fn draw(
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     index_buffer: vk::Buffer,
+    draws_buffer: vk::Buffer,
     records: &[IndexedIndirectRecord],
 ) {
-    DrawCommand::cmd_record_draw_commands(ctx, cmd, global_descriptor, index_buffer, records);
+    DrawCommand::cmd_record_draw_commands(
+        ctx,
+        cmd,
+        global_descriptor,
+        index_buffer,
+        draws_buffer,
+        records,
+    );
 }
 
 fn end(ctx: &VulkanContext, cmd: vk::CommandBuffer) {

@@ -26,6 +26,7 @@ pub fn record(
     shadow_pass_master_material: &MasterMaterial,
     global_descriptor: vk::DescriptorSet,
     index_buffer: vk::Buffer,
+    draws_buffer: vk::Buffer,
     records: &[IndexedIndirectRecord],
 ) -> ShaowMapPassOutput {
     let shadow_map_dst = RenderpassImageState {
@@ -46,6 +47,7 @@ pub fn record(
         cmd,
         global_descriptor,
         index_buffer,
+        draws_buffer,
         shadow_pass_master_material,
         records,
     );
@@ -113,6 +115,7 @@ fn draw(
     cmd: vk::CommandBuffer,
     global_descriptor: vk::DescriptorSet,
     index_buffer: vk::Buffer,
+    draws_buffer: vk::Buffer,
     shadow_pass_master_material: &MasterMaterial,
     records: &[IndexedIndirectRecord],
 ) {
@@ -152,7 +155,7 @@ fn draw(
 
                 ctx.cmd_draw_indexed_indirect(
                     cmd,
-                    record.draws_buffer,
+                    draws_buffer,
                     u64::from(record.draw_offset)
                         * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
                     record.batch_count,

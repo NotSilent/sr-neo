@@ -52,8 +52,6 @@ pub struct IndexedIndirectRecord {
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
 
-    pub draws_buffer: vk::Buffer,
-
     pub draw_offset: u32,
     pub batch_count: u32,
 }
@@ -77,7 +75,6 @@ impl IndexedIndirectRecord {
                 // TODO: layout shouldn't really change
                 pipeline_layout: first.pipeline_layout,
                 pipeline: first.pipeline,
-                draws_buffer: write_data.draws_buffer,
                 draw_offset: 0,
                 batch_count: 0,
             };
@@ -145,6 +142,7 @@ impl DrawCommand {
         cmd: vk::CommandBuffer,
         global_descriptor: vk::DescriptorSet,
         index_buffer: vk::Buffer,
+        draws_buffer: vk::Buffer,
         records: &[IndexedIndirectRecord],
     ) {
         let mut last_pipeline = vk::Pipeline::null();
@@ -184,7 +182,7 @@ impl DrawCommand {
 
                 ctx.cmd_draw_indexed_indirect(
                     cmd,
-                    record.draws_buffer,
+                    draws_buffer,
                     u64::from(record.draw_offset)
                         * size_of::<vk::DrawIndexedIndirectCommand>() as u64,
                     record.batch_count,
