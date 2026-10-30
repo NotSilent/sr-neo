@@ -39,10 +39,9 @@ pub struct Swapchain {
 // TODO: Part of DoubleBuffer?
 impl Swapchain {
     pub fn new(
-        // TODO: Order
+        ctx: &VulkanContext,
         surface_instance: surface::Instance,
         swapchain_device: swapchain::Device,
-        ctx: &VulkanContext,
         surface: vk::SurfaceKHR,
         extent: vk::Extent2D,
     ) -> VulkanResult<Self> {

@@ -58,13 +58,11 @@ impl Buffer {
         let allocation = allocator.allocate(&allocation_info).unwrap();
 
         unsafe {
-            ctx.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()).ok()?;
+            ctx.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+                .ok()?;
         };
 
-        Some(Buffer {
-            buffer,
-            allocation: allocation,
-        })
+        Some(Buffer { buffer, allocation })
     }
 }
 

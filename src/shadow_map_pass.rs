@@ -13,12 +13,6 @@ pub struct ShaowMapPassOutput {
     pub shadow_map: RenderpassImageState,
 }
 
-// TODO:
-#[allow(clippy::too_many_arguments)]
-// RenderpassImageState is meant to be cosumed so it's not used after recording
-// with the previous state, instead if resources are used
-// they will be provided as an output.
-#[allow(clippy::needless_pass_by_value)]
 pub fn record(
     ctx: &VulkanContext,
     cmd: vk::CommandBuffer,

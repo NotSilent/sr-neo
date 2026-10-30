@@ -324,9 +324,9 @@ impl VulkanEngine {
         let surface = vk_init::create_surface(&ctx, display_handle, window_handle).unwrap();
 
         let swapchain = Swapchain::new(
+            &ctx,
             surface_instance,
             swapchain_device,
-            &ctx,
             surface,
             vk::Extent2D::default().width(width).height(height),
         )

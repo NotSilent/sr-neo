@@ -44,7 +44,7 @@ mod vk_init;
 mod vk_util;
 mod vulkan_engine;
 
-struct App<'a> {
+struct App {
     state: Option<State>,
     window: Option<Window>,
     viewport_info: Option<ViewportInfo>,
@@ -52,7 +52,7 @@ struct App<'a> {
     is_minimized: bool,
     is_closing: bool,
 
-    gltf_name: Option<&'a str>,
+    gltf_name: String,
 
     input_manager: InputManager,
 
@@ -63,8 +63,8 @@ struct App<'a> {
     gltf_loader: GLTFLoader,
 }
 
-impl Default for App<'_> {
-    fn default() -> Self {
+impl App {
+    fn new(gltf_name: String) -> Self {
         let main_camera = Camera {
             position: vector![-6.0, 4.0, 0.0],
             velocity: Vector3::from_element(0.0),
@@ -79,7 +79,7 @@ impl Default for App<'_> {
             vulkan_engine: None,
             is_minimized: false,
             is_closing: false,
-            gltf_name: None,
+            gltf_name: gltf_name,
             input_manager: InputManager::default(),
             cpu_time: std::time::Instant::now(),
             main_camera,
@@ -89,11 +89,7 @@ impl Default for App<'_> {
     }
 }
 
-impl<'a> App<'a> {
-    fn set_gltf_to_load(&mut self, gltf_name: &'a str) {
-        self.gltf_name = Some(gltf_name);
-    }
-
+impl App {
     fn update_scene(&mut self) {
         self.main_camera.update();
         self.draw_context.render_objects.clear();
@@ -102,7 +98,7 @@ impl<'a> App<'a> {
     }
 }
 
-impl ApplicationHandler for App<'_> {
+impl ApplicationHandler for App {
     // This is a common indicator that you can create a window.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let width = 1600;
@@ -146,10 +142,9 @@ impl ApplicationHandler for App<'_> {
         )
         .unwrap();
 
-        // TODO: drop unwrap
         self.gltf_loader.load(
             &mut vulkan_engine,
-            std::path::PathBuf::from(&self.gltf_name.unwrap()).as_path(),
+            std::path::PathBuf::from(&self.gltf_name).as_path(),
         );
 
         vulkan_engine.update_images();
@@ -285,8 +280,7 @@ fn main() {
         let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
-        let mut app = App::default();
-        app.set_gltf_to_load(gltf_name);
+        let mut app = App::new(gltf_name.to_string());
 
         let _ = event_loop.run_app(&mut app);
     }
