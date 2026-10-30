@@ -193,14 +193,7 @@ pub fn create_allocator(ctx: &VulkanContext) -> Allocator {
         instance: ctx.instance.clone(),
         device: ctx.device.clone(),
         physical_device: ctx.physical_device,
-        debug_settings: AllocatorDebugSettings {
-            log_memory_information: false,
-            log_leaks_on_shutdown: true,
-            store_stack_traces: false,
-            log_allocations: false,
-            log_frees: false,
-            log_stack_traces: false,
-        },
+        debug_settings: AllocatorDebugSettings::default(),
         buffer_device_address: true,
         allocation_sizes: AllocationSizes::default(),
     })
