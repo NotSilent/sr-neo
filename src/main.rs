@@ -143,7 +143,8 @@ impl ApplicationHandler for App<'_> {
             window.window_handle().unwrap().as_raw(),
             window.inner_size().width,
             window.inner_size().height,
-        );
+        )
+        .unwrap();
 
         // TODO: drop unwrap
         self.gltf_loader.load(
@@ -252,7 +253,9 @@ impl ApplicationHandler for App<'_> {
                 {
                     self.is_closing = true;
 
-                    self.vulkan_engine.take();
+                    if let Some(vulkan_engine) = self.vulkan_engine.take() {
+                        vulkan_engine.destroy();
+                    }
 
                     event_loop.exit();
                 }

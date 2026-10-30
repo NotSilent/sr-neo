@@ -50,7 +50,7 @@ pub struct MaterialDataManager {
 }
 
 impl MaterialDataManager {
-    pub fn new(ctx: &VulkanContext, allocator: &mut Allocator) -> Self {
+    pub fn new(ctx: &VulkanContext, allocator: &mut Allocator) -> Option<Self> {
         let max_count = 1024;
 
         let alloc_size = size_of::<MaterialData>() * max_count;
@@ -62,7 +62,7 @@ impl MaterialDataManager {
             vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
             "materials_host",
-        );
+        )?;
 
         let device_buffer = Buffer::new(
             ctx,
@@ -71,15 +71,15 @@ impl MaterialDataManager {
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
             MemoryLocation::GpuOnly,
             "materials_device",
-        );
+        )?;
 
-        Self {
+        Some(Self {
             current_count: 0,
             _max_count: max_count as u32,
             host_buffer,
             device_buffer,
             dirty: false,
-        }
+        })
     }
 
     pub fn add(&mut self, material_data: MaterialData) -> MaterialDataIndex {
@@ -88,8 +88,6 @@ impl MaterialDataManager {
         let (_prefix, data, _suffix) = unsafe {
             self.host_buffer
                 .allocation
-                .as_mut()
-                .unwrap()
                 .mapped_slice_mut()
                 .unwrap()
                 .align_to_mut::<MaterialData>()
@@ -115,7 +113,7 @@ impl MaterialDataManager {
 
         let regions = [vk::BufferCopy::default()
             .src_offset(0)
-            .size(self.host_buffer.allocation.as_ref().unwrap().size())];
+            .size(self.host_buffer.allocation.size())];
 
         unsafe {
             ctx.cmd_copy_buffer(
@@ -135,7 +133,7 @@ impl MaterialDataManager {
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .buffer(self.device_buffer.buffer)
             .offset(0)
-            .size(self.device_buffer.allocation.as_ref().unwrap().size())];
+            .size(self.device_buffer.allocation.size())];
 
         let dependency_info =
             vk::DependencyInfo::default().buffer_memory_barriers(&buffer_barriers);
@@ -145,7 +143,7 @@ impl MaterialDataManager {
         }
     }
 
-    pub fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+    pub fn destroy(self, ctx: &VulkanContext, allocator: &mut Allocator) {
         self.device_buffer.destroy(ctx, allocator);
         self.host_buffer.destroy(ctx, allocator);
     }
@@ -214,7 +212,7 @@ pub struct MasterMaterial {
 impl VulkanResource for MasterMaterial {
     type Subresource = ();
 
-    fn destroy(&mut self, ctx: &VulkanContext, _allocator: &mut Allocator) {
+    fn destroy(self, ctx: &VulkanContext, _allocator: &mut Allocator) {
         unsafe {
             ctx.destroy_descriptor_set_layout(self.material_layout, None);
             ctx.destroy_pipeline(self.pipeline, None);
@@ -355,5 +353,5 @@ pub struct MaterialInstance {
 impl VulkanResource for MaterialInstance {
     type Subresource = ();
 
-    fn destroy(&mut self, _ctx: &VulkanContext, _allocator: &mut Allocator) {}
+    fn destroy(self, _ctx: &VulkanContext, _allocator: &mut Allocator) {}
 }

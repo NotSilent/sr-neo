@@ -314,7 +314,7 @@ impl VulkanEngine {
         window_handle: RawWindowHandle,
         width: u32,
         height: u32,
-    ) -> Self {
+    ) -> Option<Self> {
         // TODO: Decide what type of result should be returned
         let ctx = VulkanContext::new(display_handle).unwrap();
 
@@ -406,28 +406,28 @@ impl VulkanEngine {
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
-        );
+        )?;
 
         let image_black = default_resources::image_black(
             &ctx,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
-        );
+        )?;
 
         let image_error = default_resources::image_error(
             &ctx,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
-        );
+        )?;
 
         let image_normal = default_resources::image_normal(
             &ctx,
             &mut allocator,
             &immediate_submit,
             vk::AccessFlags2::SHADER_READ,
-        );
+        )?;
 
         let mut master_material_manager = MasterMaterialManager::new();
 
@@ -500,7 +500,7 @@ impl VulkanEngine {
             meshes: mesh_manager,
             master_materials: master_material_manager,
             material_instances: material_instance_manager,
-            material_datas: MaterialDataManager::new(&ctx, &mut allocator),
+            material_datas: MaterialDataManager::new(&ctx, &mut allocator)?,
         };
 
         let default_resources = DefaultResources {
@@ -527,7 +527,7 @@ impl VulkanEngine {
             vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
             "index_buffer",
-        );
+        )?;
 
         let vertex_buffer = Buffer::new(
             &ctx,
@@ -536,7 +536,7 @@ impl VulkanEngine {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
             "vertex_buffer",
-        );
+        )?;
 
         let material_data_buffer = managed_resources.material_datas.get();
 
@@ -553,12 +553,12 @@ impl VulkanEngine {
             &vertex_buffer,
             material_data_buffer,
             &managed_resources.images,
-        );
+        )?;
 
         let index_buffer_index = managed_resources.buffers.add(index_buffer);
         let vertex_buffer_index = managed_resources.buffers.add(vertex_buffer);
 
-        Self {
+        Some(Self {
             frame_number: 0,
 
             ctx,
@@ -580,7 +580,7 @@ impl VulkanEngine {
 
             index_buffer: index_buffer_index,
             vertex_buffer: vertex_buffer_index,
-        }
+        })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -938,7 +938,7 @@ impl VulkanEngine {
         mipmapped: bool,
         data: &[T],
         name: &str,
-    ) -> ImageIndex {
+    ) -> Option<ImageIndex> {
         let image = Image::with_data(
             &self.ctx,
             &mut self.allocator,
@@ -951,30 +951,30 @@ impl VulkanEngine {
             mipmapped,
             data,
             name,
-        );
+        )?;
 
-        self.managed_resources.images.add(image)
+        Some(self.managed_resources.images.add(image))
     }
 
-    pub fn upload_buffers(&mut self, indices: &[u32], vertices: &[Vertex]) {
+    pub fn upload_buffers(&mut self, indices: &[u32], vertices: &[Vertex]) -> Option<()> {
         let index_buffer_size = size_of_val(indices);
         let vertex_buffer_size = size_of_val(vertices);
 
         // TODO: Allocation separate?
 
-        let mut staging = Buffer::new(
+        let staging = Buffer::new(
             &self.ctx,
             &mut self.allocator,
             index_buffer_size + vertex_buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
             "staging",
-        );
+        )?;
 
-        vk_util::copy_data_to_allocation(indices, staging.allocation.as_ref().unwrap());
+        vk_util::copy_data_to_allocation(indices, &staging.allocation);
         vk_util::copy_data_to_allocation_with_byte_offset(
             vertices,
-            staging.allocation.as_ref().unwrap(),
+            &staging.allocation,
             index_buffer_size,
         );
 
@@ -1004,6 +1004,8 @@ impl VulkanEngine {
         });
 
         staging.destroy(&self.ctx, &mut self.allocator);
+
+        Some(())
     }
 
     pub fn update_images(&mut self) {
@@ -1013,10 +1015,8 @@ impl VulkanEngine {
             &self.managed_resources.images,
         );
     }
-}
 
-impl Drop for VulkanEngine {
-    fn drop(&mut self) {
+    pub fn destroy(mut self) {
         let ctx = &self.ctx;
         let allocator = &mut self.allocator;
 

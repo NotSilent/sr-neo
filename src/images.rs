@@ -35,7 +35,7 @@ pub struct Image {
     pub image_view: vk::ImageView,
     pub extent: vk::Extent3D,
     _format: vk::Format,
-    allocation: Option<Allocation>,
+    allocation: Allocation,
 }
 
 impl Image {
@@ -92,7 +92,7 @@ impl Image {
             image_view,
             extent,
             _format: format,
-            allocation: Some(allocation),
+            allocation: allocation,
         }
     }
 
@@ -109,19 +109,19 @@ impl Image {
         mipmapped: bool,
         data: &[T],
         name: &str,
-    ) -> Image {
+    ) -> Option<Image> {
         let data_size = size_of_val(data);
 
-        let mut upload_buffer = Buffer::new(
+        let upload_buffer = Buffer::new(
             ctx,
             allocator,
             data_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
             "upload_buffer",
-        );
+        )?;
 
-        vk_util::copy_data_to_allocation(data, upload_buffer.allocation.as_ref().unwrap());
+        vk_util::copy_data_to_allocation(data, &upload_buffer.allocation);
 
         let new_image = Image::new(
             ctx,
@@ -186,18 +186,18 @@ impl Image {
 
         upload_buffer.destroy(ctx, allocator);
 
-        new_image
+        Some(new_image)
     }
 }
 
 impl VulkanResource for Image {
     type Subresource = ();
 
-    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+    fn destroy(self, ctx: &VulkanContext, allocator: &mut Allocator) {
         unsafe {
             ctx.destroy_image_view(self.image_view, None);
             ctx.destroy_image(self.image, None);
         }
-        allocator.free(self.allocation.take().unwrap()).unwrap();
+        allocator.free(self.allocation).unwrap();
     }
 }

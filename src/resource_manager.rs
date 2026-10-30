@@ -9,7 +9,7 @@ impl VulkanSubresource for () {}
 pub trait VulkanResource {
     type Subresource: VulkanSubresource;
 
-    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) -> Self::Subresource;
+    fn destroy(self, ctx: &VulkanContext, allocator: &mut Allocator) -> Self::Subresource;
 }
 
 // TODO: Probably better if resource manager allocates
@@ -64,7 +64,7 @@ where
         index: I,
     ) -> T::Subresource {
         self.destroyed.push(index);
-        let item = &mut self.dense[index.into()];
+        let item = self.dense.swap_remove(index.into());
         item.destroy(ctx, allocator)
     }
 
@@ -81,24 +81,11 @@ where
         ctx: &VulkanContext,
         allocator: &mut Allocator,
     ) -> Vec<T::Subresource> {
-        let mut subresources: Vec<T::Subresource> = vec![];
-
-        for (index, resource) in &mut self.dense.iter_mut().enumerate() {
-            if !self.destroyed.contains(&index.into()) {
-                subresources.push(resource.destroy(ctx, allocator));
-                self.destroyed.push(index.into());
-            }
-        }
-
-        if !subresources.is_empty() {
-            // TODO: This
-            // println!(
-            //     "{}, Something is wrong, all assets should release their resources.",
-            //     std::any::type_name::<ResourceManager<T, S, I>>()
-            // );
-        }
-
-        subresources
+        // TODO: Is that corrent?
+        self.dense
+            .drain(..)
+            .map(|resource| resource.destroy(ctx, allocator))
+            .collect()
     }
 
     // TODO: This is only for images for easy access for now

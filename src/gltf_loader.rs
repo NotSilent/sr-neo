@@ -41,7 +41,11 @@ pub struct CachedImage {
 }
 
 impl GLTFLoader {
-    pub fn load(&mut self, vulkan_engine: &mut VulkanEngine, file_path: &std::path::Path) {
+    pub fn load(
+        &mut self,
+        vulkan_engine: &mut VulkanEngine,
+        file_path: &std::path::Path,
+    ) -> Option<()> {
         println!("Loading GLTF: {}", file_path.display());
 
         let time_now = std::time::Instant::now();
@@ -61,7 +65,7 @@ impl GLTFLoader {
             time_now.elapsed().as_secs_f64()
         );
 
-        let meshes = Self::load_gltf_meshes(vulkan_engine, file_path, &gltf_real);
+        let meshes = Self::load_gltf_meshes(vulkan_engine, file_path, &gltf_real)?;
 
         let gltf_nodes = Self::load_gltf_nodes(&gltf_real, &meshes);
 
@@ -70,6 +74,8 @@ impl GLTFLoader {
             .map(|scene| scene.nodes().map(|node| node.index() as u32).collect())
             .collect();
         self.nodes = gltf_nodes;
+
+        Some(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -79,7 +85,7 @@ impl GLTFLoader {
         vulkan_engine: &mut VulkanEngine,
         file_path: &std::path::Path,
         gltf_real: &gltf::Gltf,
-    ) -> Vec<MeshIndex> {
+    ) -> Option<Vec<MeshIndex>> {
         let mut mesh_assets = vec![];
         let mut indices: Vec<u32> = vec![];
         let mut vertices: Vec<Vertex> = vec![];
@@ -139,7 +145,7 @@ impl GLTFLoader {
                 false,
                 &data,
                 "GLTF_IMAGE_NAME_NONE",
-            );
+            )?;
 
             images.push(image_index);
         }
@@ -428,7 +434,7 @@ impl GLTFLoader {
 
         vulkan_engine.upload_buffers(&indices, &vertices);
 
-        mesh_assets
+        Some(mesh_assets)
     }
 
     pub fn draw(&self, ctx: &mut DrawContext) {

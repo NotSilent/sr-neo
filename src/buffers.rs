@@ -28,7 +28,7 @@ pub type BufferManager = ResourceManager<Buffer, (), BufferIndex>;
 
 pub struct Buffer {
     pub buffer: vk::Buffer,
-    pub allocation: Option<Allocation>, // TODO: Drop Option<> somehow (maybe put in sparse vec and index for deletion?)
+    pub allocation: Allocation,
 }
 
 impl Buffer {
@@ -39,7 +39,7 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
         memory_location: MemoryLocation,
         name: &str,
-    ) -> Buffer {
+    ) -> Option<Buffer> {
         let create_info = vk::BufferCreateInfo::default()
             .size(alloc_size as u64)
             .usage(usage);
@@ -58,22 +58,21 @@ impl Buffer {
         let allocation = allocator.allocate(&allocation_info).unwrap();
 
         unsafe {
-            ctx.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .unwrap();
+            ctx.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()).ok()?;
         };
 
-        Buffer {
+        Some(Buffer {
             buffer,
-            allocation: Some(allocation),
-        }
+            allocation: allocation,
+        })
     }
 }
 
 impl VulkanResource for Buffer {
     type Subresource = ();
 
-    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+    fn destroy(self, ctx: &VulkanContext, allocator: &mut Allocator) {
         unsafe { ctx.destroy_buffer(self.buffer, None) };
-        allocator.free(self.allocation.take().unwrap()).unwrap();
+        allocator.free(self.allocation).unwrap();
     }
 }

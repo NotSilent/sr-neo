@@ -9,7 +9,7 @@ pub fn image_white(
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
     access_flags: vk::AccessFlags2,
-) -> Image {
+) -> Option<Image> {
     let white = vk_util::pack_u32(&[1.0, 1.0, 1.0, 1.0]);
 
     Image::with_data(
@@ -32,7 +32,7 @@ pub fn image_black(
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
     access_mask: vk::AccessFlags2,
-) -> Image {
+) -> Option<Image> {
     let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
 
     Image::with_data(
@@ -55,7 +55,7 @@ pub fn image_error(
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
     access_mask: vk::AccessFlags2,
-) -> Image {
+) -> Option<Image> {
     let magenta = vk_util::pack_u32(&[1.0, 0.0, 1.0, 1.0]);
     let black = vk_util::pack_u32(&[0.0, 0.0, 0.0, 1.0]);
 
@@ -92,7 +92,7 @@ pub fn image_normal(
     allocator: &mut Allocator,
     immediate_submit: &ImmediateSubmit,
     access_mask: vk::AccessFlags2,
-) -> Image {
+) -> Option<Image> {
     let normal = vk_util::pack_u32(&[0.5, 0.5, 1.0, 1.0]);
 
     Image::with_data(

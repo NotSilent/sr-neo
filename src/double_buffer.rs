@@ -23,7 +23,7 @@ pub struct FullScreenPassDescription {
 }
 
 impl FullScreenPassDescription {
-    pub fn destroy(&mut self, ctx: &VulkanContext) {
+    pub fn destroy(self, ctx: &VulkanContext) {
         unsafe {
             ctx.destroy_descriptor_set_layout(self.descriptor_layout, None);
             ctx.destroy_pipeline(self.pipeline, None);
@@ -173,7 +173,7 @@ impl FrameBufferTargets {
         }
     }
 
-    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+    fn destroy(self, ctx: &VulkanContext, allocator: &mut Allocator) {
         self.draw.destroy(ctx, allocator);
         self.color.destroy(ctx, allocator);
         self.normal.destroy(ctx, allocator);
@@ -220,7 +220,7 @@ impl FrameBuffer {
         vertex_buffer: &Buffer,
         material_data_buffer: &Buffer,
         image_manager: &ImageManager,
-    ) -> Self {
+    ) -> Option<Self> {
         let command_pool = vk_util::create_command_pool(ctx);
 
         let query_pool_create_info = vk::QueryPoolCreateInfo::default()
@@ -243,7 +243,7 @@ impl FrameBuffer {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
             gpu_allocator::MemoryLocation::CpuToGpu,
             "globals_host_buffer",
-        );
+        )?;
 
         let globals_device_buffer = Buffer::new(
             ctx,
@@ -252,7 +252,7 @@ impl FrameBuffer {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             gpu_allocator::MemoryLocation::GpuOnly,
             "globals_device_buffer",
-        );
+        )?;
 
         let uniform_alloc_size = size_of::<UniformData>() * FRAME_BUFFER_ELEMENTS;
 
@@ -263,7 +263,7 @@ impl FrameBuffer {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
             gpu_allocator::MemoryLocation::CpuToGpu,
             "uniform_host_buffer",
-        );
+        )?;
 
         let uniform_device_buffer = Buffer::new(
             ctx,
@@ -272,7 +272,7 @@ impl FrameBuffer {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             gpu_allocator::MemoryLocation::GpuOnly,
             "uniform_device_buffer",
-        );
+        )?;
 
         let draw_alloc_size = size_of::<vk::DrawIndexedIndirectCommand>() * FRAME_BUFFER_ELEMENTS;
 
@@ -285,7 +285,7 @@ impl FrameBuffer {
                 | vk::BufferUsageFlags::INDIRECT_BUFFER,
             gpu_allocator::MemoryLocation::CpuToGpu,
             "draw_host_buffer",
-        );
+        )?;
 
         let draw_device_buffer = Buffer::new(
             ctx,
@@ -297,7 +297,7 @@ impl FrameBuffer {
                 | vk::BufferUsageFlags::INDIRECT_BUFFER,
             gpu_allocator::MemoryLocation::GpuOnly,
             "draw_device_buffer",
-        );
+        )?;
 
         let globals_descriptor_set = global_descriptor_allocator.allocate(
             ctx,
@@ -354,7 +354,7 @@ impl FrameBuffer {
 
         writer.update_set(ctx, globals_descriptor_set);
 
-        Self {
+        Some(Self {
             command_pool,
             command_buffer: vk_util::allocate_command_buffer(ctx, command_pool),
             synchronization_resources: FrameBufferSynchronizationResources {
@@ -375,7 +375,7 @@ impl FrameBuffer {
             uniform_device_buffer,
             draw_host_buffer,
             draw_device_buffer,
-        }
+        })
     }
 
     // TODO: ImageManager?
@@ -425,7 +425,7 @@ impl FrameBuffer {
         QueryResults { draw_time }
     }
 
-    fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+    fn destroy(self, ctx: &VulkanContext, allocator: &mut Allocator) {
         unsafe {
             ctx.destroy_command_pool(self.command_pool, None);
             ctx.destroy_fence(self.synchronization_resources.fence, None);
@@ -533,21 +533,13 @@ impl FrameBuffer {
         let uniform_memory = self
             .uniform_host_buffer
             .allocation
-            .as_mut()
-            .unwrap()
             .mapped_slice_mut()
             .unwrap();
 
         // TODO: Struct
         let (_, uniforms, _) = unsafe { uniform_memory.align_to_mut::<UniformData>() };
 
-        let draw_memory = self
-            .draw_host_buffer
-            .allocation
-            .as_mut()
-            .unwrap()
-            .mapped_slice_mut()
-            .unwrap();
+        let draw_memory = self.draw_host_buffer.allocation.mapped_slice_mut().unwrap();
 
         let (_, draws, _) = unsafe { draw_memory.align_to_mut::<vk::DrawIndexedIndirectCommand>() };
 
@@ -582,11 +574,12 @@ impl FrameBuffer {
     fn set_globals(&mut self, scene_data: &SceneData) {
         vk_util::copy_data_to_allocation(
             scene_data.as_bytes(),
-            self.globals_host_buffer.allocation.as_ref().unwrap(),
+            &self.globals_host_buffer.allocation,
         );
     }
 }
 
+// TODO: I don't like this at all
 // TODO: All resources eg. gbuffer, per buffer
 pub struct DoubleBuffer {
     current_frame: usize,
@@ -615,7 +608,7 @@ impl DoubleBuffer {
         vertex_buffer: &Buffer,
         material_data_buffer: &Buffer,
         image_manager: &ImageManager,
-    ) -> Self {
+    ) -> Option<Self> {
         let target = FrameBufferTargets::new(ctx, allocator, width, height);
 
         let lightning_pass_description = Self::create_lightning_pass_description(
@@ -643,7 +636,7 @@ impl DoubleBuffer {
             &target,
         );
 
-        Self {
+        Some(Self {
             current_frame: 0,
             targets: target,
             frame_buffers: [
@@ -657,7 +650,7 @@ impl DoubleBuffer {
                     vertex_buffer,
                     material_data_buffer,
                     image_manager,
-                ),
+                )?,
                 FrameBuffer::new(
                     ctx,
                     allocator,
@@ -668,13 +661,13 @@ impl DoubleBuffer {
                     vertex_buffer,
                     material_data_buffer,
                     image_manager,
-                ),
+                )?,
             ],
             lightning_pass_description,
             fxaa_pass_description,
             lightning_pass_descriptor_set,
             fxaa_pass_descriptor_set,
-        }
+        })
     }
     fn create_lightning_descriptor_set(
         ctx: &VulkanContext,
@@ -777,10 +770,10 @@ impl DoubleBuffer {
         fxaa_descriptor_set
     }
 
-    pub fn destroy(&mut self, ctx: &VulkanContext, allocator: &mut Allocator) {
+    pub fn destroy(self, ctx: &VulkanContext, allocator: &mut Allocator) {
         self.targets.destroy(ctx, allocator);
 
-        for buffer in &mut self.frame_buffers {
+        for buffer in self.frame_buffers {
             buffer.destroy(ctx, allocator);
         }
 

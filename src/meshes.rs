@@ -30,5 +30,5 @@ pub struct Mesh {
 
 impl VulkanResource for Mesh {
     type Subresource = ();
-    fn destroy(&mut self, _ctx: &VulkanContext, _allocator: &mut Allocator) {}
+    fn destroy(self, _ctx: &VulkanContext, _allocator: &mut Allocator) {}
 }
